@@ -1,0 +1,15 @@
+[package]
+name = "py2rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "py2rust"
+path = "src/main.rs"
+
+[dependencies]
+rustpython-parser = "0.3.1"
+thiserror = "1.0"
+miette = { version = "5", features = ["fancy"] }
+clap = { version = "4", features = ["derive"] }
+indexmap = "2.2"

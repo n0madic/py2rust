@@ -1,0 +1,193 @@
+use py2rust::{compile, CompileOptions};
+
+fn expect_error(source: &str) -> String {
+    compile(source, "test.py", &CompileOptions::default())
+        .expect_err("Expected compilation error")
+        .to_string()
+}
+
+#[test]
+fn rejects_star_args() {
+    let source = r#"
+def bad(*args) -> None:
+    pass
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("*args") || error.contains("kwargs"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_kwargs() {
+    let source = r#"
+def bad(**kwargs) -> None:
+    pass
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("*args") || error.contains("kwargs"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_async_function() {
+    let source = r#"
+async def bad() -> None:
+    pass
+"#;
+    let error = expect_error(source);
+    assert!(error.contains("Unsupported"), "Error: {}", error);
+}
+
+#[test]
+fn rejects_class_inheritance() {
+    let source = r#"
+class Base:
+    pass
+
+class Child(Base):
+    pass
+"#;
+    let error = expect_error(source);
+    assert!(error.contains("inheritance"), "Error: {}", error);
+}
+
+#[test]
+fn rejects_class_decorators() {
+    let source = r#"
+@dataclass
+class MyClass:
+    x: int
+"#;
+    let error = expect_error(source);
+    assert!(error.contains("decorator"), "Error: {}", error);
+}
+
+#[test]
+fn rejects_multiple_decorators() {
+    let source = r#"
+@decorator1
+@decorator2
+def bad() -> None:
+    pass
+"#;
+    let error = expect_error(source);
+    assert!(error.contains("single decorator"), "Error: {}", error);
+}
+
+#[test]
+fn rejects_type_parameters() {
+    let source = r#"
+def bad[T](x: T) -> T:
+    return x
+"#;
+    let error = expect_error(source);
+    assert!(error.contains("Type parameters"), "Error: {}", error);
+}
+
+#[test]
+fn rejects_default_arguments() {
+    let source = r#"
+def bad(x: int = 5) -> int:
+    return x
+"#;
+    let error = expect_error(source);
+    assert!(error.contains("Default arguments"), "Error: {}", error);
+}
+
+#[test]
+fn rejects_keyword_arguments() {
+    let source = r#"
+def good(x: int) -> int:
+    return x
+
+y: int = good(x=5)
+"#;
+    let error = expect_error(source);
+    assert!(error.contains("Keyword arguments"), "Error: {}", error);
+}
+
+#[test]
+fn rejects_slice_steps() {
+    let source = r#"
+def bad(lst: list[int]) -> list[int]:
+    return lst[::2]
+"#;
+    let error = expect_error(source);
+    assert!(error.contains("Slice steps"), "Error: {}", error);
+}
+
+#[test]
+fn rejects_async_comprehensions() {
+    let source = r#"
+async def bad() -> list[int]:
+    return [x async for x in some_iter()]
+"#;
+    let error = expect_error(source);
+    // Either async or comprehensions not supported
+    assert!(
+        error.contains("Unsupported") || error.contains("Async"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_match_guards() {
+    let source = r#"
+class Foo:
+    def __init__(self) -> None:
+        pass
+
+def bad(x: Foo) -> int:
+    match x:
+        case Foo() if True:
+            return 1
+"#;
+    let error = expect_error(source);
+    assert!(error.contains("guard"), "Error: {}", error);
+}
+
+#[test]
+fn rejects_lambda_star_args() {
+    let source = r#"
+f = lambda *args: 0
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("*args") || error.contains("kwargs") || error.contains("Lambda"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_lambda_defaults() {
+    let source = r#"
+f = lambda x=5: x
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("default") || error.contains("Lambda"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_unsupported_binary_ops() {
+    let source = r#"
+x: int = 5 @ 3
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("Unsupported") || error.contains("binary") || error.contains("operator"),
+        "Error: {}",
+        error
+    );
+}
