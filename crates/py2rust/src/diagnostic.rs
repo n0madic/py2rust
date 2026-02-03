@@ -1,3 +1,5 @@
+#![allow(unused_assignments)]
+
 use crate::span::Span;
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use thiserror::Error;

@@ -274,7 +274,11 @@ impl<'a> Codegen<'a> {
         })?;
         let mut bindings = Vec::new();
         for ((field, _), binding) in class_info.fields.iter().zip(case.bindings.iter()) {
-            bindings.push(format!("{}: {}", field, binding));
+            if field == binding {
+                bindings.push(field.clone());
+            } else {
+                bindings.push(format!("{}: {}", field, binding));
+            }
         }
         let union = self
             .find_union_for_variant(&case.variant)

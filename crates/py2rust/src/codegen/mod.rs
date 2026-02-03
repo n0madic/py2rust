@@ -88,9 +88,7 @@ impl<'a> Codegen<'a> {
                 top_level.push(stmt.as_ref().clone());
             }
         }
-        if !top_level.is_empty() {
-            self.emit_main(&top_level)?;
-        }
+        self.emit_main(&top_level)?;
 
         // Save generated code and emit header + helpers before it
         let generated_code = mem::take(&mut self.out);
