@@ -513,6 +513,76 @@ impl<'a> TypeChecker<'a> {
                         }
                         return Ok(Type::None);
                     }
+                    if attr == "extend" {
+                        if args.len() != 1 {
+                            return Err(self.error(span, "list.extend() expects one argument"));
+                        }
+                        let arg_ty = self.check_expr(&mut args[0], None)?;
+                        match arg_ty {
+                            Type::List(arg_inner) => {
+                                if !matches!(inner.as_ref(), Type::Unknown)
+                                    && !matches!(arg_inner.as_ref(), Type::Unknown)
+                                {
+                                    self.ensure_assignable(&arg_inner, inner, span)?;
+                                }
+                                if matches!(inner.as_ref(), Type::Unknown)
+                                    && !matches!(arg_inner.as_ref(), Type::Unknown)
+                                {
+                                    // Infer list element type from the source list.
+                                    if let ExprKind::Name(name) = &value.kind {
+                                        self.set_var_type(
+                                            name,
+                                            Type::List(Box::new((*arg_inner).clone())),
+                                        );
+                                    }
+                                }
+                                return Ok(Type::None);
+                            }
+                            Type::Tuple(items) => {
+                                // Require homogeneous tuple elements to extend a list.
+                                let mut candidate: Option<Type> = None;
+                                for item in items.iter() {
+                                    if matches!(item, Type::Unknown) {
+                                        continue;
+                                    }
+                                    if let Some(existing) = candidate.as_ref() {
+                                        if existing.is_numeric() && item.is_numeric() {
+                                            if matches!(existing, Type::Float)
+                                                || matches!(item, Type::Float)
+                                            {
+                                                candidate = Some(Type::Float);
+                                            }
+                                        } else if existing != item {
+                                            return Err(self.error(
+                                                span,
+                                                "list.extend() requires homogeneous tuple elements",
+                                            ));
+                                        }
+                                    } else {
+                                        candidate = Some(item.clone());
+                                    }
+                                }
+                                if let Some(elem_ty) = candidate.as_ref() {
+                                    if !matches!(inner.as_ref(), Type::Unknown) {
+                                        self.ensure_assignable(elem_ty, inner, span)?;
+                                    } else if let ExprKind::Name(name) = &value.kind {
+                                        self.set_var_type(
+                                            name,
+                                            Type::List(Box::new(elem_ty.clone())),
+                                        );
+                                    }
+                                } else if !matches!(inner.as_ref(), Type::Unknown) {
+                                    // All tuple elements are unknown: keep list element type as-is.
+                                }
+                                return Ok(Type::None);
+                            }
+                            Type::Unknown => return Ok(Type::None),
+                            _ => {
+                                return Err(self
+                                    .error(span, "list.extend() expects a list or tuple argument"))
+                            }
+                        }
+                    }
                 }
                 if let Type::Set(inner) = &obj_ty {
                     if attr == "add" {

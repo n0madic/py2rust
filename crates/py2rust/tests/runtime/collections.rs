@@ -20,6 +20,13 @@ def test_lists() -> None:
     assert len(nums) == 6
     assert nums[5] == 6
 
+    # Extend
+    extend_list: list[int] = [1, 2, 3]
+    extend_list.extend([4, 5, 6])
+    assert len(extend_list) == 6
+    assert extend_list[3] == 4
+    assert extend_list[5] == 6
+
     # Empty list
     empty: list[int] = []
     assert len(empty) == 0

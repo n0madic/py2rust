@@ -248,7 +248,8 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
             StmtKind::Expr(expr) => {
                 if let ExprKind::Call { func, .. } = &expr.kind {
                     if let ExprKind::Attr { value, attr } = &func.kind {
-                        if matches!(attr.as_str(), "append" | "add" | "remove") {
+                        // Mutating collection methods require the receiver to be `mut`.
+                        if matches!(attr.as_str(), "append" | "extend" | "add" | "remove") {
                             if let ExprKind::Name(name) = &value.kind {
                                 *counts.entry(name.clone()).or_insert(0) += 1;
                             }

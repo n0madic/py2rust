@@ -679,6 +679,43 @@ impl<'a> Codegen<'a> {
                 return Ok(format!("{}.push({})", target, self.gen_args(args)?));
             }
         }
+        if attr == "extend" {
+            if let Some(Type::List(_)) = value.ty.as_ref() {
+                let target = if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        self.global_lock_expr(name)
+                    } else {
+                        self.gen_expr(value)?
+                    }
+                } else {
+                    self.gen_expr(value)?
+                };
+                if args.is_empty() {
+                    return Ok(format!("{{ {}.extend(std::iter::empty()); }}", target));
+                }
+                let arg = &args[0];
+                // Avoid moving the source list/tuple by iterating and cloning elements.
+                if matches!(arg.ty.as_ref(), Some(Type::Tuple(_))) {
+                    let tuple_tmp = self.new_tmp();
+                    let arg_expr = self.gen_expr(arg)?;
+                    let mut elems = Vec::new();
+                    if let Some(Type::Tuple(items)) = arg.ty.as_ref() {
+                        for idx in 0..items.len() {
+                            elems.push(format!("{}.{}.clone()", tuple_tmp, idx));
+                        }
+                    }
+                    return Ok(format!(
+                        "{{ let {} = {}; {}.extend(vec![{}]); }}",
+                        tuple_tmp,
+                        arg_expr,
+                        target,
+                        elems.join(", ")
+                    ));
+                }
+                let arg_expr = self.gen_expr(arg)?;
+                return Ok(format!("{}.extend({}.iter().cloned())", target, arg_expr));
+            }
+        }
         if attr == "add" {
             if let Some(Type::Set(_)) = value.ty.as_ref() {
                 self.uses.hash_set = true;
