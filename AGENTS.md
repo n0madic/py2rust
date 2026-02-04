@@ -84,6 +84,15 @@ After completing any code changes:
 4. If you add new functionality, add corresponding test coverage
 5. Update all relevant documentation and keep it in `docs/`
 
+## Code Documentation
+**Always add comments to the code you write!**
+
+- Add doc comments (`///` in Rust) to all public functions, structs, enums, and traits
+- Add inline comments (`//`) to explain complex logic, non-obvious decisions, or important invariants
+- Comment any tricky parts of the code that might not be immediately clear
+- When implementing new features, explain the "why" not just the "what"
+- Keep comments concise but informative
+
 ## Common Pitfalls
 - If you modify HIR, update typeck and codegen in sync.
 - If you add new builtins, update:
