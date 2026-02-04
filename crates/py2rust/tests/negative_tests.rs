@@ -113,13 +113,17 @@ y: int = good(x=5)
 }
 
 #[test]
-fn rejects_slice_steps() {
+fn rejects_slice_step_zero() {
     let source = r#"
 def bad(lst: list[int]) -> list[int]:
-    return lst[::2]
+    return lst[::0]
 "#;
     let error = expect_error(source);
-    assert!(error.contains("Slice steps"), "Error: {}", error);
+    assert!(
+        error.contains("step cannot be zero") || error.contains("Slice step"),
+        "Error: {}",
+        error
+    );
 }
 
 #[test]

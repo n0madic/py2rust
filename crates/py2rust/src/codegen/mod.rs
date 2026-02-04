@@ -30,6 +30,8 @@ pub(crate) struct Uses {
     pub(crate) py_parse_float: bool,
     pub(crate) py_index: bool,
     pub(crate) py_str_slice: bool,
+    pub(crate) py_str_slice_step: bool,
+    pub(crate) py_list_slice_step: bool,
     pub(crate) py_iter: bool,
 }
 

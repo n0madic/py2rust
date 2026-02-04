@@ -219,13 +219,21 @@ impl<'a> Codegen<'a> {
                     visit_expr(value, ok);
                     visit_expr(index, ok);
                 }
-                ExprKind::Slice { value, start, end } => {
+                ExprKind::Slice {
+                    value,
+                    start,
+                    end,
+                    step,
+                } => {
                     visit_expr(value, ok);
                     if let Some(s) = start {
                         visit_expr(s, ok);
                     }
                     if let Some(e) = end {
                         visit_expr(e, ok);
+                    }
+                    if let Some(st) = step.as_deref() {
+                        visit_expr(st, ok);
                     }
                 }
                 ExprKind::ListComp { elt, iter, ifs, .. } => {
@@ -432,13 +440,21 @@ impl<'a> Codegen<'a> {
                 self.scan_expr(value)?;
                 self.scan_expr(index)?;
             }
-            ExprKind::Slice { value, start, end } => {
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } => {
                 self.scan_expr(value)?;
                 if let Some(s) = start {
                     self.scan_expr(s)?;
                 }
                 if let Some(e) = end {
                     self.scan_expr(e)?;
+                }
+                if let Some(st) = step.as_deref() {
+                    self.scan_expr(st)?;
                 }
             }
             ExprKind::ListComp { elt, iter, ifs, .. } => {

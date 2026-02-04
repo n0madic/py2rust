@@ -167,9 +167,6 @@ impl<'a> Lowerer<'a> {
             }
             ast::Expr::Subscript(sub) => match &*sub.slice {
                 ast::Expr::Slice(slice) => {
-                    if slice.step.is_some() {
-                        return Err(self.error(sub.range(), "Slice steps are not supported"));
-                    }
                     let start = match &slice.lower {
                         Some(expr) => Some(Box::new(self.lower_expr(expr)?)),
                         None => None,
@@ -178,10 +175,15 @@ impl<'a> Lowerer<'a> {
                         Some(expr) => Some(Box::new(self.lower_expr(expr)?)),
                         None => None,
                     };
+                    let step = match &slice.step {
+                        Some(expr) => Some(Box::new(self.lower_expr(expr)?)),
+                        None => None,
+                    };
                     ExprKind::Slice {
                         value: Box::new(self.lower_expr(&sub.value)?),
                         start,
                         end,
+                        step,
                     }
                 }
                 _ => ExprKind::Index {

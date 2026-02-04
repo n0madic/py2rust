@@ -84,13 +84,21 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                 visit_expr(value, counts);
                 visit_expr(index, counts);
             }
-            ExprKind::Slice { value, start, end } => {
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } => {
                 visit_expr(value, counts);
                 if let Some(s) = start {
                     visit_expr(s, counts);
                 }
                 if let Some(e) = end {
                     visit_expr(e, counts);
+                }
+                if let Some(st) = step.as_deref() {
+                    visit_expr(st, counts);
                 }
             }
             ExprKind::ListComp { elt, iter, ifs, .. } => {

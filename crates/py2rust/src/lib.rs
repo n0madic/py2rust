@@ -249,13 +249,21 @@ fn rename_main_calls_in_expr(expr: &mut hir::Expr, new_name: &str) {
             rename_main_calls_in_expr(value, new_name);
             rename_main_calls_in_expr(index, new_name);
         }
-        hir::ExprKind::Slice { value, start, end } => {
+        hir::ExprKind::Slice {
+            value,
+            start,
+            end,
+            step,
+        } => {
             rename_main_calls_in_expr(value, new_name);
             if let Some(s) = start {
                 rename_main_calls_in_expr(s, new_name);
             }
             if let Some(e) = end {
                 rename_main_calls_in_expr(e, new_name);
+            }
+            if let Some(s) = step {
+                rename_main_calls_in_expr(s, new_name);
             }
         }
         hir::ExprKind::ListComp { elt, iter, ifs, .. } => {

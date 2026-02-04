@@ -222,6 +222,76 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.push_line("}");
         }
+        if self.uses.py_list_slice_step {
+            self.push_line(
+                "fn py_list_slice_step<T: Clone>(items: &[T], start: Option<i64>, end: Option<i64>, step: i64) -> Vec<T> {",
+            );
+            self.indent += 1;
+            self.push_line("if step == 0 { panic!(\"slice step cannot be zero\"); }");
+            self.push_line("let len = items.len() as i64;");
+            self.push_line("let mut out = Vec::new();");
+            self.push_line("if step > 0 {");
+            self.indent += 1;
+            self.push_line("let mut i = match start {");
+            self.indent += 1;
+            self.push_line(
+                "Some(s) => { let s = if s < 0 { len + s } else { s }; s.max(0).min(len) },",
+            );
+            self.push_line("None => 0,");
+            self.indent -= 1;
+            self.push_line("};");
+            self.push_line("let end = match end {");
+            self.indent += 1;
+            self.push_line(
+                "Some(e) => { let e = if e < 0 { len + e } else { e }; e.max(0).min(len) },",
+            );
+            self.push_line("None => len,");
+            self.indent -= 1;
+            self.push_line("};");
+            self.push_line("while i < end {");
+            self.indent += 1;
+            self.push_line("out.push(items[i as usize].clone());");
+            self.push_line("i += step;");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("} else {");
+            self.indent += 1;
+            self.push_line("let mut i = match start {");
+            self.indent += 1;
+            self.push_line("Some(s) => { let s = if s < 0 { len + s } else { s }; if s < 0 { -1 } else if s >= len { len - 1 } else { s } },");
+            self.push_line("None => len - 1,");
+            self.indent -= 1;
+            self.push_line("};");
+            self.push_line("let end = match end {");
+            self.indent += 1;
+            self.push_line("Some(e) => { let e = if e < 0 { len + e } else { e }; if e < 0 { -1 } else if e >= len { len - 1 } else { e } },");
+            self.push_line("None => -1,");
+            self.indent -= 1;
+            self.push_line("};");
+            self.push_line("while i > end {");
+            self.indent += 1;
+            self.push_line("if i >= 0 && i < len { out.push(items[i as usize].clone()); }");
+            self.push_line("i += step;");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("out");
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_str_slice_step {
+            self.push_line(
+                "fn py_str_slice_step(s: &str, start: Option<i64>, end: Option<i64>, step: i64) -> String {",
+            );
+            self.indent += 1;
+            self.push_line("let chars: Vec<char> = s.chars().collect();");
+            self.push_line("let sliced = py_list_slice_step(&chars, start, end, step);");
+            self.push_line("sliced.into_iter().collect()");
+            self.indent -= 1;
+            self.push_line("}");
+        }
         if self.uses.print
             || self.uses.len
             || self.uses.range
@@ -234,6 +304,8 @@ impl<'a> Codegen<'a> {
             || self.uses.py_parse_float
             || self.uses.py_index
             || self.uses.py_str_slice
+            || self.uses.py_list_slice_step
+            || self.uses.py_str_slice_step
         {
             self.push_line("");
         }
@@ -897,10 +969,16 @@ impl<'a> Codegen<'a> {
             ExprKind::Index { value, index } => {
                 self.expr_can_throw(value) || self.expr_can_throw(index)
             }
-            ExprKind::Slice { value, start, end } => {
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } => {
                 self.expr_can_throw(value)
                     || start.as_ref().is_some_and(|s| self.expr_can_throw(s))
                     || end.as_ref().is_some_and(|e| self.expr_can_throw(e))
+                    || step.as_ref().is_some_and(|st| self.expr_can_throw(st))
             }
             ExprKind::ListComp { elt, iter, ifs, .. } => {
                 self.expr_can_throw(elt)

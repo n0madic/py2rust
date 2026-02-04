@@ -27,6 +27,19 @@ def test_lists() -> None:
     assert len(empty) == 1
     assert empty[0] == 42
 
+    # Slicing with step
+    slice_nums: list[int] = [0, 1, 2, 3, 4, 5]
+    evens: list[int] = slice_nums[::2]
+    assert len(evens) == 3
+    assert evens[0] == 0
+    assert evens[1] == 2
+    assert evens[2] == 4
+
+    every_third: list[int] = slice_nums[::3]
+    assert len(every_third) == 2
+    assert every_third[0] == 0
+    assert every_third[1] == 3
+
 # String operations
 def test_strings() -> None:
     s: str = "hello"

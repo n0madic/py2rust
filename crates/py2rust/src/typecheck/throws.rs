@@ -269,7 +269,12 @@ impl ThrowAnalyzer {
                 self.expr_calls_throwing_function(value) || self.expr_calls_throwing_function(index)
             }
 
-            ExprKind::Slice { value, start, end } => {
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } => {
                 self.expr_calls_throwing_function(value)
                     || start
                         .as_ref()
@@ -277,6 +282,9 @@ impl ThrowAnalyzer {
                     || end
                         .as_ref()
                         .is_some_and(|e| self.expr_calls_throwing_function(e))
+                    || step
+                        .as_ref()
+                        .is_some_and(|st| self.expr_calls_throwing_function(st))
             }
 
             ExprKind::ListComp { elt, iter, ifs, .. } => {

@@ -184,6 +184,7 @@ pub enum ExprKind {
         value: Box<Expr>,
         start: Option<Box<Expr>>,
         end: Option<Box<Expr>>,
+        step: Option<Box<Expr>>,
     },
     ListComp {
         elt: Box<Expr>,

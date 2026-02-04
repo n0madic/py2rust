@@ -156,13 +156,21 @@ impl<'a> TypeChecker<'a> {
                         collect_names(value, out);
                         collect_names(index, out);
                     }
-                    ExprKind::Slice { value, start, end } => {
+                    ExprKind::Slice {
+                        value,
+                        start,
+                        end,
+                        step,
+                    } => {
                         collect_names(value, out);
                         if let Some(s) = start {
                             collect_names(s, out);
                         }
                         if let Some(e) = end {
                             collect_names(e, out);
+                        }
+                        if let Some(st) = step.as_deref() {
+                            collect_names(st, out);
                         }
                     }
                     ExprKind::ListComp { elt, iter, ifs, .. } => {
@@ -239,13 +247,21 @@ impl<'a> TypeChecker<'a> {
                         visit_expr(value, out);
                         visit_expr(index, out);
                     }
-                    ExprKind::Slice { value, start, end } => {
+                    ExprKind::Slice {
+                        value,
+                        start,
+                        end,
+                        step,
+                    } => {
                         visit_expr(value, out);
                         if let Some(s) = start {
                             visit_expr(s, out);
                         }
                         if let Some(e) = end {
                             visit_expr(e, out);
+                        }
+                        if let Some(st) = step.as_deref() {
+                            visit_expr(st, out);
                         }
                     }
                     ExprKind::ListComp { elt, iter, ifs, .. } => {

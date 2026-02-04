@@ -11,40 +11,35 @@ impl<'a> TypeChecker<'a> {
                 if name == "__name__" {
                     return Err(self.error(stmt.span, "Assignment to __name__ is not supported"));
                 }
-                if self.in_function()
-                    && self.is_declared_global(name) {
-                        let global_ty = self.ctx.globals.get(name).cloned().ok_or_else(|| {
-                            self.error(
-                                stmt.span,
-                                format!("global `{name}` is not defined at module scope"),
-                            )
-                        })?;
-                        let expected = if let Some(ann) = ann {
-                            let ty = self.resolve_type_ref(ann, stmt.span)?;
-                            if matches!(ty, Type::Iterator(_)) {
-                                return Err(self.error(
-                                    stmt.span,
-                                    "Iterator[T] is only allowed as a return type",
-                                ));
-                            }
-                            self.ensure_assignable(&ty, &global_ty, stmt.span)?;
-                            Some(ty)
-                        } else {
-                            None
-                        };
-                        let ty = self.check_expr(value, expected.as_ref().or(Some(&global_ty)))?;
-                        if matches!(ty, Type::Unknown) && !matches!(global_ty, Type::Unknown) {
-                            return Err(
-                                self.error(stmt.span, "Unable to infer type; add annotation")
-                            );
+                if self.in_function() && self.is_declared_global(name) {
+                    let global_ty = self.ctx.globals.get(name).cloned().ok_or_else(|| {
+                        self.error(
+                            stmt.span,
+                            format!("global `{name}` is not defined at module scope"),
+                        )
+                    })?;
+                    let expected = if let Some(ann) = ann {
+                        let ty = self.resolve_type_ref(ann, stmt.span)?;
+                        if matches!(ty, Type::Iterator(_)) {
+                            return Err(self
+                                .error(stmt.span, "Iterator[T] is only allowed as a return type"));
                         }
                         self.ensure_assignable(&ty, &global_ty, stmt.span)?;
-                        stmt.kind = StmtKind::Assign {
-                            target: AssignTarget::Name(name.clone()),
-                            value: value.clone(),
-                        };
-                        return Ok(());
+                        Some(ty)
+                    } else {
+                        None
+                    };
+                    let ty = self.check_expr(value, expected.as_ref().or(Some(&global_ty)))?;
+                    if matches!(ty, Type::Unknown) && !matches!(global_ty, Type::Unknown) {
+                        return Err(self.error(stmt.span, "Unable to infer type; add annotation"));
                     }
+                    self.ensure_assignable(&ty, &global_ty, stmt.span)?;
+                    stmt.kind = StmtKind::Assign {
+                        target: AssignTarget::Name(name.clone()),
+                        value: value.clone(),
+                    };
+                    return Ok(());
+                }
                 if let ExprKind::Lambda { params, .. } = &value.kind {
                     let placeholder = Type::Lambda {
                         params: vec![Type::Unknown; params.len()],
@@ -128,16 +123,16 @@ impl<'a> TypeChecker<'a> {
                             self.ensure_assignable(&ty, &existing, stmt.span)?;
                         } else {
                             if matches!(ty, Type::Unknown) {
-                                return Err(self
-                                    .error(stmt.span, "Unable to infer type; add annotation"));
+                                return Err(
+                                    self.error(stmt.span, "Unable to infer type; add annotation")
+                                );
                             }
                             promote_to_let = Some((name.clone(), value.clone()));
                             self.insert_var(name, ty, stmt.span)?;
                         }
-                        if !self.in_function()
-                            && matches!(value.kind, ExprKind::Lambda { .. }) {
-                                self.lambda_defs.insert(name.clone(), value.clone());
-                            }
+                        if !self.in_function() && matches!(value.kind, ExprKind::Lambda { .. }) {
+                            self.lambda_defs.insert(name.clone(), value.clone());
+                        }
                     }
                     AssignTarget::Attr { value: obj, attr } => {
                         let obj_ty = self.check_expr(obj, None)?;

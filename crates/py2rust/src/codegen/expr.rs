@@ -1154,27 +1154,50 @@ impl<'a> Codegen<'a> {
                 let idx = self.gen_expr(index)?;
                 Ok(format!("{}[{}]", base, idx))
             }
-            ExprKind::Slice { value, start, end } => {
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } => {
                 let base = self.gen_expr(value)?;
+                let start_arg = match start.as_deref() {
+                    Some(s) => format!("Some({})", self.gen_expr(s)?),
+                    None => "None".to_string(),
+                };
+                let end_arg = match end.as_deref() {
+                    Some(e) => format!("Some({})", self.gen_expr(e)?),
+                    None => "None".to_string(),
+                };
                 if matches!(value.ty.as_ref(), Some(Type::Str)) {
                     // Use character-based slicing for Python string semantics
+                    if let Some(step) = step.as_deref() {
+                        self.uses.py_str_slice_step = true;
+                        let step_arg = self.gen_expr(step)?;
+                        return Ok(format!(
+                            "py_str_slice_step(&{}, {}, {}, {})",
+                            base, start_arg, end_arg, step_arg
+                        ));
+                    }
                     self.uses.py_str_slice = true;
-                    let start_arg = match start {
-                        Some(s) => format!("Some({})", self.gen_expr(s)?),
-                        None => "None".to_string(),
-                    };
-                    let end_arg = match end {
-                        Some(e) => format!("Some({})", self.gen_expr(e)?),
-                        None => "None".to_string(),
-                    };
-                    Ok(format!(
+                    return Ok(format!(
                         "py_str_slice(&{}, {}, {})",
                         base, start_arg, end_arg
-                    ))
-                } else {
-                    let range = self.slice_range(start.as_deref(), end.as_deref())?;
-                    Ok(format!("{}[{}].to_vec()", base, range))
+                    ));
                 }
+                if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+                    if let Some(step) = step.as_deref() {
+                        self.uses.py_list_slice_step = true;
+                        let step_arg = self.gen_expr(step)?;
+                        return Ok(format!(
+                            "py_list_slice_step(&{}, {}, {}, {})",
+                            base, start_arg, end_arg, step_arg
+                        ));
+                    }
+                    let range = self.slice_range(start.as_deref(), end.as_deref())?;
+                    return Ok(format!("{}[{}].to_vec()", base, range));
+                }
+                Err(self.error(expr.span, "Slicing requires list or str"))
             }
             ExprKind::ListComp {
                 elt,

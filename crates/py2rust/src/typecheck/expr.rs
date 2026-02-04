@@ -466,10 +466,26 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::Slice {
                 value,
-                start: _,
-                end: _,
+                start,
+                end,
+                step,
             } => {
                 let value_ty = self.check_expr(value, None)?;
+                if let Some(s) = start.as_deref_mut() {
+                    let s_ty = self.check_expr(s, Some(&Type::Int))?;
+                    self.ensure_assignable(&s_ty, &Type::Int, expr.span)?;
+                }
+                if let Some(e) = end.as_deref_mut() {
+                    let e_ty = self.check_expr(e, Some(&Type::Int))?;
+                    self.ensure_assignable(&e_ty, &Type::Int, expr.span)?;
+                }
+                if let Some(step) = step.as_deref_mut() {
+                    let step_ty = self.check_expr(step, Some(&Type::Int))?;
+                    self.ensure_assignable(&step_ty, &Type::Int, expr.span)?;
+                    if let ExprKind::Literal(Literal::Int(0)) = &step.kind {
+                        return Err(self.error(expr.span, "Slice step cannot be zero"));
+                    }
+                }
                 match value_ty {
                     Type::List(inner) => Type::List(inner),
                     Type::Str => Type::Str,
