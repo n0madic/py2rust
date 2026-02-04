@@ -157,7 +157,7 @@ impl<'a> Codegen<'a> {
             return Ok(self.wrap_result(format!("py_dict_get(&{}, &{})", base, idx)));
         }
         // Handle list indexing with negative index support.
-        if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+        if matches!(value.ty.as_ref(), Some(Type::List(_)) | Some(Type::Bytes)) {
             let idx_expr = self.gen_expr(index)?;
             self.uses.py_list_get = true;
             return Ok(self.wrap_result(format!("py_list_get(&{}, {})", base, idx_expr)));
@@ -303,7 +303,7 @@ impl<'a> Codegen<'a> {
                 base, start_arg, end_arg
             ));
         }
-        if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+        if matches!(value.ty.as_ref(), Some(Type::List(_)) | Some(Type::Bytes)) {
             if let Some(step) = step {
                 self.uses.py_list_slice_step = true;
                 let step_arg = self.gen_expr(step)?;
@@ -343,24 +343,78 @@ impl<'a> Codegen<'a> {
         ifs: &[Expr],
     ) -> Result<String, CompileError> {
         let tmp = self.new_tmp();
+        let iter_expr = self.gen_expr(iter)?;
+        // Ensure the comprehension target is treated as a local binding while
+        // generating the element and filter expressions.
+        let saved_locals = self.local_vars.clone();
+        let mut scoped_locals = saved_locals.clone().unwrap_or_default();
+        let item_ty = iter
+            .ty
+            .as_ref()
+            .and_then(|ty| self.iter_item_type_hint(ty))
+            .unwrap_or(Type::Unknown);
+        scoped_locals.insert(target.to_string(), item_ty);
+        self.local_vars = Some(scoped_locals);
+        let elt_expr = self.gen_expr(elt)?;
+        let conds: Result<Vec<String>, CompileError> =
+            ifs.iter().map(|c| self.gen_expr(c)).collect();
+        self.local_vars = saved_locals;
         let mut out = String::new();
         out.push('{');
         out.push_str(&format!(" let mut {} = Vec::new();", tmp));
-        out.push_str(&format!(
-            " for {} in {}.into_iter() {{",
-            target,
-            self.gen_expr(iter)?
-        ));
+        out.push_str(&format!(" for {} in {}.into_iter() {{", target, iter_expr));
         if ifs.is_empty() {
-            out.push_str(&format!(" {}.push({});", tmp, self.gen_expr(elt)?));
+            out.push_str(&format!(" {}.push({});", tmp, elt_expr));
         } else {
-            let conds: Result<Vec<String>, CompileError> =
-                ifs.iter().map(|c| self.gen_expr(c)).collect();
             out.push_str(&format!(
                 " if {} {{ {}.push({}); }}",
                 conds?.join(" && "),
                 tmp,
-                self.gen_expr(elt)?
+                elt_expr
+            ));
+        }
+        out.push_str(" }");
+        out.push_str(&format!(" {} }}", tmp));
+        Ok(out)
+    }
+
+    /// Lower set comprehension expressions.
+    pub(super) fn gen_set_comp_expr(
+        &mut self,
+        elt: &Expr,
+        target: &str,
+        iter: &Expr,
+        ifs: &[Expr],
+    ) -> Result<String, CompileError> {
+        self.uses.hash_set = true;
+        let tmp = self.new_tmp();
+        let iter_expr = self.gen_expr(iter)?;
+        // Treat comprehension target as a local binding for element/filter generation.
+        let saved_locals = self.local_vars.clone();
+        let mut scoped_locals = saved_locals.clone().unwrap_or_default();
+        let item_ty = iter
+            .ty
+            .as_ref()
+            .and_then(|ty| self.iter_item_type_hint(ty))
+            .unwrap_or(Type::Unknown);
+        scoped_locals.insert(target.to_string(), item_ty);
+        self.local_vars = Some(scoped_locals);
+        let elt_expr = self.gen_expr(elt)?;
+        let conds: Result<Vec<String>, CompileError> =
+            ifs.iter().map(|c| self.gen_expr(c)).collect();
+        self.local_vars = saved_locals;
+        let mut out = String::new();
+        out.push('{');
+        out.push_str(&format!(" let mut {} = HashSet::new();", tmp));
+        out.push_str(&format!(" for {} in {}.into_iter() {{", target, iter_expr));
+        if ifs.is_empty() {
+            out.push_str(&format!(" {}.insert({});", tmp, elt_expr));
+        } else {
+            out.push_str(&format!(
+                " if {} {{ {}.insert({}); }}",
+                conds?.join(" && "),
+                tmp,
+                elt_expr
             ));
         }
         out.push_str(" }");

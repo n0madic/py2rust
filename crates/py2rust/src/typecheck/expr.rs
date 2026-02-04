@@ -36,6 +36,7 @@ impl<'a> TypeChecker<'a> {
                 Literal::Float(_) => Type::Float,
                 Literal::Bool(_) => Type::Bool,
                 Literal::Str(_) => Type::Str,
+                Literal::Bytes(_) => Type::Bytes,
                 Literal::None => Type::None,
             },
             // Variable reference: look up in scopes
@@ -544,6 +545,11 @@ impl<'a> TypeChecker<'a> {
                         self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
                         *inner
                     }
+                    Type::Bytes => {
+                        // Bytes indexing returns int
+                        self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
+                        Type::Int
+                    }
                     Type::Dict(key_ty, val_ty) => {
                         // Dict indexing requires matching key type
                         self.ensure_assignable(&index_ty, &key_ty, expr.span)?;
@@ -580,7 +586,9 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     _ => {
-                        return Err(self.error(expr.span, "Indexing requires list, dict, or tuple"))
+                        return Err(
+                            self.error(expr.span, "Indexing requires list, dict, tuple, or bytes")
+                        )
                     }
                 }
             }
@@ -609,6 +617,7 @@ impl<'a> TypeChecker<'a> {
                 match value_ty {
                     Type::List(inner) => Type::List(inner),
                     Type::Str => Type::Str,
+                    Type::Bytes => Type::Bytes,
                     Type::Tuple(items) => {
                         // Tuple slicing requires literal bounds so we can compute the resulting type.
                         let lit_int = |expr: &Expr| -> Option<i64> {
@@ -714,7 +723,11 @@ impl<'a> TypeChecker<'a> {
                         }
                         Type::Tuple(out)
                     }
-                    _ => return Err(self.error(expr.span, "Slicing requires list or str")),
+                    _ => {
+                        return Err(
+                            self.error(expr.span, "Slicing requires list, tuple, str, or bytes")
+                        )
+                    }
                 }
             }
             ExprKind::ListComp {
@@ -734,6 +747,24 @@ impl<'a> TypeChecker<'a> {
                 let elt_ty = self.check_expr(elt, None)?;
                 self.scopes.pop();
                 Type::List(Box::new(elt_ty))
+            }
+            ExprKind::SetComp {
+                elt,
+                target,
+                iter,
+                ifs,
+            } => {
+                let iter_ty = self.check_expr(iter, None)?;
+                let item_ty = self.iter_item_type(&iter_ty, expr.span)?;
+                self.scopes.push(HashMap::new());
+                self.insert_var(target, item_ty.clone(), expr.span)?;
+                for cond in ifs {
+                    let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
+                    self.ensure_assignable(&cond_ty, &Type::Bool, expr.span)?;
+                }
+                let elt_ty = self.check_expr(elt, None)?;
+                self.scopes.pop();
+                Type::Set(Box::new(elt_ty))
             }
             ExprKind::UnionCtor {
                 union,

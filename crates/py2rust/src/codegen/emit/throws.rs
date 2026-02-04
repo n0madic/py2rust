@@ -113,7 +113,8 @@ impl<'a> Codegen<'a> {
                 step.as_ref()
                     .is_some_and(|st| self.expr_can_throw(st) || self.step_value_can_throw(st))
             }
-            ExprKind::ListComp { elt, iter, ifs, .. } => {
+            ExprKind::ListComp { elt, iter, ifs, .. }
+            | ExprKind::SetComp { elt, iter, ifs, .. } => {
                 self.expr_can_throw(elt)
                     || self.expr_can_throw(iter)
                     || ifs.iter().any(|i| self.expr_can_throw(i))

@@ -318,6 +318,36 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.push_line("}");
         }
+        if self.uses.py_bytes_from_len {
+            // Match Python bytes(n): negative sizes raise ValueError.
+            self.push_line("fn py_bytes_from_len(len: i64) -> Result<Vec<i64>, PyError> {");
+            self.indent += 1;
+            self.push_line("if len < 0 {");
+            self.indent += 1;
+            self.push_line("return Err(PyError::ValueError(String::from(\"negative count\")));");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("Ok(vec![0i64; len as usize])");
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_bytes_from_str {
+            // Only UTF-8 encoding is supported for bytes(str, encoding).
+            self.push_line(
+                "fn py_bytes_from_str(s: &str, encoding: &str) -> Result<Vec<i64>, PyError> {",
+            );
+            self.indent += 1;
+            self.push_line("if encoding != \"utf-8\" {");
+            self.indent += 1;
+            self.push_line(
+                "return Err(PyError::ValueError(String::from(\"unsupported encoding\")));",
+            );
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("Ok(s.as_bytes().iter().map(|b| *b as i64).collect())");
+            self.indent -= 1;
+            self.push_line("}");
+        }
         if self.uses.py_chr {
             self.push_line("fn py_chr(value: i64) -> Result<String, PyError> {");
             self.indent += 1;

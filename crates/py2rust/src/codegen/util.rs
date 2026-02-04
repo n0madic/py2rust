@@ -40,6 +40,28 @@ impl<'a> Codegen<'a> {
         )
     }
 
+    /// Look up the most recent override expression for a global name.
+    pub(crate) fn global_override(&self, name: &str) -> Option<&str> {
+        self.global_overrides
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, expr)| expr.as_str())
+    }
+
+    /// Temporarily replace a global name with a provided expression while generating code.
+    pub(crate) fn with_global_override<T>(
+        &mut self,
+        name: &str,
+        replacement: String,
+        f: impl FnOnce(&mut Self) -> Result<T, CompileError>,
+    ) -> Result<T, CompileError> {
+        self.global_overrides.push((name.to_string(), replacement));
+        let result = f(self);
+        self.global_overrides.pop();
+        result
+    }
+
     pub(crate) fn new_tmp(&mut self) -> String {
         let name = format!("_tmp{}", self.tmp_counter);
         self.tmp_counter += 1;
@@ -159,7 +181,8 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                     visit_expr(st, counts);
                 }
             }
-            ExprKind::ListComp { elt, iter, ifs, .. } => {
+            ExprKind::ListComp { elt, iter, ifs, .. }
+            | ExprKind::SetComp { elt, iter, ifs, .. } => {
                 visit_expr(elt, counts);
                 visit_expr(iter, counts);
                 for cond in ifs {

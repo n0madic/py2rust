@@ -168,7 +168,8 @@ impl<'a> Codegen<'a> {
                             .as_deref()
                             .is_some_and(|st| expr_uses_outer(st, locals, globals, outers))
                 }
-                ExprKind::ListComp { elt, iter, ifs, .. } => {
+                ExprKind::ListComp { elt, iter, ifs, .. }
+                | ExprKind::SetComp { elt, iter, ifs, .. } => {
                     expr_uses_outer(elt, locals, globals, outers)
                         || expr_uses_outer(iter, locals, globals, outers)
                         || ifs

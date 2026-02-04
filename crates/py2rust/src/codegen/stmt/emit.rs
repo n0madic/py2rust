@@ -41,12 +41,12 @@ impl<'a> Codegen<'a> {
                 // Global assignment uses OnceLock + Mutex for initialization and mutation.
                 if self.is_global(name) {
                     let expected = self.ctx.globals.get(name).cloned();
-                    let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                    let expr = self.wrap_global_value(expr, value, expected.as_ref());
                     if allow_let
                         && self.current_function.is_none()
                         && !self.initialized_globals.contains(name)
                     {
+                        let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                        let expr = self.wrap_global_value(expr, value, expected.as_ref());
                         let tmp = self.new_tmp();
                         let gname = self.global_name(name);
                         self.push_line(&format!("let {} = {};", tmp, expr));
@@ -57,7 +57,24 @@ impl<'a> Codegen<'a> {
                         self.initialized_globals.insert(name.clone());
                         return Ok(());
                     }
-                    self.push_line(&format!("*{} = {};", self.global_lock_expr(name), expr));
+                    // Lock the global once to avoid deadlocks when the RHS reads the same global.
+                    let guard = self.new_tmp();
+                    let current = self.new_tmp();
+                    let expr = self.with_global_override(name, current.clone(), |this| {
+                        let expr = this.gen_expr_with_expected(value, expected.as_ref())?;
+                        Ok(this.wrap_global_value(expr, value, expected.as_ref()))
+                    })?;
+                    self.push_line("{");
+                    self.indent += 1;
+                    self.push_line(&format!(
+                        "let mut {} = {};",
+                        guard,
+                        self.global_lock_expr(name)
+                    ));
+                    self.push_line(&format!("let {} = {}.clone();", current, guard));
+                    self.push_line(&format!("*{} = {};", guard, expr));
+                    self.indent -= 1;
+                    self.push_line("}");
                     return Ok(());
                 }
 

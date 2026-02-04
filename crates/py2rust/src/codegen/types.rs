@@ -32,6 +32,8 @@ impl<'a> Codegen<'a> {
             Type::Float => "f64".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Str => "String".to_string(),
+            // Bytes are represented as a vector of ints (0-255) for Python semantics.
+            Type::Bytes => "Vec<i64>".to_string(),
             Type::None => "()".to_string(),
             Type::List(inner) => format!("Vec<{}>", self.rust_type(inner)),
             Type::Dict(k, v) => {
@@ -137,6 +139,7 @@ impl<'a> Codegen<'a> {
                 "Vec<PyRepr>".to_string()
             }
             Type::List(inner) => format!("Vec<{}>", self.rust_type_for_global(inner)),
+            Type::Bytes => "Vec<i64>".to_string(),
             Type::Set(inner) => {
                 self.uses.hash_set = true;
                 format!("HashSet<{}>", self.rust_type_for_global(inner))
@@ -185,6 +188,7 @@ impl<'a> Codegen<'a> {
                 "float" => Type::Float,
                 "bool" => Type::Bool,
                 "str" => Type::Str,
+                "bytes" => Type::Bytes,
                 _ => {
                     if self.ctx.unions.contains_key(name) {
                         Type::Union(name.clone())

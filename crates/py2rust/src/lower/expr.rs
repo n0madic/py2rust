@@ -41,6 +41,7 @@ impl<'a> Lowerer<'a> {
                 ast::Constant::Float(value) => ExprKind::Literal(Literal::Float(*value)),
                 ast::Constant::Bool(value) => ExprKind::Literal(Literal::Bool(*value)),
                 ast::Constant::Str(value) => ExprKind::Literal(Literal::Str(value.to_string())),
+                ast::Constant::Bytes(value) => ExprKind::Literal(Literal::Bytes(value.clone())),
                 ast::Constant::None => ExprKind::Literal(Literal::None),
                 // Reject unsupported literals (bytes, complex, etc.)
                 _ => return Err(self.error(expr.range(), "Unsupported literal")),
@@ -284,6 +285,40 @@ impl<'a> Lowerer<'a> {
                 }
                 ExprKind::ListComp {
                     elt: Box::new(self.lower_expr(&listcomp.elt)?),
+                    target,
+                    iter,
+                    ifs,
+                }
+            }
+            // Set comprehension: {x * 2 for x in items if x > 0}
+            // We only support single-loop comprehensions (no nested for)
+            ast::Expr::SetComp(setcomp) => {
+                if setcomp.generators.len() != 1 {
+                    return Err(self.error(
+                        expr.range(),
+                        "Only single-generator comprehensions are supported",
+                    ));
+                }
+                let gen = &setcomp.generators[0];
+                if gen.is_async {
+                    return Err(self.error(expr.range(), "Async comprehensions are not supported"));
+                }
+                let target = match &gen.target {
+                    ast::Expr::Name(name) => name.id.to_string(),
+                    _ => {
+                        return Err(self.error(
+                            gen.target.range(),
+                            "Only simple targets are supported in comprehensions",
+                        ))
+                    }
+                };
+                let iter = Box::new(self.lower_expr(&gen.iter)?);
+                let mut ifs = Vec::new();
+                for cond in &gen.ifs {
+                    ifs.push(self.lower_expr(cond)?);
+                }
+                ExprKind::SetComp {
+                    elt: Box::new(self.lower_expr(&setcomp.elt)?),
                     target,
                     iter,
                     ifs,

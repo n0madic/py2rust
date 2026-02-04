@@ -16,6 +16,14 @@ impl<'a> Codegen<'a> {
             Literal::Bool(v) => Ok(format!("{}", v)),
             // Use String::from for string literals (more consistent than .to_string()).
             Literal::Str(s) => Ok(format!("String::from({s:?})")),
+            // Bytes map to Vec<i64> for Python-style byte access (0-255 as ints).
+            Literal::Bytes(bytes) => {
+                if bytes.is_empty() {
+                    return Ok("Vec::<i64>::new()".to_string());
+                }
+                let parts: Vec<String> = bytes.iter().map(|b| format!("{}i64", b)).collect();
+                Ok(format!("vec![{}]", parts.join(", ")))
+            }
             // None maps to different Rust types depending on context.
             Literal::None => {
                 if let Some(Type::Option(_)) = expr.ty.as_ref() {
@@ -34,6 +42,9 @@ impl<'a> Codegen<'a> {
         }
         if self.is_global(name) {
             // Global reads go through OnceLock + Mutex with context-rich expects.
+            if let Some(override_expr) = self.global_override(name) {
+                return Ok(override_expr.to_string());
+            }
             return Ok(format!("{}.clone()", self.global_lock_expr(name)));
         }
         Ok(name.to_string())

@@ -177,6 +177,8 @@ impl<'a> Codegen<'a> {
             Type::Int | Type::Float | Type::Bool | Type::None => ty.clone(),
             // String -> &str.
             Type::Str => Type::Ref(Box::new(Type::Str)),
+            // Bytes -> &[i64] slice.
+            Type::Bytes => Type::Slice(Box::new(Type::Int)),
             // Vec<T> -> &[T].
             Type::List(inner) => Type::Slice(inner.clone()),
             // HashMap/HashSet -> borrowed reference.

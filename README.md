@@ -7,19 +7,21 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 
 ## Features (MVP)
 - Functions with required type annotations
-- Basic types: `int`, `float`, `bool`, `str`, `None`
-- Collections: `list[T]`, `dict[K, V]`, `tuple[...]`
+- Basic types: `int`, `float`, `bool`, `str`, `bytes`, `None`
+- Collections: `list[T]`, `dict[K, V]`, `tuple[...]`, `set[T]`
 - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`
 - Control flow: `if/elif/else`, `while`, `for`, `return`, `break`, `continue`
 - Tuple/list unpacking assignments (including nested)
 - Negative indexing and slicing for lists/tuples (including step)
 - List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`
+- Dict methods: `get`, `pop`, `update`, `clear`, `copy`
+- Set methods: `add`, `remove`, `discard`, `clear`, `copy`
 - Simple classes (plain data) with methods
 - Enum-like `Union` aliases via `A | B` type aliases
 - `match/case` on union variants
 - Custom iterators via `__iter__` and `next`
-- Simple list comprehensions
-- Builtins: `abs`, `all`, `any`, `bin`, `bool`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `str`, `sum`, `tuple`, `type`, `zip`
+- Simple list and set comprehensions
+- Builtins: `abs`, `all`, `any`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `str`, `sum`, `tuple`, `type`, `zip`
 
 ## Usage
 
@@ -50,7 +52,10 @@ Run tests:
 cargo test -p py2rust
 ```
 
-Runtime integration coverage lives in `crates/py2rust/tests/runtime/` (see `crates/py2rust/tests/runtime/builtins.rs` for builtin coverage).
+Runtime integration coverage lives in `crates/py2rust/tests/runtime/`:
+- `collections.rs` covers lists, tuples, dicts, sets, bytes.
+- `builtins.rs` covers builtin functions.
+and others.
 
 ## Runtime helpers
 The generated Rust injects tiny helper functions only when needed:

@@ -318,7 +318,8 @@ fn rename_main_calls_in_expr(expr: &mut hir::Expr, new_name: &str) {
                 rename_main_calls_in_expr(s, new_name);
             }
         }
-        hir::ExprKind::ListComp { elt, iter, ifs, .. } => {
+        hir::ExprKind::ListComp { elt, iter, ifs, .. }
+        | hir::ExprKind::SetComp { elt, iter, ifs, .. } => {
             rename_main_calls_in_expr(elt, new_name);
             rename_main_calls_in_expr(iter, new_name);
             for cond in ifs {

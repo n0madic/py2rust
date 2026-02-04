@@ -105,6 +105,66 @@ impl<'a> TypeChecker<'a> {
                     };
                     return Ok(Type::List(Box::new(item_ty)));
                 }
+                if name == "set" {
+                    if args.len() > 1 {
+                        return Err(self.error(span, "set() expects zero or one argument"));
+                    }
+                    if args.is_empty() {
+                        if let Some(Type::Set(inner)) = expected {
+                            return Ok(Type::Set(inner.clone()));
+                        }
+                        return Ok(Type::Set(Box::new(Type::Unknown)));
+                    }
+                    let iter_ty = self.check_expr(&mut args[0], None)?;
+                    let item_ty = self.iter_item_type(&iter_ty, span)?;
+                    return Ok(Type::Set(Box::new(item_ty)));
+                }
+                if name == "bytes" {
+                    if args.len() > 2 {
+                        return Err(self.error(span, "bytes() expects up to two arguments"));
+                    }
+                    if args.is_empty() {
+                        return Ok(Type::Bytes);
+                    }
+                    if args.len() == 2 {
+                        let first_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                        let enc_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
+                        self.ensure_assignable(&first_ty, &Type::Str, span)?;
+                        self.ensure_assignable(&enc_ty, &Type::Str, span)?;
+                        return Ok(Type::Bytes);
+                    }
+                    let arg_ty = self.check_expr(&mut args[0], None)?;
+                    match arg_ty {
+                        Type::Bytes => Ok(Type::Bytes),
+                        Type::Int => Ok(Type::Bytes),
+                        Type::List(inner) | Type::Set(inner) | Type::Iterator(inner) => {
+                            if !matches!(inner.as_ref(), Type::Unknown) {
+                                self.ensure_assignable(inner.as_ref(), &Type::Int, span)?;
+                            }
+                            Ok(Type::Bytes)
+                        }
+                        Type::Tuple(items) => {
+                            if items.is_empty() {
+                                return Ok(Type::Bytes);
+                            }
+                            if !items.iter().all(|t| t == &items[0]) {
+                                return Err(
+                                    self.error(span, "bytes() tuple argument must be homogeneous")
+                                );
+                            }
+                            if !matches!(items[0], Type::Unknown) {
+                                self.ensure_assignable(&items[0], &Type::Int, span)?;
+                            }
+                            Ok(Type::Bytes)
+                        }
+                        Type::Str => {
+                            Err(self.error(span, "bytes() expects encoding when called with str"))
+                        }
+                        Type::Unknown => Ok(Type::Bytes),
+                        _ => Err(self.error(span, "bytes() expects int or iterable of ints")),
+                    }?;
+                    return Ok(Type::Bytes);
+                }
                 if name == "dict" {
                     if args.len() > 1 {
                         return Err(self.error(span, "dict() expects at most one argument"));
@@ -682,6 +742,72 @@ impl<'a> TypeChecker<'a> {
                         return Ok(Type::None);
                     }
                 }
+                if let Type::Dict(key_ty, val_ty) = &obj_ty {
+                    if attr == "get" {
+                        if args.is_empty() || args.len() > 2 {
+                            return Err(self.error(span, "dict.get() expects one or two arguments"));
+                        }
+                        let arg_key = self.check_expr(&mut args[0], Some(key_ty))?;
+                        self.ensure_assignable(&arg_key, key_ty, span)?;
+                        if args.len() == 2 {
+                            let default_ty = self.check_expr(&mut args[1], Some(val_ty))?;
+                            if !matches!(default_ty, Type::Unknown)
+                                && !matches!(val_ty.as_ref(), Type::Unknown)
+                            {
+                                self.ensure_assignable(&default_ty, val_ty, span)?;
+                            }
+                        }
+                        return Ok(*val_ty.clone());
+                    }
+                    if attr == "clear" {
+                        if !args.is_empty() {
+                            return Err(self.error(span, "dict.clear() expects no arguments"));
+                        }
+                        return Ok(Type::None);
+                    }
+                    if attr == "copy" {
+                        if !args.is_empty() {
+                            return Err(self.error(span, "dict.copy() expects no arguments"));
+                        }
+                        return Ok(Type::Dict(key_ty.clone(), val_ty.clone()));
+                    }
+                    if attr == "pop" {
+                        if args.is_empty() || args.len() > 2 {
+                            return Err(self.error(span, "dict.pop() expects one or two arguments"));
+                        }
+                        let arg_key = self.check_expr(&mut args[0], Some(key_ty))?;
+                        self.ensure_assignable(&arg_key, key_ty, span)?;
+                        if args.len() == 2 {
+                            let default_ty = self.check_expr(&mut args[1], Some(val_ty))?;
+                            if !matches!(default_ty, Type::Unknown)
+                                && !matches!(val_ty.as_ref(), Type::Unknown)
+                            {
+                                self.ensure_assignable(&default_ty, val_ty, span)?;
+                            }
+                        }
+                        return Ok(*val_ty.clone());
+                    }
+                    if attr == "update" {
+                        if args.len() != 1 {
+                            return Err(self.error(span, "dict.update() expects one argument"));
+                        }
+                        let arg_ty = self.check_expr(&mut args[0], None)?;
+                        if let Type::Dict(k2, v2) = arg_ty {
+                            if !matches!(key_ty.as_ref(), Type::Unknown)
+                                && !matches!(k2.as_ref(), Type::Unknown)
+                            {
+                                self.ensure_assignable(&k2, key_ty, span)?;
+                            }
+                            if !matches!(val_ty.as_ref(), Type::Unknown)
+                                && !matches!(v2.as_ref(), Type::Unknown)
+                            {
+                                self.ensure_assignable(&v2, val_ty, span)?;
+                            }
+                            return Ok(Type::None);
+                        }
+                        return Err(self.error(span, "dict.update() expects a dict argument"));
+                    }
+                }
                 if let Type::Set(inner) = &obj_ty {
                     if attr == "add" {
                         if args.len() != 1 {
@@ -713,6 +839,30 @@ impl<'a> TypeChecker<'a> {
                             self.ensure_assignable(&arg_ty, inner, span)?;
                         }
                         return Ok(Type::None);
+                    }
+                    if attr == "discard" {
+                        if args.len() != 1 {
+                            return Err(self.error(span, "set.discard() expects one argument"));
+                        }
+                        let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
+                        if !matches!(arg_ty, Type::Unknown)
+                            && !matches!(inner.as_ref(), Type::Unknown)
+                        {
+                            self.ensure_assignable(&arg_ty, inner, span)?;
+                        }
+                        return Ok(Type::None);
+                    }
+                    if attr == "clear" {
+                        if !args.is_empty() {
+                            return Err(self.error(span, "set.clear() expects no arguments"));
+                        }
+                        return Ok(Type::None);
+                    }
+                    if attr == "copy" {
+                        if !args.is_empty() {
+                            return Err(self.error(span, "set.copy() expects no arguments"));
+                        }
+                        return Ok(Type::Set(Box::new((*inner.as_ref()).clone())));
                     }
                     if attr == "extend" {
                         if args.len() != 1 {

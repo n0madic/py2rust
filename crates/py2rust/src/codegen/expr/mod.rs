@@ -58,6 +58,12 @@ impl<'a> Codegen<'a> {
                 iter,
                 ifs,
             } => self.gen_list_comp_expr(elt, target, iter, ifs),
+            ExprKind::SetComp {
+                elt,
+                target,
+                iter,
+                ifs,
+            } => self.gen_set_comp_expr(elt, target, iter, ifs),
             ExprKind::Lambda { params, body } => self.gen_lambda_expr(expr, params, body),
             ExprKind::IfExpr { test, body, orelse } => self.gen_if_expr(test, body, orelse),
             ExprKind::Block { stmts } => self.gen_block_expr(stmts),

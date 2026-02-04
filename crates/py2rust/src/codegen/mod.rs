@@ -53,6 +53,8 @@ pub(crate) struct Uses {
     pub(crate) py_list_slice_step: bool,
     pub(crate) py_iter: bool,
     pub(crate) py_repr: bool,
+    pub(crate) py_bytes_from_len: bool,
+    pub(crate) py_bytes_from_str: bool,
 }
 
 /// The code generator transforms typed HIR into Rust source code.
@@ -112,6 +114,8 @@ pub struct Codegen<'a> {
     pub(crate) top_level_can_throw: bool,
     /// Track which globals have been initialized in `main`.
     pub(crate) initialized_globals: HashSet<String>,
+    /// Stack of temporary global name overrides for expression generation.
+    pub(crate) global_overrides: Vec<(String, String)>,
 }
 
 impl<'a> Codegen<'a> {
@@ -132,6 +136,7 @@ impl<'a> Codegen<'a> {
             local_vars: None,
             top_level_can_throw: false,
             initialized_globals: HashSet::new(),
+            global_overrides: Vec::new(),
         }
     }
 

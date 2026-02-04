@@ -171,6 +171,26 @@ impl<'a> Codegen<'a> {
             let iter_src = self.gen_iter_source(&args[0])?;
             return Ok(Some(format!("({}).collect::<Vec<_>>()", iter_src)));
         }
+        if name == "set" {
+            if args.len() > 1 {
+                return Err(self.error(expr.span, "set() expects zero or one argument"));
+            }
+            self.uses.hash_set = true;
+            if args.is_empty() {
+                return Ok(Some("HashSet::new()".to_string()));
+            }
+            let arg_expr = self.gen_expr(&args[0])?;
+            if matches!(args[0].ty.as_ref(), Some(Type::Set(_))) {
+                if let ExprKind::Name(name) = &args[0].kind {
+                    if self.is_borrowed_param(name) {
+                        return Ok(Some(format!("(*{}).clone()", arg_expr)));
+                    }
+                }
+                return Ok(Some(format!("{}.clone()", arg_expr)));
+            }
+            let iter_src = self.gen_iter_source(&args[0])?;
+            return Ok(Some(format!("({}).collect::<HashSet<_>>()", iter_src)));
+        }
         if name == "dict" {
             if args.len() > 1 {
                 return Err(self.error(expr.span, "dict() expects at most one argument"));
@@ -190,6 +210,56 @@ impl<'a> Codegen<'a> {
             }
             let iter_src = self.gen_iter_source(&args[0])?;
             return Ok(Some(format!("({}).collect::<HashMap<_, _>>()", iter_src)));
+        }
+        if name == "bytes" {
+            if args.len() > 2 {
+                return Err(self.error(expr.span, "bytes() expects up to two arguments"));
+            }
+            if args.is_empty() {
+                return Ok(Some("Vec::<i64>::new()".to_string()));
+            }
+            if args.len() == 2 {
+                self.uses.py_bytes_from_str = true;
+                let s_expr = self.gen_expr(&args[0])?;
+                let enc_expr = self.gen_expr(&args[1])?;
+                return Ok(Some(self.wrap_result(format!(
+                    "py_bytes_from_str(&{}, &{})",
+                    s_expr, enc_expr
+                ))));
+            }
+            let arg_expr = self.gen_expr(&args[0])?;
+            match args[0].ty.as_ref() {
+                Some(Type::Bytes) => {
+                    if let ExprKind::Name(name) = &args[0].kind {
+                        if self.is_borrowed_param(name) {
+                            return Ok(Some(format!("(*{}).clone()", arg_expr)));
+                        }
+                    }
+                    return Ok(Some(format!("{}.clone()", arg_expr)));
+                }
+                Some(Type::Int) => {
+                    self.uses.py_bytes_from_len = true;
+                    return Ok(Some(
+                        self.wrap_result(format!("py_bytes_from_len({})", arg_expr)),
+                    ));
+                }
+                Some(Type::List(_))
+                | Some(Type::Set(_))
+                | Some(Type::Iterator(_))
+                | Some(Type::Tuple(_)) => {
+                    let iter_src = self.gen_iter_source(&args[0])?;
+                    return Ok(Some(format!(
+                        "({}).map(|b| b as i64).collect::<Vec<i64>>()",
+                        iter_src
+                    )));
+                }
+                Some(Type::Str) => {
+                    return Err(self.error(expr.span, "bytes() expects encoding for str"));
+                }
+                _ => {
+                    return Err(self.error(expr.span, "bytes() expects int or iterable of ints"));
+                }
+            }
         }
         if name == "enumerate" {
             if args.len() != 1 {
@@ -615,6 +685,7 @@ impl<'a> Codegen<'a> {
                     "float" => matches!(args[0].ty.as_ref(), Some(Type::Float)),
                     "bool" => matches!(args[0].ty.as_ref(), Some(Type::Bool)),
                     "str" => matches!(args[0].ty.as_ref(), Some(Type::Str)),
+                    "bytes" => matches!(args[0].ty.as_ref(), Some(Type::Bytes)),
                     _ => false,
                 };
                 return Ok(Some(matches.to_string()));
@@ -1006,6 +1077,204 @@ impl<'a> Codegen<'a> {
                 return Ok(format!("py_list_count(&{}, &{})", target_expr, needle_expr));
             }
         }
+        if attr == "get" {
+            if let Some(Type::Dict(_, _)) = value.ty.as_ref() {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(self.error(value.span, "dict.get() expects one or two arguments"));
+                }
+                self.uses.hash_map = true;
+                let key_expr = self.gen_expr(&args[0])?;
+                let default_expr = if args.len() == 2 {
+                    Some(self.gen_expr(&args[1])?)
+                } else {
+                    None
+                };
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        if let Some(default_expr) = default_expr {
+                            return Ok(format!(
+                                "{{ let {guard} = {lock}; {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
+                                guard = guard,
+                                lock = self.global_lock_expr(name),
+                                key = key_expr,
+                                default = default_expr
+                            ));
+                        }
+                        self.uses.py_dict_get = true;
+                        return Ok(self.wrap_result(format!(
+                            "{{ let {guard} = {lock}; py_dict_get(&{guard}, &{key}) }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name),
+                            key = key_expr
+                        )));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                if let Some(default_expr) = default_expr {
+                    if !matches!(value.kind, ExprKind::Name(_)) {
+                        let tmp = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let {tmp} = {target}; {tmp}.get(&{key}).cloned().unwrap_or({default}) }}",
+                            tmp = tmp,
+                            target = target_expr,
+                            key = key_expr,
+                            default = default_expr
+                        ));
+                    }
+                    return Ok(format!(
+                        "{target}.get(&{key}).cloned().unwrap_or({default})",
+                        target = target_expr,
+                        key = key_expr,
+                        default = default_expr
+                    ));
+                }
+                self.uses.py_dict_get = true;
+                return Ok(
+                    self.wrap_result(format!("py_dict_get(&{}, &{})", target_expr, key_expr))
+                );
+            }
+        }
+        if attr == "pop" {
+            if let Some(Type::Dict(_, _)) = value.ty.as_ref() {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(self.error(value.span, "dict.pop() expects one or two arguments"));
+                }
+                self.uses.hash_map = true;
+                let key_expr = self.gen_expr(&args[0])?;
+                let default_expr = if args.len() == 2 {
+                    Some(self.gen_expr(&args[1])?)
+                } else {
+                    None
+                };
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        if let Some(default_expr) = default_expr {
+                            return Ok(format!(
+                                "{{ let mut {guard} = {lock}; {guard}.remove(&{key}).unwrap_or({default}) }}",
+                                guard = guard,
+                                lock = self.global_lock_expr(name),
+                                key = key_expr,
+                                default = default_expr
+                            ));
+                        }
+                        let pop_expr = format!(
+                            "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(String::from(\"KeyError\")))",
+                            guard = guard,
+                            key = key_expr
+                        );
+                        return Ok(self.wrap_result(format!(
+                            "{{ let mut {guard} = {lock}; {pop} }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name),
+                            pop = pop_expr
+                        )));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                if let Some(default_expr) = default_expr {
+                    if !matches!(value.kind, ExprKind::Name(_)) {
+                        let tmp = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let mut {tmp} = {target}; {tmp}.remove(&{key}).unwrap_or({default}) }}",
+                            tmp = tmp,
+                            target = target_expr,
+                            key = key_expr,
+                            default = default_expr
+                        ));
+                    }
+                    return Ok(format!(
+                        "{target}.remove(&{key}).unwrap_or({default})",
+                        target = target_expr,
+                        key = key_expr,
+                        default = default_expr
+                    ));
+                }
+                let pop_expr = format!(
+                    "{}.remove(&{}).ok_or_else(|| PyError::KeyError(String::from(\"KeyError\")))",
+                    target_expr, key_expr
+                );
+                return Ok(self.wrap_result(pop_expr));
+            }
+        }
+        if attr == "clear" {
+            if let Some(Type::Dict(_, _)) = value.ty.as_ref() {
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "dict.clear() expects no arguments"));
+                }
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let mut {guard} = {lock}; {guard}.clear(); }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name)
+                        ));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    return Ok(format!(
+                        "{{ let mut {tmp} = {target}; {tmp}.clear(); }}",
+                        tmp = tmp,
+                        target = target_expr
+                    ));
+                }
+                return Ok(format!("{}.clear()", target_expr));
+            }
+        }
+        if attr == "copy" {
+            if let Some(Type::Dict(_, _)) = value.ty.as_ref() {
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "dict.copy() expects no arguments"));
+                }
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        return Ok(format!("{}.clone()", self.global_lock_expr(name)));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                return Ok(format!("{}.clone()", target_expr));
+            }
+        }
+        if attr == "update" {
+            if let Some(Type::Dict(_, _)) = value.ty.as_ref() {
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "dict.update() expects one argument"));
+                }
+                self.uses.hash_map = true;
+                let arg_expr = self.gen_expr(&args[0])?;
+                let extend_expr = format!(
+                    "{target}.extend({arg}.iter().map(|(k, v)| (k.clone(), v.clone())))",
+                    target = "{target}",
+                    arg = arg_expr
+                );
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let mut {guard} = {lock}; {extend}; }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name),
+                            extend = extend_expr.replace("{target}", &guard)
+                        ));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    return Ok(format!(
+                        "{{ let mut {tmp} = {target}; {extend}; }}",
+                        tmp = tmp,
+                        target = target_expr,
+                        extend = extend_expr.replace("{target}", &tmp)
+                    ));
+                }
+                return Ok(extend_expr.replace("{target}", &target_expr));
+            }
+        }
         if attr == "add" {
             if let Some(Type::Set(_)) = value.ty.as_ref() {
                 self.uses.hash_set = true;
@@ -1034,6 +1303,68 @@ impl<'a> Codegen<'a> {
                     self.gen_expr(value)?
                 };
                 return Ok(format!("{}.remove(&{})", target, self.gen_args(args)?));
+            }
+        }
+        if attr == "discard" {
+            if let Some(Type::Set(_)) = value.ty.as_ref() {
+                self.uses.hash_set = true;
+                let target = if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        self.global_lock_expr(name)
+                    } else {
+                        self.gen_expr(value)?
+                    }
+                } else {
+                    self.gen_expr(value)?
+                };
+                return Ok(format!(
+                    "{{ {}.remove(&{}); }}",
+                    target,
+                    self.gen_args(args)?
+                ));
+            }
+        }
+        if attr == "clear" {
+            if let Some(Type::Set(_)) = value.ty.as_ref() {
+                self.uses.hash_set = true;
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "set.clear() expects no arguments"));
+                }
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let mut {guard} = {lock}; {guard}.clear(); }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name)
+                        ));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    return Ok(format!(
+                        "{{ let mut {tmp} = {target}; {tmp}.clear(); }}",
+                        tmp = tmp,
+                        target = target_expr
+                    ));
+                }
+                return Ok(format!("{}.clear()", target_expr));
+            }
+        }
+        if attr == "copy" {
+            if let Some(Type::Set(_)) = value.ty.as_ref() {
+                self.uses.hash_set = true;
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "set.copy() expects no arguments"));
+                }
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        return Ok(format!("{}.clone()", self.global_lock_expr(name)));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                return Ok(format!("{}.clone()", target_expr));
             }
         }
         if attr == "format" {

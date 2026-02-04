@@ -74,6 +74,7 @@ impl<'a> Codegen<'a> {
             | Type::Float
             | Type::Bool
             | Type::Str
+            | Type::Bytes
             | Type::None
             | Type::Unknown => {}
         }
@@ -263,7 +264,8 @@ impl<'a> Codegen<'a> {
                         visit_expr(st, ok);
                     }
                 }
-                ExprKind::ListComp { elt, iter, ifs, .. } => {
+                ExprKind::ListComp { elt, iter, ifs, .. }
+                | ExprKind::SetComp { elt, iter, ifs, .. } => {
                     visit_expr(elt, ok);
                     visit_expr(iter, ok);
                     for cond in ifs {
@@ -485,6 +487,14 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::ListComp { elt, iter, ifs, .. } => {
+                self.scan_expr(elt)?;
+                self.scan_expr(iter)?;
+                for cond in ifs {
+                    self.scan_expr(cond)?;
+                }
+            }
+            ExprKind::SetComp { elt, iter, ifs, .. } => {
+                self.uses.hash_set = true;
                 self.scan_expr(elt)?;
                 self.scan_expr(iter)?;
                 for cond in ifs {

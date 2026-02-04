@@ -52,6 +52,7 @@ impl<'a> TypeChecker<'a> {
                 "float" => Type::Float,
                 "bool" => Type::Bool,
                 "str" => Type::Str,
+                "bytes" => Type::Bytes,
                 _ => {
                     if self.ctx.unions.contains_key(name) {
                         Type::Union(name.clone())

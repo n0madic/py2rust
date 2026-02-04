@@ -400,8 +400,9 @@ impl ThrowAnalyzer {
                 })
             }
 
-            // List comprehension - check element expr, iterator, and filters
-            ExprKind::ListComp { elt, iter, ifs, .. } => {
+            // List/set comprehension - check element expr, iterator, and filters
+            ExprKind::ListComp { elt, iter, ifs, .. }
+            | ExprKind::SetComp { elt, iter, ifs, .. } => {
                 self.expr_calls_throwing_function(elt)
                     || self.expr_calls_throwing_function(iter)
                     || ifs.iter().any(|i| self.expr_calls_throwing_function(i))

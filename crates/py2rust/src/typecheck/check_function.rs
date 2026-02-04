@@ -194,7 +194,8 @@ impl<'a> TypeChecker<'a> {
                             collect_names(st, out);
                         }
                     }
-                    ExprKind::ListComp { elt, iter, ifs, .. } => {
+                    ExprKind::ListComp { elt, iter, ifs, .. }
+                    | ExprKind::SetComp { elt, iter, ifs, .. } => {
                         collect_names(elt, out);
                         collect_names(iter, out);
                         for cond in ifs {
@@ -285,7 +286,8 @@ impl<'a> TypeChecker<'a> {
                             visit_expr(st, out);
                         }
                     }
-                    ExprKind::ListComp { elt, iter, ifs, .. } => {
+                    ExprKind::ListComp { elt, iter, ifs, .. }
+                    | ExprKind::SetComp { elt, iter, ifs, .. } => {
                         visit_expr(elt, out);
                         visit_expr(iter, out);
                         for cond in ifs {

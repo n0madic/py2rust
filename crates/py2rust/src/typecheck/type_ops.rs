@@ -38,6 +38,7 @@ impl<'a> TypeChecker<'a> {
             }
             Type::Set(inner) => Ok(*inner.clone()),
             Type::Str => Ok(Type::Str),
+            Type::Bytes => Ok(Type::Int),
             Type::Iterator(inner) => Ok(*inner.clone()),
             Type::Unknown => Ok(Type::Unknown),
             Type::Custom(class_name) => {
@@ -135,6 +136,7 @@ impl<'a> TypeChecker<'a> {
             Type::Float => TypeRef::Name("float".to_string()),
             Type::Bool => TypeRef::Name("bool".to_string()),
             Type::Str => TypeRef::Name("str".to_string()),
+            Type::Bytes => TypeRef::Name("bytes".to_string()),
             Type::None => TypeRef::None,
             Type::List(inner) => TypeRef::List(Box::new(Self::type_to_ref(inner))),
             Type::Dict(k, v) => TypeRef::Dict(

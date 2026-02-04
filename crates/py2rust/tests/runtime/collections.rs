@@ -13,6 +13,8 @@ def test_lists() -> None:
     nums: list[int] = [1, 2, 3, 4, 5]
     assert len(nums) == 5
     assert nums[0] == 1
+    # Extra index coverage from list_tuple script.
+    assert nums[2] == 3
     assert nums[4] == 5
     assert nums[-1] == 5
     assert nums[-2] == 4
@@ -35,10 +37,20 @@ def test_lists() -> None:
     assert len(nums) == 6
     assert nums[5] == 6
 
+    # Append sequence coverage (mirrors list_tuple script).
+    items: list[int] = [1, 2]
+    items.append(3)
+    assert len(items) == 3
+    assert items[2] == 3
+    items.append(4)
+    assert len(items) == 4
+    assert items[3] == 4
+
     # Extend
     extend_list: list[int] = [1, 2, 3]
     extend_list.extend([4, 5, 6])
     assert len(extend_list) == 6
+    assert extend_list == [1, 2, 3, 4, 5, 6]
     assert extend_list[3] == 4
     assert extend_list[5] == 6
 
@@ -53,6 +65,9 @@ def test_lists() -> None:
     assert values[0] == 20
 
     # Empty list
+    # Match list_tuple coverage for empty list length.
+    empty_list: list[int] = []
+    assert len(empty_list) == 0
     empty: list[int] = []
     assert len(empty) == 0
     empty.append(42)
@@ -133,6 +148,7 @@ def test_lists() -> None:
     # Reverse
     nums2: list[int] = [1, 2, 3, 4, 5]
     nums2.reverse()
+    assert len(nums2) == 5
     assert nums2[0] == 5
     assert nums2[1] == 4
     assert nums2[2] == 3

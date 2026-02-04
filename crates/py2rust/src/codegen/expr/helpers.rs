@@ -142,6 +142,13 @@ impl<'a> Codegen<'a> {
                     Ok(format!("{}.iter().cloned()", rendered))
                 }
             }
+            Some(Type::Bytes) => {
+                if use_owned {
+                    Ok(format!("{}.into_iter()", rendered))
+                } else {
+                    Ok(format!("{}.iter().copied()", rendered))
+                }
+            }
             Some(Type::Str) => {
                 if use_owned {
                     Ok(format!(
@@ -216,6 +223,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             Type::Str => Some(Type::Str),
+            Type::Bytes => Some(Type::Int),
             Type::Iterator(inner) => Some(*inner.clone()),
             Type::Ref(inner) | Type::MutRef(inner) | Type::Slice(inner) => {
                 self.iter_item_type_hint(inner)
@@ -231,7 +239,9 @@ impl<'a> Codegen<'a> {
             Type::Int => format!("{} != 0", expr_str),
             Type::Float => format!("{} != 0.0", expr_str),
             Type::Str => format!("!{}.is_empty()", expr_str),
-            Type::List(_) | Type::Set(_) | Type::Dict(_, _) => format!("!{}.is_empty()", expr_str),
+            Type::Bytes | Type::List(_) | Type::Set(_) | Type::Dict(_, _) => {
+                format!("!{}.is_empty()", expr_str)
+            }
             Type::Tuple(items) => {
                 if items.is_empty() {
                     "false".to_string()
@@ -291,6 +301,7 @@ impl<'a> Codegen<'a> {
             Type::Float => "float",
             Type::Bool => "bool",
             Type::Str => "str",
+            Type::Bytes => "bytes",
             Type::None => "NoneType",
             Type::List(_) => "list",
             Type::Tuple(_) => "tuple",

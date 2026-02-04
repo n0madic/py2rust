@@ -307,6 +307,14 @@ pub enum ExprKind {
         iter: Box<Expr>,
         ifs: Vec<Expr>,
     },
+    /// Set comprehension: {elt for target in iter if conditions}
+    /// We only support single-loop comprehensions; nested loops are not supported.
+    SetComp {
+        elt: Box<Expr>,
+        target: String,
+        iter: Box<Expr>,
+        ifs: Vec<Expr>,
+    },
     /// Constructor call for a union variant.
     /// This is lowered from a Call expression when the function is determined
     /// to be a union variant name during type checking.
@@ -349,6 +357,7 @@ pub enum Literal {
     Float(f64),
     Bool(bool),
     Str(String),
+    Bytes(Vec<u8>),
     None,
 }
 
