@@ -16,6 +16,7 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - `crates/py2rust/src/typeck.rs` type checking and inference.
 - `crates/py2rust/src/codegen.rs` Rust codegen and helper injection.
 - `crates/py2rust/src/types.rs` type system.
+- `docs/` project documentation (keep docs here).
 - `README.md` user docs.
 
 ## Key Behaviors
@@ -81,6 +82,7 @@ After completing any code changes:
 2. If any tests fail, fix the issues before considering the work complete
 3. Never leave broken tests - all tests must pass before finishing
 4. If you add new functionality, add corresponding test coverage
+5. Update all relevant documentation and keep it in `docs/`
 
 ## Common Pitfalls
 - If you modify HIR, update typeck and codegen in sync.

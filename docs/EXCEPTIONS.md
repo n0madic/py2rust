@@ -23,9 +23,10 @@ This document describes the exception handling implementation for py2rust, which
 - Converts Python `try/except/else/finally` to HIR
 - Converts Python `raise` statements to HIR
 - Handles exception handler binding (`except ValueError as e:`)
+- Supports `except Exception` as a catch-all
 
 ✅ **Type Checking**
-- Validates exception types (built-in and custom)
+- Validates exception types (built-in)
 - Type checks try/except/else/finally blocks
 - Validates raise statements
 - Prevents re-raise outside except handlers
@@ -65,6 +66,15 @@ def example():
         raise ValueError("error message")
     except ValueError as e:
         print("Caught:", e)
+```
+
+### Re-raise
+```python
+def example():
+    try:
+        risky()
+    except Exception:
+        raise
 ```
 
 ### Multiple Exception Handlers
@@ -112,23 +122,18 @@ def caller():
 - `ZeroDivisionError`
 - `NameError`
 - `AssertionError`
+- `StopIteration`
+- `NotImplementedError`
+- `IOError`
+- `OverflowError`
+- `Exception` (catch-all)
 
 ## Known Limitations
 
 ### Variable Scoping
-Variables defined in try blocks may not be accessible in else blocks due to Rust closure scoping:
+Variables declared in a `try` block but used in `else` are wrapped with `Option<T>` so they can cross the Rust closure boundary. This makes the variable available in the `else` block, but it will be `None` unless the `try` block assigns it on all paths.
 
-```python
-# This pattern has scoping issues in generated Rust:
-try:
-    y = compute()
-except:
-    y = default
-else:
-    print(y)  # y is out of scope in generated code
-```
-
-**Workaround**: Define variables before the try block or use them within the try/except handlers.
+**Workaround**: Initialize the variable before the `try` block if you need a non-optional value in `else`.
 
 ### Exception Type Analysis
 The throw analyzer determines if functions throw based on:
