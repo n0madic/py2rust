@@ -164,24 +164,36 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
     }
 
     fn visit_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
+        fn record_target(target: &AssignTarget, counts: &mut HashMap<String, usize>) {
+            match target {
+                AssignTarget::Name(name) => {
+                    *counts.entry(name.clone()).or_insert(0) += 1;
+                }
+                AssignTarget::Attr { value, .. } => {
+                    if let ExprKind::Name(name) = &value.kind {
+                        *counts.entry(name.clone()).or_insert(0) += 1;
+                    }
+                }
+                AssignTarget::Index { value, .. } => {
+                    if let ExprKind::Name(name) = &value.kind {
+                        *counts.entry(name.clone()).or_insert(0) += 1;
+                    }
+                }
+                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                    // Unpacking assigns to each leaf target.
+                    for item in items {
+                        record_target(item, counts);
+                    }
+                }
+            }
+        }
+
         match &stmt.kind {
             StmtKind::Let { name, .. } => {
                 *counts.entry(name.clone()).or_insert(0) += 1;
             }
             StmtKind::Assign { target, .. } => {
-                if let AssignTarget::Name(name) = target {
-                    *counts.entry(name.clone()).or_insert(0) += 1;
-                }
-                if let AssignTarget::Attr { value, .. } = target {
-                    if let ExprKind::Name(name) = &value.kind {
-                        *counts.entry(name.clone()).or_insert(0) += 1;
-                    }
-                }
-                if let AssignTarget::Index { value, .. } = target {
-                    if let ExprKind::Name(name) = &value.kind {
-                        *counts.entry(name.clone()).or_insert(0) += 1;
-                    }
-                }
+                record_target(target, counts);
             }
             StmtKind::If { test, body, orelse } => {
                 visit_expr(test, counts);

@@ -11,6 +11,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Collections: `list[T]`, `dict[K, V]`, `tuple[...]`
 - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`
 - Control flow: `if/elif/else`, `while`, `for`, `return`, `break`, `continue`
+- Tuple/list unpacking assignments (including nested)
 - Simple classes (plain data) with methods
 - Enum-like `Union` aliases via `A | B` type aliases
 - `match/case` on union variants

@@ -106,6 +106,8 @@ pub struct Codegen<'a> {
     pub(crate) local_vars: Option<HashMap<String, Type>>,
     /// Whether top-level main has exception handling
     pub(crate) top_level_can_throw: bool,
+    /// Track which globals have been initialized in `main`.
+    pub(crate) initialized_globals: HashSet<String>,
 }
 
 impl<'a> Codegen<'a> {
@@ -125,6 +127,7 @@ impl<'a> Codegen<'a> {
             try_block_return_type: None,
             local_vars: None,
             top_level_can_throw: false,
+            initialized_globals: HashSet::new(),
         }
     }
 

@@ -118,90 +118,105 @@ impl<'a> TypeChecker<'a> {
             }
             StmtKind::Assign { target, value } => {
                 let ty = self.check_expr(value, None)?;
-                let mut promote_to_let: Option<(String, Expr)> = None;
-                match target {
-                    AssignTarget::Name(name) => {
-                        if name == "__name__" {
-                            return Err(
-                                self.error(stmt.span, "Assignment to __name__ is not supported")
-                            );
+                if matches!(target, AssignTarget::Tuple(_) | AssignTarget::List(_)) {
+                    // Destructuring assignment: validate each leaf target against element types.
+                    self.check_unpack_target(target, &ty, Some(value), stmt.span)?;
+                } else {
+                    let mut promote_to_let: Option<(String, Expr)> = None;
+                    match target {
+                        AssignTarget::Name(name) => {
+                            if name == "__name__" {
+                                return Err(self
+                                    .error(stmt.span, "Assignment to __name__ is not supported"));
+                            }
+                            if self.in_function() && self.is_declared_global(name) {
+                                let global_ty =
+                                    self.ctx.globals.get(name).cloned().ok_or_else(|| {
+                                        self.error(
+                                            stmt.span,
+                                            format!(
+                                                "global `{name}` is not defined at module scope"
+                                            ),
+                                        )
+                                    })?;
+                                if matches!(ty, Type::Unknown)
+                                    && !matches!(global_ty, Type::Unknown)
+                                {
+                                    return Err(self
+                                        .error(stmt.span, "Unable to infer type; add annotation"));
+                                }
+                                self.ensure_assignable(&ty, &global_ty, stmt.span)?;
+                            } else if let Some(existing) = self.lookup_var(name) {
+                                self.ensure_assignable(&ty, &existing, stmt.span)?;
+                            } else {
+                                if matches!(ty, Type::Unknown) {
+                                    return Err(self
+                                        .error(stmt.span, "Unable to infer type; add annotation"));
+                                }
+                                promote_to_let = Some((name.clone(), value.clone()));
+                                self.insert_var(name, ty, stmt.span)?;
+                            }
+                            if !self.in_function() && matches!(value.kind, ExprKind::Lambda { .. })
+                            {
+                                self.lambda_defs.insert(name.clone(), value.clone());
+                            }
                         }
-                        if self.in_function() && self.is_declared_global(name) {
-                            let global_ty =
-                                self.ctx.globals.get(name).cloned().ok_or_else(|| {
+                        AssignTarget::Attr { value: obj, attr } => {
+                            let obj_ty = self.check_expr(obj, None)?;
+                            if let Type::Custom(class_name) = obj_ty {
+                                let class_info =
+                                    self.ctx.classes.get(&class_name).ok_or_else(|| {
+                                        self.error(
+                                            stmt.span,
+                                            format!("Unknown class: {class_name}"),
+                                        )
+                                    })?;
+                                let field_ty = class_info.fields.get(attr).ok_or_else(|| {
                                     self.error(
                                         stmt.span,
-                                        format!("global `{name}` is not defined at module scope"),
+                                        format!("Unknown field {class_name}.{attr}"),
                                     )
                                 })?;
-                            if matches!(ty, Type::Unknown) && !matches!(global_ty, Type::Unknown) {
-                                return Err(
-                                    self.error(stmt.span, "Unable to infer type; add annotation")
-                                );
+                                self.ensure_assignable(&ty, field_ty, stmt.span)?;
+                            } else {
+                                return Err(self.error(
+                                    stmt.span,
+                                    "Attribute assignment only allowed on class instances",
+                                ));
                             }
-                            self.ensure_assignable(&ty, &global_ty, stmt.span)?;
-                        } else if let Some(existing) = self.lookup_var(name) {
-                            self.ensure_assignable(&ty, &existing, stmt.span)?;
-                        } else {
-                            if matches!(ty, Type::Unknown) {
-                                return Err(
-                                    self.error(stmt.span, "Unable to infer type; add annotation")
-                                );
+                        }
+                        AssignTarget::Index {
+                            value: container,
+                            index,
+                        } => {
+                            let container_ty = self.check_expr(container, None)?;
+                            let index_ty = self.check_expr(index, None)?;
+                            match container_ty {
+                                Type::List(inner) => {
+                                    self.ensure_assignable(&index_ty, &Type::Int, stmt.span)?;
+                                    self.ensure_assignable(&ty, &inner, stmt.span)?;
+                                }
+                                Type::Dict(key_ty, val_ty) => {
+                                    self.ensure_assignable(&index_ty, &key_ty, stmt.span)?;
+                                    self.ensure_assignable(&ty, &val_ty, stmt.span)?;
+                                }
+                                _ => {
+                                    return Err(self.error(
+                                        stmt.span,
+                                        "Index assignment requires list or dict",
+                                    ))
+                                }
                             }
-                            promote_to_let = Some((name.clone(), value.clone()));
-                            self.insert_var(name, ty, stmt.span)?;
                         }
-                        if !self.in_function() && matches!(value.kind, ExprKind::Lambda { .. }) {
-                            self.lambda_defs.insert(name.clone(), value.clone());
-                        }
+                        AssignTarget::Tuple(_) | AssignTarget::List(_) => {}
                     }
-                    AssignTarget::Attr { value: obj, attr } => {
-                        let obj_ty = self.check_expr(obj, None)?;
-                        if let Type::Custom(class_name) = obj_ty {
-                            let class_info =
-                                self.ctx.classes.get(&class_name).ok_or_else(|| {
-                                    self.error(stmt.span, format!("Unknown class: {class_name}"))
-                                })?;
-                            let field_ty = class_info.fields.get(attr).ok_or_else(|| {
-                                self.error(stmt.span, format!("Unknown field {class_name}.{attr}"))
-                            })?;
-                            self.ensure_assignable(&ty, field_ty, stmt.span)?;
-                        } else {
-                            return Err(self.error(
-                                stmt.span,
-                                "Attribute assignment only allowed on class instances",
-                            ));
-                        }
+                    if let Some((name, value)) = promote_to_let {
+                        stmt.kind = StmtKind::Let {
+                            name,
+                            ann: None,
+                            value,
+                        };
                     }
-                    AssignTarget::Index {
-                        value: container,
-                        index,
-                    } => {
-                        let container_ty = self.check_expr(container, None)?;
-                        let index_ty = self.check_expr(index, None)?;
-                        match container_ty {
-                            Type::List(inner) => {
-                                self.ensure_assignable(&index_ty, &Type::Int, stmt.span)?;
-                                self.ensure_assignable(&ty, &inner, stmt.span)?;
-                            }
-                            Type::Dict(key_ty, val_ty) => {
-                                self.ensure_assignable(&index_ty, &key_ty, stmt.span)?;
-                                self.ensure_assignable(&ty, &val_ty, stmt.span)?;
-                            }
-                            _ => {
-                                return Err(
-                                    self.error(stmt.span, "Index assignment requires list or dict")
-                                )
-                            }
-                        }
-                    }
-                }
-                if let Some((name, value)) = promote_to_let {
-                    stmt.kind = StmtKind::Let {
-                        name,
-                        ann: None,
-                        value,
-                    };
                 }
             }
             StmtKind::Return { value } => {
@@ -441,6 +456,141 @@ impl<'a> TypeChecker<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Validate and register targets for tuple/list destructuring assignments.
+    ///
+    /// This mirrors normal assignment checks but walks each leaf in the pattern,
+    /// ensuring types line up and creating new bindings when needed.
+    fn check_unpack_target(
+        &mut self,
+        target: &mut AssignTarget,
+        value_ty: &Type,
+        value_expr: Option<&Expr>,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        match target {
+            AssignTarget::Name(name) => {
+                if name == "__name__" {
+                    return Err(self.error(span, "Assignment to __name__ is not supported"));
+                }
+                if self.in_function() && self.is_declared_global(name) {
+                    let global_ty = self.ctx.globals.get(name).cloned().ok_or_else(|| {
+                        self.error(
+                            span,
+                            format!("global `{name}` is not defined at module scope"),
+                        )
+                    })?;
+                    if matches!(value_ty, Type::Unknown) && !matches!(global_ty, Type::Unknown) {
+                        return Err(self.error(span, "Unable to infer type; add annotation"));
+                    }
+                    self.ensure_assignable(value_ty, &global_ty, span)?;
+                } else if let Some(existing) = self.lookup_var(name) {
+                    self.ensure_assignable(value_ty, &existing, span)?;
+                } else {
+                    if matches!(value_ty, Type::Unknown) {
+                        return Err(self.error(span, "Unable to infer type; add annotation"));
+                    }
+                    self.insert_var(name, value_ty.clone(), span)?;
+                }
+                // Preserve top-level lambda inference when unpacking literal tuples/lists.
+                if !self.in_function()
+                    && value_expr.is_some_and(|expr| matches!(expr.kind, ExprKind::Lambda { .. }))
+                {
+                    if let Some(expr) = value_expr {
+                        self.lambda_defs.insert(name.clone(), expr.clone());
+                    }
+                }
+            }
+            AssignTarget::Attr { value: obj, attr } => {
+                let obj_ty = self.check_expr(obj, None)?;
+                if let Type::Custom(class_name) = obj_ty {
+                    let class_info =
+                        self.ctx.classes.get(&class_name).ok_or_else(|| {
+                            self.error(span, format!("Unknown class: {class_name}"))
+                        })?;
+                    let field_ty = class_info.fields.get(attr).ok_or_else(|| {
+                        self.error(span, format!("Unknown field {class_name}.{attr}"))
+                    })?;
+                    self.ensure_assignable(value_ty, field_ty, span)?;
+                } else {
+                    return Err(
+                        self.error(span, "Attribute assignment only allowed on class instances")
+                    );
+                }
+            }
+            AssignTarget::Index {
+                value: container,
+                index,
+            } => {
+                let container_ty = self.check_expr(container, None)?;
+                let index_ty = self.check_expr(index, None)?;
+                match container_ty {
+                    Type::List(inner) => {
+                        self.ensure_assignable(&index_ty, &Type::Int, span)?;
+                        self.ensure_assignable(value_ty, &inner, span)?;
+                    }
+                    Type::Dict(key_ty, val_ty) => {
+                        self.ensure_assignable(&index_ty, &key_ty, span)?;
+                        self.ensure_assignable(value_ty, &val_ty, span)?;
+                    }
+                    _ => {
+                        return Err(self.error(span, "Index assignment requires list or dict"));
+                    }
+                }
+            }
+            AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                // Unpack element types from the RHS and recurse into each element target.
+                let element_types = self.unpack_element_types(value_ty, items.len(), span)?;
+                let element_exprs = self.unpack_element_exprs(value_expr, items.len());
+                for ((item, elem_ty), elem_expr) in
+                    items.iter_mut().zip(element_types).zip(element_exprs)
+                {
+                    self.check_unpack_target(item, &elem_ty, elem_expr, span)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Compute the element types for tuple/list unpacking.
+    fn unpack_element_types(
+        &self,
+        value_ty: &Type,
+        count: usize,
+        span: Span,
+    ) -> Result<Vec<Type>, CompileError> {
+        match value_ty {
+            Type::Tuple(items) => {
+                if items.len() != count {
+                    return Err(self.error(
+                        span,
+                        format!("Unpacking expected {count} values, got {}", items.len()),
+                    ));
+                }
+                Ok(items.clone())
+            }
+            Type::List(inner) => Ok(vec![inner.as_ref().clone(); count]),
+            Type::Unknown => Err(self.error(span, "Unable to infer type; add annotation")),
+            _ => Err(self.error(span, "Unpacking assignment requires a tuple or list value")),
+        }
+    }
+
+    /// Extract element expressions when unpacking from a literal tuple/list.
+    fn unpack_element_exprs<'b>(
+        &self,
+        value_expr: Option<&'b Expr>,
+        count: usize,
+    ) -> Vec<Option<&'b Expr>> {
+        if let Some(expr) = value_expr {
+            match &expr.kind {
+                ExprKind::Tuple(items) | ExprKind::List(items) if items.len() == count => {
+                    return items.iter().map(Some).collect();
+                }
+                _ => {}
+            }
+        }
+        vec![None; count]
     }
 
     fn check_except_handler(

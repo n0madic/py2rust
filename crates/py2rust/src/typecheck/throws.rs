@@ -208,23 +208,8 @@ impl ThrowAnalyzer {
                     if self.expr_calls_throwing_function(value) {
                         return true;
                     }
-                    match target {
-                        AssignTarget::Index { value, index } => {
-                            if self.expr_calls_throwing_function(value)
-                                || self.expr_calls_throwing_function(index)
-                            {
-                                return true;
-                            }
-                            if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                                return true;
-                            }
-                        }
-                        AssignTarget::Attr { value, .. } => {
-                            if self.expr_calls_throwing_function(value) {
-                                return true;
-                            }
-                        }
-                        AssignTarget::Name(_) => {}
+                    if self.assign_target_can_throw(target, value.ty.as_ref()) {
+                        return true;
                     }
                 }
 
@@ -469,6 +454,39 @@ impl ThrowAnalyzer {
         match &step.kind {
             ExprKind::Literal(Literal::Int(n)) => *n == 0,
             _ => true,
+        }
+    }
+
+    /// Determine whether assignment targets can throw (e.g., list indexing).
+    fn assign_target_can_throw(&self, target: &AssignTarget, value_ty: Option<&Type>) -> bool {
+        match target {
+            AssignTarget::Name(_) => false,
+            AssignTarget::Attr { value, .. } => self.expr_calls_throwing_function(value),
+            AssignTarget::Index { value, index } => {
+                if self.expr_calls_throwing_function(value)
+                    || self.expr_calls_throwing_function(index)
+                {
+                    return true;
+                }
+                matches!(value.ty.as_ref(), Some(Type::List(_)))
+            }
+            AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                // Unpacking from a list uses indexing and can throw on length mismatch.
+                if matches!(value_ty, Some(Type::List(_))) {
+                    return true;
+                }
+                for (idx, item) in items.iter().enumerate() {
+                    let elem_ty = match value_ty {
+                        Some(Type::Tuple(types)) => types.get(idx),
+                        Some(Type::List(inner)) => Some(inner.as_ref()),
+                        _ => None,
+                    };
+                    if self.assign_target_can_throw(item, elem_ty) {
+                        return true;
+                    }
+                }
+                false
+            }
         }
     }
 }

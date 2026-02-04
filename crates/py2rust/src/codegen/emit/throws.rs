@@ -23,16 +23,7 @@ impl<'a> Codegen<'a> {
                 if self.expr_can_throw(value) {
                     return true;
                 }
-                match target {
-                    AssignTarget::Index { value, index } => {
-                        if self.expr_can_throw(value) || self.expr_can_throw(index) {
-                            return true;
-                        }
-                        matches!(value.ty.as_ref(), Some(Type::List(_)))
-                    }
-                    AssignTarget::Attr { value, .. } => self.expr_can_throw(value),
-                    AssignTarget::Name(_) => false,
-                }
+                self.assign_target_can_throw(target, value.ty.as_ref())
             }
             StmtKind::Return { value } => value.as_ref().is_some_and(|e| self.expr_can_throw(e)),
             StmtKind::If { test, body, orelse } => {
@@ -163,6 +154,36 @@ impl<'a> Codegen<'a> {
         match &step.kind {
             ExprKind::Literal(Literal::Int(n)) => *n == 0,
             _ => true,
+        }
+    }
+
+    /// Check whether assignment targets can throw (e.g., list indexing).
+    fn assign_target_can_throw(&self, target: &AssignTarget, value_ty: Option<&Type>) -> bool {
+        match target {
+            AssignTarget::Name(_) => false,
+            AssignTarget::Attr { value, .. } => self.expr_can_throw(value),
+            AssignTarget::Index { value, index } => {
+                if self.expr_can_throw(value) || self.expr_can_throw(index) {
+                    return true;
+                }
+                matches!(value.ty.as_ref(), Some(Type::List(_)))
+            }
+            AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                if matches!(value_ty, Some(Type::List(_))) {
+                    return true;
+                }
+                for (idx, item) in items.iter().enumerate() {
+                    let elem_ty = match value_ty {
+                        Some(Type::Tuple(types)) => types.get(idx),
+                        Some(Type::List(inner)) => Some(inner.as_ref()),
+                        _ => None,
+                    };
+                    if self.assign_target_can_throw(item, elem_ty) {
+                        return true;
+                    }
+                }
+                false
+            }
         }
     }
 }

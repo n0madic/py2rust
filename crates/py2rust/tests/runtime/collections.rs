@@ -40,6 +40,14 @@ def test_lists() -> None:
     assert every_third[0] == 0
     assert every_third[1] == 3
 
+    # List unpacking
+    pairs: list[list[int]] = [[10, 20], [30, 40]]
+    first, second = pairs
+    assert first[0] == 10
+    assert first[1] == 20
+    assert second[0] == 30
+    assert second[1] == 40
+
 # String operations
 def test_strings() -> None:
     s: str = "hello"
@@ -72,6 +80,13 @@ def test_tuples() -> None:
     inner: tuple[int, int] = nested[1]
     assert inner[0] == 2
     assert inner[1] == 3
+
+    # Nested tuple unpacking
+    nested1: tuple[int, tuple[int, int]] = (1, (2, 3))
+    a1, (b1, c1) = nested1
+    assert a1 == 1
+    assert b1 == 2
+    assert c1 == 3
 
 # Dictionary operations
 def test_dicts() -> None:

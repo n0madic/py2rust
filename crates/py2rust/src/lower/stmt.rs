@@ -177,58 +177,27 @@ impl<'a> Lowerer<'a> {
             // For loop: for target in iter: body
             // We support:
             // - Simple name target: for x in items:
-            // - Tuple unpacking: for (a, b) in pairs:
-            // Tuple unpacking is lowered to index access on a temporary variable
+            // - Tuple/list unpacking: for (a, b) in pairs:
+            // Unpacking is lowered to assignment on a temporary variable
             ast::Stmt::For(def) => {
                 let iter = self.lower_expr(&def.iter)?;
                 let mut body_stmts = Vec::new();
                 let target_name = match &*def.target {
                     ast::Expr::Name(name) => name.id.to_string(),
-                    // Tuple unpacking: for (a, b) in pairs:
-                    // Becomes: for _iterN_tmp in pairs: { let a = _iterN_tmp[0]; let b = _iterN_tmp[1]; ... }
-                    ast::Expr::Tuple(tuple) => {
-                        let tmp_name = format!("_iter{}_tmp", usize::from(def.range().start()));
-                        for (idx, elt) in tuple.elts.iter().enumerate() {
-                            if let ast::Expr::Name(name) = elt {
-                                let idx_expr = Expr {
-                                    kind: ExprKind::Literal(Literal::Int(idx as i64)),
-                                    span: Span::from(elt.range()),
-                                    ty: None,
-                                };
-                                let value = Expr {
-                                    kind: ExprKind::Index {
-                                        value: Box::new(Expr {
-                                            kind: ExprKind::Name(tmp_name.clone()),
-                                            span: Span::from(elt.range()),
-                                            ty: None,
-                                        }),
-                                        index: Box::new(idx_expr),
-                                    },
-                                    span: Span::from(elt.range()),
-                                    ty: None,
-                                };
-                                body_stmts.push(Stmt {
-                                    kind: StmtKind::Let {
-                                        name: name.id.to_string(),
-                                        ann: None,
-                                        value,
-                                    },
-                                    span: Span::from(elt.range()),
-                                });
-                            } else {
-                                return Err(self.error(
-                                    elt.range(),
-                                    "Only simple tuple targets are supported",
-                                ));
-                            }
-                        }
-                        tmp_name
-                    }
                     _ => {
-                        return Err(self.error(
-                            def.range(),
-                            "Only simple names or tuples are supported in for targets",
-                        ))
+                        let tmp_name = format!("_iter{}_tmp", usize::from(def.range().start()));
+                        let target = self.lower_assign_target(&def.target)?;
+                        let value = Expr {
+                            kind: ExprKind::Name(tmp_name.clone()),
+                            span: Span::from(def.target.range()),
+                            ty: None,
+                        };
+                        // Insert unpacking/assignment at the top of the loop body.
+                        body_stmts.push(Stmt {
+                            kind: StmtKind::Assign { target, value },
+                            span: Span::from(def.target.range()),
+                        });
+                        tmp_name
                     }
                 };
                 for stmt in &def.body {
@@ -533,10 +502,10 @@ impl<'a> Lowerer<'a> {
     /// - name: simple variable assignment
     /// - obj.attr: attribute assignment (mutation)
     /// - obj[index]: subscript assignment (mutation)
+    /// - tuple/list unpacking: (a, b) = values, [a, (b, c)] = values
     ///
     /// Not supported:
-    /// - Tuple unpacking (a, b = values) - use separate assignments
-    /// - List targets ([a, b] = values)
+    /// - Starred targets (a, *rest = values)
     pub(super) fn lower_assign_target(
         &self,
         expr: &ast::Expr,
@@ -557,6 +526,30 @@ impl<'a> Lowerer<'a> {
                     value: value_expr,
                     index: index_expr,
                 })
+            }
+            ast::Expr::Tuple(tuple) => {
+                let mut targets = Vec::new();
+                for elt in &tuple.elts {
+                    if matches!(elt, ast::Expr::Starred(_)) {
+                        return Err(
+                            self.error(elt.range(), "Starred assignment targets are not supported")
+                        );
+                    }
+                    targets.push(self.lower_assign_target(elt)?);
+                }
+                Ok(AssignTarget::Tuple(targets))
+            }
+            ast::Expr::List(list) => {
+                let mut targets = Vec::new();
+                for elt in &list.elts {
+                    if matches!(elt, ast::Expr::Starred(_)) {
+                        return Err(
+                            self.error(elt.range(), "Starred assignment targets are not supported")
+                        );
+                    }
+                    targets.push(self.lower_assign_target(elt)?);
+                }
+                Ok(AssignTarget::List(targets))
             }
             _ => Err(self.error(expr.range(), "Unsupported assignment target")),
         }

@@ -37,15 +37,27 @@ impl<'a> Codegen<'a> {
             locals: &mut HashSet<String>,
             globals: &mut HashSet<String>,
         ) {
+            fn record_target(target: &AssignTarget, locals: &mut HashSet<String>) {
+                match target {
+                    AssignTarget::Name(name) => {
+                        locals.insert(name.clone());
+                    }
+                    AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                        for item in items {
+                            record_target(item, locals);
+                        }
+                    }
+                    AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
+                }
+            }
+
             for stmt in stmts {
                 match &stmt.kind {
                     StmtKind::Let { name, .. } => {
                         locals.insert(name.clone());
                     }
                     StmtKind::Assign { target, .. } => {
-                        if let AssignTarget::Name(name) = target {
-                            locals.insert(name.clone());
-                        }
+                        record_target(target, locals);
                     }
                     StmtKind::For { target, body, .. } => {
                         locals.insert(target.clone());

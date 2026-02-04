@@ -202,13 +202,24 @@ pub struct ExceptHandler {
 /// - Simple: `x = value`
 /// - Attribute: `obj.field = value`
 /// - Index: `list[i] = value`
+/// - Tuple/List unpacking: `(a, b) = value`, `[a, (b, c)] = value`
 ///
 /// This makes codegen cleaner since we handle all assignment targets uniformly.
 #[derive(Debug, Clone)]
 pub enum AssignTarget {
     Name(String),
-    Attr { value: Expr, attr: String },
-    Index { value: Expr, index: Expr },
+    Attr {
+        value: Expr,
+        attr: String,
+    },
+    Index {
+        value: Expr,
+        index: Expr,
+    },
+    /// Tuple unpacking target, supports nesting.
+    Tuple(Vec<AssignTarget>),
+    /// List unpacking target, supports nesting.
+    List(Vec<AssignTarget>),
 }
 
 /// Expression in the HIR.
