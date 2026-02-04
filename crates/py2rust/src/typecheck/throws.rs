@@ -30,10 +30,11 @@ impl ThrowAnalyzer {
             for item in &program.items {
                 if let Item::Function(func) = item {
                     if !self.throwing_functions.contains(&func.name)
-                        && self.has_uncaught_throwing_call(&func.body) {
-                            self.throwing_functions.insert(func.name.clone());
-                            changed = true;
-                        }
+                        && self.has_uncaught_throwing_call(&func.body)
+                    {
+                        self.throwing_functions.insert(func.name.clone());
+                        changed = true;
+                    }
                 }
             }
             if !changed {
