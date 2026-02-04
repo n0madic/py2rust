@@ -655,10 +655,46 @@ impl<'a> Codegen<'a> {
 
     fn ends_with_return(&self, stmts: &[Stmt]) -> bool {
         if let Some(last) = stmts.last() {
-            matches!(last.kind, StmtKind::Return { .. } | StmtKind::Raise { .. })
+            match &last.kind {
+                StmtKind::Return { .. } | StmtKind::Raise { .. } => true,
+                // Try with value return ends with return (all match branches return)
+                StmtKind::Try { body, handlers, .. } => {
+                    // If try body has return with value and handlers have return, it ends with return
+                    let body_has_return = self.has_value_return(body);
+                    let handlers_return = handlers.iter().all(|h| self.ends_with_return(&h.body));
+                    body_has_return && handlers_return
+                }
+                _ => false,
+            }
         } else {
             false
         }
+    }
+
+    fn has_value_return(&self, stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Return { value: Some(expr) } => {
+                    if let Some(ty) = &expr.ty {
+                        if !matches!(ty, Type::None) {
+                            return true;
+                        }
+                    }
+                }
+                StmtKind::If { body, orelse, .. } => {
+                    if self.has_value_return(body) || self.has_value_return(orelse) {
+                        return true;
+                    }
+                }
+                StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+                    if self.has_value_return(body) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     fn analyze_top_level_throws(&self, stmts: &[Stmt]) -> bool {

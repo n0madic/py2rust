@@ -1,0 +1,83 @@
+//! Runtime tests for collections: lists, strings, tuples, dictionaries.
+
+use crate::common::run_py;
+
+#[test]
+fn runtime_collections_comprehensive() {
+    run_py(
+        "collections",
+        r#"
+# List operations
+def test_lists() -> None:
+    # Creation and indexing
+    nums: list[int] = [1, 2, 3, 4, 5]
+    assert len(nums) == 5
+    assert nums[0] == 1
+    assert nums[4] == 5
+
+    # Append
+    nums.append(6)
+    assert len(nums) == 6
+    assert nums[5] == 6
+
+    # Empty list
+    empty: list[int] = []
+    assert len(empty) == 0
+    empty.append(42)
+    assert len(empty) == 1
+    assert empty[0] == 42
+
+# String operations
+def test_strings() -> None:
+    s: str = "hello"
+    assert len(s) == 5
+
+    s2: str = "world"
+    assert len(s2) == 5
+
+    # String concatenation
+    combined: str = s + " " + s2
+    assert len(combined) == 11
+
+# Tuple operations
+def test_tuples() -> None:
+    t: tuple[int, str] = (42, "answer")
+    x: int = t[0]
+    s: str = t[1]
+    assert x == 42
+    assert s == "answer"
+
+    # Nested tuple
+    nested: tuple[int, tuple[int, int]] = (1, (2, 3))
+    assert nested[0] == 1
+    inner: tuple[int, int] = nested[1]
+    assert inner[0] == 2
+    assert inner[1] == 3
+
+# Dictionary operations
+def test_dicts() -> None:
+    d: dict[str, int] = {"a": 1, "b": 2}
+    assert len(d) == 2
+    assert d["a"] == 1
+    assert d["b"] == 2
+
+    # Add new key
+    d["c"] = 3
+    assert len(d) == 3
+    assert d["c"] == 3
+
+    # Update existing key
+    d["a"] = 10
+    assert d["a"] == 10
+
+# Run all tests
+test_lists()
+test_strings()
+test_tuples()
+test_dicts()
+
+print("All collection tests passed!")
+"#,
+        Some("All collection tests passed!"),
+    );
+}

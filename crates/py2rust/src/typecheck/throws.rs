@@ -306,8 +306,6 @@ impl ThrowAnalyzer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_explicit_raise_marks_throwing() {
         // TODO: Add test when lowering is implemented

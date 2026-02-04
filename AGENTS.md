@@ -37,6 +37,7 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - `__iter__/next` for custom iterators.
 - `lambda`, `if` expression, `round`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`, `reversed`, `max`, `min`, `int`, `float`, `str`, `isinstance`, `type`.
 - Decorators: one simple name decorator on top-level functions only (rewritten).
+- Exception handling: `try/except/else/finally`, `raise`, exception propagation through function calls.
 
 ## Type System Notes
 - `str` maps to `String` (not `&str`).
@@ -51,6 +52,23 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - Tuple concatenation clones elements to avoid move errors.
 - List/set iteration for builtins uses `.iter().cloned()` to avoid moves.
 - Set ops map to `&set1 | &set2`, `&set1 & &set2`, `&set1 - &set2`, `&set1 ^ &set2`.
+- Exception handling uses `Result<T, PyError>` with closures for try blocks.
+- Variables declared in try block are exposed to else via `Option<T>` wrapper.
+- Functions with unhandled exceptions return `Result<T, PyError>`.
+
+## Test Structure
+Runtime integration tests are in `crates/py2rust/tests/`:
+- `common/mod.rs` - shared `run_py()` helper for compile+execute tests.
+- `runtime/*.rs` - categorized comprehensive runtime tests:
+  - `functions.rs` - functions and recursion
+  - `classes.rs` - classes and objects
+  - `control_flow.rs` - loops and conditionals
+  - `collections.rs` - lists, strings, tuples, dicts
+  - `operators.rs` - arithmetic, comparison, boolean
+  - `io.rs` - print output
+  - `assert.rs` - assertions
+  - `exceptions.rs` - try/except/finally/raise
+- Each category has one comprehensive test to minimize compilation overhead.
 
 ## Common Pitfalls
 - If you modify HIR, update typeck and codegen in sync.

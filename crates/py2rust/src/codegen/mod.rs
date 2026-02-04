@@ -44,6 +44,8 @@ pub struct Codegen<'a> {
     pub(crate) borrowed_params: HashSet<String>,
     /// Current function being emitted (for tracking if returns should be wrapped in Ok)
     pub(crate) current_function: Option<String>,
+    /// Return type when inside a try block with value returns
+    pub(crate) try_block_return_type: Option<Type>,
 }
 
 impl<'a> Codegen<'a> {
@@ -59,6 +61,7 @@ impl<'a> Codegen<'a> {
             name_compare_only: false,
             borrowed_params: HashSet::new(),
             current_function: None,
+            try_block_return_type: None,
         }
     }
 
