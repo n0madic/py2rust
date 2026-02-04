@@ -46,7 +46,10 @@ impl<'a> Codegen<'a> {
             scoped_locals.insert(name.clone(), ty.clone());
         }
         self.local_vars = Some(scoped_locals);
-        let body_expr = self.gen_expr(body)?;
+        self.lambda_depth += 1;
+        let body_expr = self.gen_expr(body);
+        self.lambda_depth -= 1;
+        let body_expr = body_expr?;
         self.local_vars = saved_locals;
         Ok(format!(
             "move |{}| {{ {} }}",

@@ -18,9 +18,8 @@ impl<'a> Codegen<'a> {
                 if !matches!(inner.as_ref(), Type::Unknown) {
                     return Ok(format!("Vec::<{}>::new()", self.rust_type(inner)));
                 }
-                // Default unknown empty lists to Vec<PyRepr> for consistent Debug output.
-                self.uses.py_repr = true;
-                return Ok("Vec::<PyRepr>::new()".to_string());
+                // Let Rust infer the element type for empty lists with unknown type.
+                return Ok("Vec::new()".to_string());
             }
         }
         // If element types don't unify, coerce to a String-based list for Debug printing.

@@ -887,6 +887,10 @@ str_fn = lambda name: str_greeting + name
 str_fn_result: list[str] = list(map(str_fn, ["Alice", "Bob"]))
 assert str_fn_result == ["Hi Alice", "Hi Bob"], f"lambda with string capture failed: {str_fn_result}"
 
+# Lambda that invokes int() parsing (ensures no Result propagation inside closures).
+parse_square = lambda x: str(int(x) ** 2)
+assert parse_square("4") == "16", f"lambda parse square failed: {parse_square('4')}"
+
 # ============================================================================
 # list() constructor
 # ============================================================================

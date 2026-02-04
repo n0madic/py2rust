@@ -267,6 +267,9 @@ impl<'a> Codegen<'a> {
 
     /// Decide whether we are in a context that expects Result propagation.
     fn in_throwing_context(&self) -> bool {
+        if self.lambda_depth > 0 {
+            return false;
+        }
         if self.try_block_return_type.is_some() {
             return true;
         }

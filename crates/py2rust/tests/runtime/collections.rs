@@ -37,6 +37,12 @@ def test_lists() -> None:
     assert len(nums) == 6
     assert nums[5] == 6
 
+    # Empty list type inference via append.
+    inferred: list[str] = []
+    inferred.append(str(1))
+    inferred.append(str(2))
+    assert inferred == ["1", "2"]
+
     # Append sequence coverage (mirrors list_tuple script).
     items: list[int] = [1, 2]
     items.append(3)

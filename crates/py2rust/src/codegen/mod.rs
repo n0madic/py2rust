@@ -116,6 +116,8 @@ pub struct Codegen<'a> {
     pub(crate) initialized_globals: HashSet<String>,
     /// Stack of temporary global name overrides for expression generation.
     pub(crate) global_overrides: Vec<(String, String)>,
+    /// Track nested lambda emission to disable Result propagation inside closures.
+    pub(crate) lambda_depth: usize,
 }
 
 impl<'a> Codegen<'a> {
@@ -137,6 +139,7 @@ impl<'a> Codegen<'a> {
             top_level_can_throw: false,
             initialized_globals: HashSet::new(),
             global_overrides: Vec::new(),
+            lambda_depth: 0,
         }
     }
 
