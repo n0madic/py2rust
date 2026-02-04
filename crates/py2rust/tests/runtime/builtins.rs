@@ -232,6 +232,13 @@ assert max(8.5, 10) == 10.0, "max(8.5, 10) should equal 10.0"
 # max() with negative numbers
 assert max(-5, -3, -10) == -3, "max(-5, -3, -10) should equal -3"
 
+# min/max over lists
+values: list[int] = [3, 1, 4]
+assert min(values) == 1, "min(values) should equal 1"
+assert max(values) == 4, "max(values) should equal 4"
+# Using the same list in both calls should not deadlock.
+assert max(values) - min(values) == 3, "max(values) - min(values) should equal 3"
+
 # ============================================================================
 # round() - Rounding
 # ============================================================================

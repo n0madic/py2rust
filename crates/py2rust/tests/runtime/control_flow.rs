@@ -46,6 +46,22 @@ assert sum_range(0) == 0
 assert sum_range(1) == 0
 assert sum_range(5) == 10
 
+# While loop building a list from empty literal
+results = []
+counter = 0
+while counter < 3:
+    # Append strings to force list element type inference.
+    results.append(str(counter))
+    counter = counter + 1
+assert results == ["0", "1", "2"], "while loop should build string list"
+
+# For loop building a list from empty literal
+range_results = []
+for i in range(3):
+    # Append strings to force list element type inference.
+    range_results.append(str(i))
+assert range_results == ["0", "1", "2"], "for loop should build string list"
+
 # Test nested loops
 assert multiply_table(1) == 1
 assert multiply_table(2) == 9

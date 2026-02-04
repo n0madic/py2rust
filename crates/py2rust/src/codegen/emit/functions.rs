@@ -53,6 +53,8 @@ impl<'a> Codegen<'a> {
         let vis = "pub ";
         self.push_line(&format!("{}fn {}{} {{", vis, func.name, sig));
         self.indent += 1;
+        // Precompute list element type hints for this function.
+        self.inferred_list_elems = Some(self.collect_list_elem_types_for_stmts(&func.body));
         let mut_counts = collect_assign_counts(&func.body);
         for stmt in &func.body {
             self.emit_stmt(stmt, &mut_counts)?;
@@ -76,6 +78,7 @@ impl<'a> Codegen<'a> {
         self.current_function = None;
         self.current_function_ret = None;
         self.local_vars = None;
+        self.inferred_list_elems = None;
         Ok(())
     }
 

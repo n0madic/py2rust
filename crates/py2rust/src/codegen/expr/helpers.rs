@@ -127,13 +127,15 @@ impl<'a> Codegen<'a> {
             Some(Type::Slice(_)) => Ok(format!("{}.iter().copied()", rendered)),
             // Lists are shared (Arc<Mutex<...>>), so iterate via a lock guard.
             Some(Type::List(inner)) => {
-                if use_owned {
-                    Ok(format!("{}.lock().unwrap().clone().into_iter()", rendered))
-                } else if self.is_copy_type(inner) {
-                    Ok(format!("{}.lock().unwrap().iter().copied()", rendered))
-                } else {
-                    Ok(format!("{}.lock().unwrap().iter().cloned()", rendered))
-                }
+                let _ = inner;
+                let tmp = self.new_tmp();
+                let guard = self.new_tmp();
+                Ok(format!(
+                    "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().unwrap(); {guard}.clone().into_iter() }}",
+                    tmp = tmp,
+                    guard = guard,
+                    expr = rendered
+                ))
             }
             // Owned sets need .iter().cloned() (or .copied() for Copy types).
             Some(Type::Set(inner)) => {
@@ -244,10 +246,10 @@ impl<'a> Codegen<'a> {
             Type::Str => format!("!{}.is_empty()", expr_str),
             Type::Bytes | Type::Set(_) | Type::Dict(_, _) => format!("!{}.is_empty()", expr_str),
             Type::List(_) => {
-                // Bind the expression to a temporary so we don't borrow from a short-lived value.
+                // Clone into a temporary so we don't move list Arcs out of scope.
                 let tmp = self.new_tmp();
                 format!(
-                    "{{ let {tmp} = {expr}; let _guard = {tmp}.lock().unwrap(); !_guard.is_empty() }}",
+                    "{{ let {tmp} = {expr}.clone(); let _guard = {tmp}.lock().unwrap(); !_guard.is_empty() }}",
                     tmp = tmp,
                     expr = expr_str
                 )

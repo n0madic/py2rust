@@ -62,3 +62,32 @@ def sum_n(n: int) -> int:
     assert!(out.rust.contains("impl IntoIterator for CountTo"));
     assert!(out.rust.contains("impl Iterator for CountToIter"));
 }
+
+#[test]
+fn top_level_local_not_globalized() {
+    let source = r#"
+x = 1
+
+def f() -> int:
+    y: int = 2
+    return y
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    // Unused module variables should stay local to main.
+    assert!(!out.rust.contains("__GLOBAL_X"));
+}
+
+#[test]
+fn top_level_used_in_function_globalized() {
+    let source = r#"
+x = 1
+
+def f() -> int:
+    return x
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    // Access from a function should force a global storage slot.
+    assert!(out.rust.contains("__GLOBAL_X"));
+}

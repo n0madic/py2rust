@@ -76,6 +76,95 @@ impl<'a> Codegen<'a> {
                         attr
                     ));
                 }
+            if !self.is_global(name)
+                && matches!(self.local_var_type(name), Some(Type::Option(_)))
+                && matches!(value.ty.as_ref(), Some(Type::Custom(_)))
+            {
+                if let Some(Type::Option(inner)) = self.local_var_type(name) {
+                    if let Type::Custom(class_name) = inner.as_ref() {
+                        let getter = self.class_property(class_name, attr).and_then(|prop| {
+                            if prop.getter.is_empty() {
+                                None
+                            } else {
+                                Some(prop.getter.clone())
+                            }
+                        });
+                        let base_name = self.name_override(name).unwrap_or(name);
+                        let base = format!(
+                            "{}.as_ref().expect(\"optional value is None\")",
+                            base_name
+                        );
+                        if let Some(getter) = getter {
+                            return Ok(format!("{}.{}()", base, getter));
+                        }
+                        return Ok(format!("{}.{}", base, attr));
+                    }
+                }
+            }
+            if self.local_vars.is_none()
+                && !self.is_global(name)
+                && matches!(self.ctx.globals.get(name), Some(Type::Option(_)))
+                && matches!(value.ty.as_ref(), Some(Type::Custom(_)))
+            {
+                if let Some(Type::Option(inner)) = self.ctx.globals.get(name) {
+                    if let Type::Custom(class_name) = inner.as_ref() {
+                        let getter = self.class_property(class_name, attr).and_then(|prop| {
+                            if prop.getter.is_empty() {
+                                None
+                            } else {
+                                Some(prop.getter.clone())
+                            }
+                        });
+                        let base_name = self.name_override(name).unwrap_or(name);
+                        let base = format!(
+                            "{}.as_ref().expect(\"optional value is None\")",
+                            base_name
+                        );
+                        if let Some(getter) = getter {
+                            return Ok(format!("{}.{}()", base, getter));
+                        }
+                        return Ok(format!("{}.{}", base, attr));
+                    }
+                }
+            }
+        }
+        if let Some(Type::Option(inner)) = value.ty.as_ref() {
+            if let Type::Custom(class_name) = inner.as_ref() {
+                let getter = self.class_property(class_name, attr).and_then(|prop| {
+                    if prop.getter.is_empty() {
+                        None
+                    } else {
+                        Some(prop.getter.clone())
+                    }
+                });
+                if let ExprKind::Name(name) = &value.kind {
+                    let base_name = self.name_override(name).unwrap_or(name);
+                    let base = format!(
+                        "{}.as_ref().expect(\"optional value is None\")",
+                        base_name
+                    );
+                    if let Some(getter) = getter {
+                        return Ok(format!("{}.{}()", base, getter));
+                    }
+                    return Ok(format!("{}.{}", base, attr));
+                }
+                let tmp = self.new_tmp();
+                let expr = self.gen_expr(value)?;
+                if let Some(getter) = getter {
+                    return Ok(format!(
+                        "{{ let {tmp} = {expr}; {tmp}.as_ref().expect(\"optional value is None\").{getter}() }}",
+                        tmp = tmp,
+                        expr = expr,
+                        getter = getter
+                    ));
+                }
+                return Ok(format!(
+                    "{{ let {tmp} = {expr}; {tmp}.as_ref().expect(\"optional value is None\").{attr} }}",
+                    tmp = tmp,
+                    expr = expr,
+                    attr = attr
+                ));
+            }
         }
         if let Some(Type::Custom(class_name)) = value.ty.as_ref() {
             let getter = self.class_property(class_name, attr).and_then(|prop| {

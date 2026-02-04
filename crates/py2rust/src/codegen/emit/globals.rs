@@ -19,10 +19,14 @@ impl<'a> Codegen<'a> {
     ///
     /// This is verbose but necessary for Rust's safety guarantees.
     pub(crate) fn emit_globals(&mut self) {
-        if self.ctx.globals.is_empty() {
+        if self.shared_globals.is_empty() {
             return;
         }
         for (name, ty) in &self.ctx.globals {
+            // Only emit globals that are actually shared with functions/helpers.
+            if !self.shared_globals.contains(name) {
+                continue;
+            }
             let ty_str = self.rust_type_for_global(ty);
             let gname = self.global_name(name);
             self.push_line(&format!(

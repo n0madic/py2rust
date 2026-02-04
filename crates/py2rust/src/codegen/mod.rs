@@ -115,6 +115,8 @@ pub struct Codegen<'a> {
     pub(crate) top_level_can_throw: bool,
     /// Track which globals have been initialized in `main`.
     pub(crate) initialized_globals: HashSet<String>,
+    /// Globals that must be emitted because they're shared with functions or helpers.
+    pub(crate) shared_globals: HashSet<String>,
     /// Stack of temporary global name overrides for expression generation.
     pub(crate) global_overrides: Vec<(String, String)>,
     /// Track nested lambda emission to disable Result propagation inside closures.
@@ -125,6 +127,10 @@ pub struct Codegen<'a> {
     pub(crate) function_defs: HashMap<String, Function>,
     /// Stack of temporary name overrides for expression generation.
     pub(crate) name_overrides: Vec<(String, String)>,
+    /// Inferred list element types for the current function scope, if any.
+    pub(crate) inferred_list_elems: Option<HashMap<String, Type>>,
+    /// Inferred list element types for top-level statements.
+    pub(crate) main_list_elems: HashMap<String, Type>,
 }
 
 impl<'a> Codegen<'a> {
@@ -145,11 +151,14 @@ impl<'a> Codegen<'a> {
             local_vars: None,
             top_level_can_throw: false,
             initialized_globals: HashSet::new(),
+            shared_globals: HashSet::new(),
             global_overrides: Vec::new(),
             lambda_depth: 0,
             class_defs: HashMap::new(),
             function_defs: HashMap::new(),
             name_overrides: Vec::new(),
+            inferred_list_elems: None,
+            main_list_elems: HashMap::new(),
         }
     }
 
@@ -198,6 +207,9 @@ impl<'a> Codegen<'a> {
         // Phase 1: Scan to determine which helpers are needed
         self.collect_uses(program)?;
 
+        // Determine which globals must be emitted for cross-function access.
+        self.shared_globals = self.collect_shared_globals(program);
+
         // Phase 2: Analyze __name__ usage
         self.name_compare_only = self.analyze_name_compare_only(program);
 
@@ -230,6 +242,8 @@ impl<'a> Codegen<'a> {
                 top_level.push(stmt.as_ref().clone());
             }
         }
+        // Capture list element type hints for top-level statements before codegen.
+        self.main_list_elems = self.collect_list_elem_types_for_stmts(&top_level);
         self.emit_main(program, &top_level)?;
 
         // Phase 4: Inject header and helpers before the generated code
@@ -240,5 +254,944 @@ impl<'a> Codegen<'a> {
         self.out.push_str(&generated_code);
 
         Ok(self.out)
+    }
+
+    /// Collect globals that must be emitted because they are shared with functions or helpers.
+    pub(crate) fn collect_shared_globals(&self, program: &Program) -> HashSet<String> {
+        let module_vars = self.collect_module_vars(program);
+        let mut used_by_functions = HashSet::new();
+
+        for item in &program.items {
+            match item {
+                Item::Function(func) => {
+                    self.collect_used_globals_in_function(func, &module_vars, &mut used_by_functions);
+                }
+                Item::Class(class_def) => {
+                    for method in &class_def.methods {
+                        self.collect_used_globals_in_function(
+                            method,
+                            &module_vars,
+                            &mut used_by_functions,
+                        );
+                    }
+                }
+                Item::Stmt(_) | Item::Union(_) => {}
+            }
+        }
+
+        // Internal globals (defaults, class attrs) aren't module vars but must be emitted.
+        for name in self.ctx.globals.keys() {
+            if !module_vars.contains(name) {
+                used_by_functions.insert(name.clone());
+            }
+        }
+
+        used_by_functions
+    }
+
+    /// Collect module-scope variable names from top-level statements.
+    fn collect_module_vars(&self, program: &Program) -> HashSet<String> {
+        let mut vars = HashSet::new();
+        for item in &program.items {
+            if let Item::Stmt(stmt) = item {
+                self.collect_module_vars_from_stmt(stmt, &mut vars);
+            }
+        }
+        vars
+    }
+
+    /// Walk a statement and record any names bound at module scope.
+    fn collect_module_vars_from_stmt(&self, stmt: &Stmt, vars: &mut HashSet<String>) {
+        fn record_target(target: &AssignTarget, vars: &mut HashSet<String>) {
+            match target {
+                AssignTarget::Name(name) => {
+                    vars.insert(name.clone());
+                }
+                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                    for item in items {
+                        record_target(item, vars);
+                    }
+                }
+                AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
+            }
+        }
+
+        match &stmt.kind {
+            StmtKind::Let { name, .. } => {
+                vars.insert(name.clone());
+            }
+            StmtKind::Assign { target, .. } => {
+                record_target(target, vars);
+            }
+            StmtKind::For { target, body, .. } => {
+                vars.insert(target.clone());
+                for stmt in body {
+                    self.collect_module_vars_from_stmt(stmt, vars);
+                }
+            }
+            StmtKind::If { body, orelse, .. } => {
+                for stmt in body {
+                    self.collect_module_vars_from_stmt(stmt, vars);
+                }
+                for stmt in orelse {
+                    self.collect_module_vars_from_stmt(stmt, vars);
+                }
+            }
+            StmtKind::While { body, .. } => {
+                for stmt in body {
+                    self.collect_module_vars_from_stmt(stmt, vars);
+                }
+            }
+            StmtKind::Match { cases, .. } => {
+                for case in cases {
+                    for binding in &case.bindings {
+                        vars.insert(binding.clone());
+                    }
+                    for stmt in &case.body {
+                        self.collect_module_vars_from_stmt(stmt, vars);
+                    }
+                }
+            }
+            StmtKind::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                for stmt in body {
+                    self.collect_module_vars_from_stmt(stmt, vars);
+                }
+                for handler in handlers {
+                    if let Some(name) = &handler.name {
+                        vars.insert(name.clone());
+                    }
+                    for stmt in &handler.body {
+                        self.collect_module_vars_from_stmt(stmt, vars);
+                    }
+                }
+                for stmt in orelse {
+                    self.collect_module_vars_from_stmt(stmt, vars);
+                }
+                for stmt in finalbody {
+                    self.collect_module_vars_from_stmt(stmt, vars);
+                }
+            }
+            StmtKind::Return { .. }
+            | StmtKind::Global { .. }
+            | StmtKind::Break
+            | StmtKind::Continue
+            | StmtKind::Expr(_)
+            | StmtKind::Assert { .. }
+            | StmtKind::Raise { .. } => {}
+        }
+    }
+
+    /// Collect local/global declarations for a statement list within a scope.
+    fn collect_scope_locals(
+        &self,
+        stmts: &[Stmt],
+        locals: &mut HashSet<String>,
+        globals: &mut HashSet<String>,
+    ) {
+        fn record_target(
+            target: &AssignTarget,
+            locals: &mut HashSet<String>,
+            globals: &HashSet<String>,
+        ) {
+            match target {
+                AssignTarget::Name(name) => {
+                    if !globals.contains(name) {
+                        locals.insert(name.clone());
+                    }
+                }
+                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                    for item in items {
+                        record_target(item, locals, globals);
+                    }
+                }
+                AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
+            }
+        }
+
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Let { name, .. } => {
+                    if !globals.contains(name) {
+                        locals.insert(name.clone());
+                    }
+                }
+                StmtKind::Assign { target, .. } => {
+                    record_target(target, locals, globals);
+                }
+                StmtKind::For { target, body, .. } => {
+                    if !globals.contains(target) {
+                        locals.insert(target.clone());
+                    }
+                    self.collect_scope_locals(body, locals, globals);
+                }
+                StmtKind::If { body, orelse, .. } => {
+                    self.collect_scope_locals(body, locals, globals);
+                    self.collect_scope_locals(orelse, locals, globals);
+                }
+                StmtKind::While { body, .. } => {
+                    self.collect_scope_locals(body, locals, globals);
+                }
+                StmtKind::Match { cases, .. } => {
+                    for case in cases {
+                        for binding in &case.bindings {
+                            if !globals.contains(binding) {
+                                locals.insert(binding.clone());
+                            }
+                        }
+                        self.collect_scope_locals(&case.body, locals, globals);
+                    }
+                }
+                StmtKind::Try {
+                    body,
+                    handlers,
+                    orelse,
+                    finalbody,
+                } => {
+                    self.collect_scope_locals(body, locals, globals);
+                    for handler in handlers {
+                        if let Some(name) = &handler.name {
+                            if !globals.contains(name) {
+                                locals.insert(name.clone());
+                            }
+                        }
+                        self.collect_scope_locals(&handler.body, locals, globals);
+                    }
+                    self.collect_scope_locals(orelse, locals, globals);
+                    self.collect_scope_locals(finalbody, locals, globals);
+                }
+                StmtKind::Global { names } => {
+                    for name in names {
+                        globals.insert(name.clone());
+                        // Global declarations override any prior local binding.
+                        locals.remove(name);
+                    }
+                }
+                StmtKind::Return { .. }
+                | StmtKind::Break
+                | StmtKind::Continue
+                | StmtKind::Expr(_)
+                | StmtKind::Assert { .. }
+                | StmtKind::Raise { .. } => {}
+            }
+        }
+    }
+
+    /// Find module globals referenced from a function or method body.
+    fn collect_used_globals_in_function(
+        &self,
+        func: &Function,
+        module_vars: &HashSet<String>,
+        used: &mut HashSet<String>,
+    ) {
+        let mut locals: HashSet<String> = func.params.iter().map(|p| p.name.clone()).collect();
+        let mut globals = HashSet::new();
+        self.collect_scope_locals(&func.body, &mut locals, &mut globals);
+
+        // Explicit global declarations always require shared storage.
+        for name in &globals {
+            if module_vars.contains(name) {
+                used.insert(name.clone());
+            }
+        }
+
+        let outers = HashSet::new();
+        self.collect_used_globals_in_stmts(&func.body, &locals, &outers, &globals, module_vars, used);
+    }
+
+    /// Walk statements and record module globals used by expressions.
+    fn collect_used_globals_in_stmts(
+        &self,
+        stmts: &[Stmt],
+        locals: &HashSet<String>,
+        outers: &HashSet<String>,
+        globals: &HashSet<String>,
+        module_vars: &HashSet<String>,
+        used: &mut HashSet<String>,
+    ) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Let { value, .. } => {
+                    self.collect_used_globals_in_expr(value, locals, outers, globals, module_vars, used);
+                }
+                StmtKind::Assign { value, .. } => {
+                    self.collect_used_globals_in_expr(value, locals, outers, globals, module_vars, used);
+                }
+                StmtKind::Return { value } => {
+                    if let Some(expr) = value {
+                        self.collect_used_globals_in_expr(
+                            expr,
+                            locals,
+                            outers,
+                            globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                }
+                StmtKind::If { test, body, orelse } => {
+                    self.collect_used_globals_in_expr(test, locals, outers, globals, module_vars, used);
+                    self.collect_used_globals_in_stmts(
+                        body,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                    self.collect_used_globals_in_stmts(
+                        orelse,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+                StmtKind::While { test, body } => {
+                    self.collect_used_globals_in_expr(test, locals, outers, globals, module_vars, used);
+                    self.collect_used_globals_in_stmts(
+                        body,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+                StmtKind::For { iter, body, .. } => {
+                    self.collect_used_globals_in_expr(iter, locals, outers, globals, module_vars, used);
+                    self.collect_used_globals_in_stmts(
+                        body,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+                StmtKind::Expr(expr) => {
+                    self.collect_used_globals_in_expr(expr, locals, outers, globals, module_vars, used);
+                }
+                StmtKind::Assert { test, msg } => {
+                    self.collect_used_globals_in_expr(test, locals, outers, globals, module_vars, used);
+                    if let Some(expr) = msg {
+                        self.collect_used_globals_in_expr(
+                            expr,
+                            locals,
+                            outers,
+                            globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                }
+                StmtKind::Match { subject, cases } => {
+                    self.collect_used_globals_in_expr(
+                        subject,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                    for case in cases {
+                        self.collect_used_globals_in_stmts(
+                            &case.body,
+                            locals,
+                            outers,
+                            globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                }
+                StmtKind::Try {
+                    body,
+                    handlers,
+                    orelse,
+                    finalbody,
+                } => {
+                    self.collect_used_globals_in_stmts(
+                        body,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                    for handler in handlers {
+                        self.collect_used_globals_in_stmts(
+                            &handler.body,
+                            locals,
+                            outers,
+                            globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                    self.collect_used_globals_in_stmts(
+                        orelse,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                    self.collect_used_globals_in_stmts(
+                        finalbody,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+                StmtKind::Raise { exc, cause } => {
+                    if let Some(expr) = exc {
+                        self.collect_used_globals_in_expr(
+                            expr,
+                            locals,
+                            outers,
+                            globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                    if let Some(expr) = cause {
+                        self.collect_used_globals_in_expr(
+                            expr,
+                            locals,
+                            outers,
+                            globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                }
+                StmtKind::Global { .. } | StmtKind::Break | StmtKind::Continue => {}
+            }
+        }
+    }
+
+    /// Walk an expression tree and record module globals used by name resolution.
+    fn collect_used_globals_in_expr(
+        &self,
+        expr: &Expr,
+        locals: &HashSet<String>,
+        outers: &HashSet<String>,
+        globals: &HashSet<String>,
+        module_vars: &HashSet<String>,
+        used: &mut HashSet<String>,
+    ) {
+        match &expr.kind {
+            ExprKind::Name(name) => {
+                if globals.contains(name) && module_vars.contains(name) {
+                    used.insert(name.clone());
+                } else if module_vars.contains(name)
+                    && !locals.contains(name)
+                    && !outers.contains(name)
+                {
+                    used.insert(name.clone());
+                }
+            }
+            ExprKind::Call { func, args } => {
+                self.collect_used_globals_in_expr(func, locals, outers, globals, module_vars, used);
+                for arg in args {
+                    self.collect_used_globals_in_expr(
+                        arg,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+            }
+            ExprKind::Attr { value, .. } => {
+                self.collect_used_globals_in_expr(
+                    value,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.collect_used_globals_in_expr(
+                    left,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+                self.collect_used_globals_in_expr(
+                    right,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+            }
+            ExprKind::Unary { expr: inner, .. } => {
+                self.collect_used_globals_in_expr(
+                    inner,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+            }
+            ExprKind::Compare { left, right, .. } => {
+                self.collect_used_globals_in_expr(
+                    left,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+                self.collect_used_globals_in_expr(
+                    right,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+            }
+            ExprKind::BoolOp { values, .. } => {
+                for value in values {
+                    self.collect_used_globals_in_expr(
+                        value,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+            }
+            ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
+                for item in items {
+                    self.collect_used_globals_in_expr(
+                        item,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+            }
+            ExprKind::Dict(items) => {
+                for (k, v) in items {
+                    self.collect_used_globals_in_expr(
+                        k,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                    self.collect_used_globals_in_expr(
+                        v,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+            }
+            ExprKind::Index { value, index } => {
+                self.collect_used_globals_in_expr(
+                    value,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+                self.collect_used_globals_in_expr(
+                    index,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+            }
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } => {
+                self.collect_used_globals_in_expr(
+                    value,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+                if let Some(expr) = start {
+                    self.collect_used_globals_in_expr(
+                        expr,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+                if let Some(expr) = end {
+                    self.collect_used_globals_in_expr(
+                        expr,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+                if let Some(expr) = step.as_deref() {
+                    self.collect_used_globals_in_expr(
+                        expr,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+            }
+            ExprKind::ListComp {
+                elt,
+                target,
+                iter,
+                ifs,
+            }
+            | ExprKind::SetComp {
+                elt,
+                target,
+                iter,
+                ifs,
+            } => {
+                // The iterator expression is evaluated in the outer scope.
+                self.collect_used_globals_in_expr(
+                    iter,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+                // Comprehensions do not inherit `global` declarations.
+                let empty_globals = HashSet::new();
+                let mut comp_locals = HashSet::new();
+                comp_locals.insert(target.clone());
+                let mut comp_outers = outers.clone();
+                comp_outers.extend(locals.iter().cloned());
+                for cond in ifs {
+                    self.collect_used_globals_in_expr(
+                        cond,
+                        &comp_locals,
+                        &comp_outers,
+                        &empty_globals,
+                        module_vars,
+                        used,
+                    );
+                }
+                self.collect_used_globals_in_expr(
+                    elt,
+                    &comp_locals,
+                    &comp_outers,
+                    &empty_globals,
+                    module_vars,
+                    used,
+                );
+            }
+            ExprKind::Lambda { params, body } => {
+                let mut lambda_locals: HashSet<String> =
+                    params.iter().cloned().collect();
+                let mut lambda_globals = HashSet::new();
+                if let ExprKind::Block { stmts } = &body.kind {
+                    self.collect_scope_locals(stmts, &mut lambda_locals, &mut lambda_globals);
+                }
+                let mut lambda_outers = outers.clone();
+                lambda_outers.extend(locals.iter().cloned());
+                self.collect_used_globals_in_expr(
+                    body,
+                    &lambda_locals,
+                    &lambda_outers,
+                    &lambda_globals,
+                    module_vars,
+                    used,
+                );
+            }
+            ExprKind::IfExpr { test, body, orelse } => {
+                self.collect_used_globals_in_expr(
+                    test,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+                self.collect_used_globals_in_expr(
+                    body,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+                self.collect_used_globals_in_expr(
+                    orelse,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+            }
+            ExprKind::Block { stmts } => {
+                self.collect_used_globals_in_stmts(
+                    stmts,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+            }
+            ExprKind::UnionCtor { inner, .. } => {
+                self.collect_used_globals_in_expr(
+                    inner,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+            }
+            ExprKind::Literal(_) => {}
+        }
+    }
+
+    /// Collect list element type hints for a block of statements.
+    fn collect_list_elem_types_for_stmts(&self, stmts: &[Stmt]) -> HashMap<String, Type> {
+        let mut inferred = HashMap::new();
+        self.collect_list_elem_types_in_stmts(stmts, &mut inferred);
+        inferred
+    }
+
+    /// Walk statements and record list element types inferred from assignments and calls.
+    fn collect_list_elem_types_in_stmts(
+        &self,
+        stmts: &[Stmt],
+        inferred: &mut HashMap<String, Type>,
+    ) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Let { name, value, .. } => {
+                    self.note_list_assignment(name, value, inferred);
+                    self.collect_list_elem_types_in_expr(value, inferred);
+                }
+                StmtKind::Assign { target, value } => {
+                    if let AssignTarget::Name(name) = target {
+                        self.note_list_assignment(name, value, inferred);
+                    }
+                    self.collect_list_elem_types_in_expr(value, inferred);
+                }
+                StmtKind::Return { value } => {
+                    if let Some(expr) = value {
+                        self.collect_list_elem_types_in_expr(expr, inferred);
+                    }
+                }
+                StmtKind::If { test, body, orelse } => {
+                    self.collect_list_elem_types_in_expr(test, inferred);
+                    self.collect_list_elem_types_in_stmts(body, inferred);
+                    self.collect_list_elem_types_in_stmts(orelse, inferred);
+                }
+                StmtKind::While { test, body } => {
+                    self.collect_list_elem_types_in_expr(test, inferred);
+                    self.collect_list_elem_types_in_stmts(body, inferred);
+                }
+                StmtKind::For { iter, body, .. } => {
+                    self.collect_list_elem_types_in_expr(iter, inferred);
+                    self.collect_list_elem_types_in_stmts(body, inferred);
+                }
+                StmtKind::Expr(expr) => {
+                    self.collect_list_elem_types_in_expr(expr, inferred);
+                }
+                StmtKind::Assert { test, msg } => {
+                    self.collect_list_elem_types_in_expr(test, inferred);
+                    if let Some(expr) = msg {
+                        self.collect_list_elem_types_in_expr(expr, inferred);
+                    }
+                }
+                StmtKind::Match { subject, cases } => {
+                    self.collect_list_elem_types_in_expr(subject, inferred);
+                    for case in cases {
+                        self.collect_list_elem_types_in_stmts(&case.body, inferred);
+                    }
+                }
+                StmtKind::Try {
+                    body,
+                    handlers,
+                    orelse,
+                    finalbody,
+                } => {
+                    self.collect_list_elem_types_in_stmts(body, inferred);
+                    for handler in handlers {
+                        self.collect_list_elem_types_in_stmts(&handler.body, inferred);
+                    }
+                    self.collect_list_elem_types_in_stmts(orelse, inferred);
+                    self.collect_list_elem_types_in_stmts(finalbody, inferred);
+                }
+                StmtKind::Raise { exc, cause } => {
+                    if let Some(expr) = exc {
+                        self.collect_list_elem_types_in_expr(expr, inferred);
+                    }
+                    if let Some(expr) = cause {
+                        self.collect_list_elem_types_in_expr(expr, inferred);
+                    }
+                }
+                StmtKind::Global { .. } | StmtKind::Break | StmtKind::Continue => {}
+            }
+        }
+    }
+
+    /// Track list element type assignments from direct list expressions.
+    fn note_list_assignment(
+        &self,
+        name: &str,
+        value: &Expr,
+        inferred: &mut HashMap<String, Type>,
+    ) {
+        if let Some(Type::List(inner)) = value.ty.as_ref() {
+            if !matches!(inner.as_ref(), Type::Unknown) && !inferred.contains_key(name) {
+                inferred.insert(name.to_string(), (*inner.as_ref()).clone());
+            }
+        }
+    }
+
+    /// Walk expressions and record list element types inferred from list method calls.
+    fn collect_list_elem_types_in_expr(
+        &self,
+        expr: &Expr,
+        inferred: &mut HashMap<String, Type>,
+    ) {
+        match &expr.kind {
+            ExprKind::Call { func, args } => {
+                if let ExprKind::Attr { value, attr } = &func.kind {
+                    if let ExprKind::Name(name) = &value.kind {
+                        let elem_ty = match attr.as_str() {
+                            "append" | "index" | "count" => args.get(0).and_then(|arg| arg.ty.clone()),
+                            "insert" => args.get(1).and_then(|arg| arg.ty.clone()),
+                            "extend" => args
+                                .get(0)
+                                .and_then(|arg| arg.ty.as_ref())
+                                .and_then(|ty| self.iter_item_type_hint(ty)),
+                            _ => None,
+                        };
+                        if let Some(elem_ty) = elem_ty {
+                            if !matches!(elem_ty, Type::Unknown) && !inferred.contains_key(name) {
+                                inferred.insert(name.clone(), elem_ty);
+                            }
+                        }
+                    }
+                }
+                self.collect_list_elem_types_in_expr(func, inferred);
+                for arg in args {
+                    self.collect_list_elem_types_in_expr(arg, inferred);
+                }
+            }
+            ExprKind::Attr { value, .. } => {
+                self.collect_list_elem_types_in_expr(value, inferred);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.collect_list_elem_types_in_expr(left, inferred);
+                self.collect_list_elem_types_in_expr(right, inferred);
+            }
+            ExprKind::Unary { expr: inner, .. } => {
+                self.collect_list_elem_types_in_expr(inner, inferred);
+            }
+            ExprKind::Compare { left, right, .. } => {
+                self.collect_list_elem_types_in_expr(left, inferred);
+                self.collect_list_elem_types_in_expr(right, inferred);
+            }
+            ExprKind::BoolOp { values, .. } => {
+                for value in values {
+                    self.collect_list_elem_types_in_expr(value, inferred);
+                }
+            }
+            ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
+                for item in items {
+                    self.collect_list_elem_types_in_expr(item, inferred);
+                }
+            }
+            ExprKind::Dict(items) => {
+                for (k, v) in items {
+                    self.collect_list_elem_types_in_expr(k, inferred);
+                    self.collect_list_elem_types_in_expr(v, inferred);
+                }
+            }
+            ExprKind::Index { value, index } => {
+                self.collect_list_elem_types_in_expr(value, inferred);
+                self.collect_list_elem_types_in_expr(index, inferred);
+            }
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } => {
+                self.collect_list_elem_types_in_expr(value, inferred);
+                if let Some(expr) = start {
+                    self.collect_list_elem_types_in_expr(expr, inferred);
+                }
+                if let Some(expr) = end {
+                    self.collect_list_elem_types_in_expr(expr, inferred);
+                }
+                if let Some(expr) = step.as_deref() {
+                    self.collect_list_elem_types_in_expr(expr, inferred);
+                }
+            }
+            ExprKind::ListComp { elt, iter, ifs, .. }
+            | ExprKind::SetComp { elt, iter, ifs, .. } => {
+                self.collect_list_elem_types_in_expr(iter, inferred);
+                self.collect_list_elem_types_in_expr(elt, inferred);
+                for cond in ifs {
+                    self.collect_list_elem_types_in_expr(cond, inferred);
+                }
+            }
+            ExprKind::Lambda { body, .. } => {
+                self.collect_list_elem_types_in_expr(body, inferred);
+            }
+            ExprKind::IfExpr { test, body, orelse } => {
+                self.collect_list_elem_types_in_expr(test, inferred);
+                self.collect_list_elem_types_in_expr(body, inferred);
+                self.collect_list_elem_types_in_expr(orelse, inferred);
+            }
+            ExprKind::Block { stmts } => {
+                self.collect_list_elem_types_in_stmts(stmts, inferred);
+            }
+            ExprKind::UnionCtor { inner, .. } => {
+                self.collect_list_elem_types_in_expr(inner, inferred);
+            }
+            ExprKind::Literal(_) | ExprKind::Name(_) => {}
+        }
     }
 }

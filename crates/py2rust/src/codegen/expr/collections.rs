@@ -21,8 +21,9 @@ impl<'a> Codegen<'a> {
                         self.rust_type(inner)
                     ));
                 }
-                // Let Rust infer the element type for empty lists with unknown type.
-                return Ok("Arc::new(Mutex::new(Vec::new()))".to_string());
+                // Use PyRepr so empty lists with unknown element types are concrete.
+                self.uses.py_repr = true;
+                return Ok("Arc::new(Mutex::new(Vec::<PyRepr>::new()))".to_string());
             }
         }
         // If element types don't unify, coerce to a String-based list for Debug printing.

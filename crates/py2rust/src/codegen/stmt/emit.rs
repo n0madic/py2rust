@@ -129,6 +129,16 @@ impl<'a> Codegen<'a> {
                 }
 
                 if allow_let && self.local_var_type(name).is_none() {
+                    if let Some((expr, elem_ty)) = self.gen_empty_list_with_hint(name, value)? {
+                        let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
+                            "mut "
+                        } else {
+                            ""
+                        };
+                        self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                        self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
+                        return Ok(());
+                    }
                     let expr = self.gen_expr(value)?;
                     let expr = self.maybe_clone_list_expr(expr, value.ty.as_ref(), None);
                     let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
@@ -496,6 +506,18 @@ impl<'a> Codegen<'a> {
                     self.initialized_globals.insert(name.clone());
                     return Ok(());
                 }
+                if ann.is_none() {
+                    if let Some((expr, elem_ty)) = self.gen_empty_list_with_hint(name, value)? {
+                        let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
+                            "mut "
+                        } else {
+                            ""
+                        };
+                        self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                        self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
+                        return Ok(());
+                    }
+                }
                 if let ExprKind::Lambda { params, body } = &value.kind {
                     if let ExprKind::Block { stmts } = &body.kind {
                         // Nested def: inside a function, emit a closure to allow captures.
@@ -776,5 +798,38 @@ impl<'a> Codegen<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Generate an empty list expression using inferred element type hints.
+    fn gen_empty_list_with_hint(
+        &mut self,
+        name: &str,
+        value: &Expr,
+    ) -> Result<Option<(String, Type)>, CompileError> {
+        let elem_ty = match self.list_elem_type_for_name(name) {
+            Some(ty) if !matches!(ty, Type::Unknown) => ty.clone(),
+            _ => return Ok(None),
+        };
+        let needs_hint = match value.ty.as_ref() {
+            Some(Type::List(inner)) => matches!(inner.as_ref(), Type::Unknown),
+            _ => false,
+        };
+        if !needs_hint {
+            return Ok(None);
+        }
+        let is_empty_list = matches!(&value.kind, ExprKind::List(items) if items.is_empty());
+        let is_empty_call = matches!(
+            &value.kind,
+            ExprKind::Call { func, args }
+                if args.is_empty() && matches!(&func.kind, ExprKind::Name(name) if name == "list" || name == "tuple")
+        );
+        if !is_empty_list && !is_empty_call {
+            return Ok(None);
+        }
+        let expr = format!(
+            "Arc::new(Mutex::new(Vec::<{}>::new()))",
+            self.rust_type(&elem_ty)
+        );
+        Ok(Some((expr, elem_ty)))
     }
 }

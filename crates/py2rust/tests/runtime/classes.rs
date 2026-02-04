@@ -47,6 +47,26 @@ assert s == 12, "add should be 12 (3+2 + 4+3)"
 p.x = 10
 assert p.x == 10, "Field x should be 10 after modification"
 
+# ===== SECTION: Optional attribute access =====
+
+class TypedPoint:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+def maybe_typed_point(flag: bool) -> TypedPoint | None:
+    if flag:
+        return TypedPoint(1, 2)
+    return None
+
+opt_p: TypedPoint | None = maybe_typed_point(True)
+if opt_p is not None:
+    # Accessing a field after an is-not-None guard should be safe.
+    assert opt_p.x == 1, "opt_p.x should equal 1 after is_none guard"
+
 # ===== SECTION: Multiple instances =====
 
 # Create another instance

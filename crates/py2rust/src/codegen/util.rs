@@ -14,7 +14,7 @@ impl<'a> Codegen<'a> {
     ///
     /// A name is global if:
     /// 1. It's NOT in the current function's local variable map, AND
-    /// 2. It IS in the program's global variables map
+    /// 2. It IS in the shared globals set for this program
     ///
     /// This is used to determine if we need to emit the mutex wrapper
     /// access pattern for globals.
@@ -24,7 +24,18 @@ impl<'a> Codegen<'a> {
                 return false;
             }
         }
-        self.ctx.globals.contains_key(name)
+        self.shared_globals.contains(name)
+    }
+
+    /// Look up a list element type hint for a name in the current scope.
+    pub(crate) fn list_elem_type_for_name(&self, name: &str) -> Option<&Type> {
+        if self.current_function.is_some() {
+            self.inferred_list_elems
+                .as_ref()
+                .and_then(|map| map.get(name))
+        } else {
+            self.main_list_elems.get(name)
+        }
     }
 
     pub(crate) fn global_name(&self, name: &str) -> String {

@@ -212,7 +212,19 @@ impl<'a> Codegen<'a> {
                 return Err(self.error(expr.span, "list() expects zero or one argument"));
             }
             if args.is_empty() {
-                return Ok(Some("Arc::new(Mutex::new(Vec::new()))".to_string()));
+                if let Some(Type::List(inner)) = expr.ty.as_ref() {
+                    if !matches!(inner.as_ref(), Type::Unknown) {
+                        return Ok(Some(format!(
+                            "Arc::new(Mutex::new(Vec::<{}>::new()))",
+                            self.rust_type(inner)
+                        )));
+                    }
+                }
+                // Default to PyRepr so empty lists have a concrete element type.
+                self.uses.py_repr = true;
+                return Ok(Some(
+                    "Arc::new(Mutex::new(Vec::<PyRepr>::new()))".to_string(),
+                ));
             }
             if let Some(Type::Tuple(items)) = args[0].ty.as_ref() {
                 let tmp = self.new_tmp();
@@ -239,7 +251,19 @@ impl<'a> Codegen<'a> {
                 return Err(self.error(expr.span, "tuple() expects zero or one argument"));
             }
             if args.is_empty() {
-                return Ok(Some("Arc::new(Mutex::new(Vec::new()))".to_string()));
+                if let Some(Type::List(inner)) = expr.ty.as_ref() {
+                    if !matches!(inner.as_ref(), Type::Unknown) {
+                        return Ok(Some(format!(
+                            "Arc::new(Mutex::new(Vec::<{}>::new()))",
+                            self.rust_type(inner)
+                        )));
+                    }
+                }
+                // Default to PyRepr so empty tuples have a concrete element type.
+                self.uses.py_repr = true;
+                return Ok(Some(
+                    "Arc::new(Mutex::new(Vec::<PyRepr>::new()))".to_string(),
+                ));
             }
             let iter_src = self.gen_iter_source(&args[0])?;
             return Ok(Some(format!(
