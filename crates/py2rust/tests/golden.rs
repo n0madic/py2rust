@@ -21,7 +21,8 @@ def area(s: Shape) -> float:
         case Rect(w, h):
             return w * h
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     assert!(out.rust.contains("enum Shape"));
     assert!(out.rust.contains("match s"));
 }
@@ -56,7 +57,8 @@ def sum_n(n: int) -> int:
         s = s + x
     return s
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     assert!(out.rust.contains("impl IntoIterator for CountTo"));
     assert!(out.rust.contains("impl Iterator for CountToIter"));
 }

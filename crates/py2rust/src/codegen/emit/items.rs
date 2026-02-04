@@ -159,7 +159,10 @@ impl<'a> Codegen<'a> {
         self.push_line(&format!("{} {{", class_def.name));
         self.indent += 1;
         for (field, _) in &class_info.fields {
-            let expr = field_inits.get(field).unwrap();
+            // Safe: missing fields are rejected above during __init__ validation.
+            let expr = field_inits
+                .get(field)
+                .expect("field init missing after __init__ validation");
             self.push_line(&format!("{}: {},", field, expr));
         }
         self.indent -= 1;

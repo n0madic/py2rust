@@ -121,8 +121,8 @@ impl<'a> Codegen<'a> {
                     for (name, ty) in &try_vars {
                         let ty_str = self.rust_type(ty);
                         self.push_line(&format!(
-                            "let {}: {} = _try_{}.unwrap();",
-                            name, ty_str, name
+                            "let {}: {} = _try_{}.expect(\"try block did not initialize {}\");",
+                            name, ty_str, name, name
                         ));
                     }
                 }
@@ -157,14 +157,18 @@ impl<'a> Codegen<'a> {
                 if in_throwing_fn {
                     self.push_line("return _try_result;");
                 } else {
-                    self.push_line("return _try_result.unwrap();");
+                    self.push_line(
+                        "return _try_result.unwrap_or_else(|e| panic!(\"Unhandled exception: {}\", e));",
+                    );
                 }
             } else {
                 if in_throwing_fn {
                     self.push_line("_try_result?;");
                 } else {
-                    // Function doesn't throw, so unwrap (should never fail).
-                    self.push_line("_try_result.unwrap();");
+                    // Function doesn't throw, so crash with context on unhandled exceptions.
+                    self.push_line(
+                        "_try_result.unwrap_or_else(|e| panic!(\"Unhandled exception: {}\", e));",
+                    );
                 }
 
                 // Unwrap variables from try block for use in else.
@@ -172,8 +176,8 @@ impl<'a> Codegen<'a> {
                     for (name, ty) in &try_vars {
                         let ty_str = self.rust_type(ty);
                         self.push_line(&format!(
-                            "let {}: {} = _try_{}.unwrap();",
-                            name, ty_str, name
+                            "let {}: {} = _try_{}.expect(\"try block did not initialize {}\");",
+                            name, ty_str, name, name
                         ));
                     }
                 }

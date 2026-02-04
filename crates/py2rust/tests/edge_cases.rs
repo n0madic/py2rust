@@ -7,7 +7,8 @@ def test() -> int:
     lst: list[int] = []
     return max(lst)
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should use py_max helper that panics with descriptive message
     assert!(out.rust.contains("py_max("), "Should use py_max helper");
 }
@@ -19,7 +20,8 @@ def test() -> int:
     lst: list[int] = []
     return min(lst)
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should use py_min helper that panics with descriptive message
     assert!(out.rust.contains("py_min("), "Should use py_min helper");
 }
@@ -30,7 +32,8 @@ fn int_parse_has_error_message() {
 def parse(s: str) -> int:
     return int(s)
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should use py_parse_int helper that panics with descriptive message
     assert!(
         out.rust.contains("py_parse_int("),
@@ -44,7 +47,8 @@ fn float_parse_has_error_message() {
 def parse(s: str) -> float:
     return float(s)
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should use py_parse_float helper that panics with descriptive message
     assert!(
         out.rust.contains("py_parse_float("),
@@ -58,8 +62,9 @@ fn dict_missing_key_error() {
 def get(d: dict[str, int], key: str) -> int:
     return d[key]
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
-    // Should use .expect("KeyError") instead of .unwrap()
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    // Should use .expect("KeyError") in generated code
     assert!(
         out.rust.contains("KeyError"),
         "Should include KeyError message"
@@ -72,7 +77,8 @@ fn negative_index_literal() {
 def last(lst: list[int]) -> int:
     return lst[-1]
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Literal -1 should trigger py_list_get usage
     assert!(
         out.rust.contains("py_list_get("),
@@ -86,7 +92,8 @@ fn negative_index_variable() {
 def get_at(lst: list[int], idx: int) -> int:
     return lst[idx]
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Variable index might be negative, should use py_list_get
     assert!(
         out.rust.contains("py_list_get("),
@@ -100,7 +107,8 @@ fn positive_index_literal() {
 def first(lst: list[int]) -> int:
     return lst[0]
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Positive literal should use py_list_get and not py_index
     assert!(
         !out.rust.contains("py_index("),
@@ -118,7 +126,8 @@ fn negative_index_assignment() {
 def set_last(lst: list[int], val: int) -> None:
     lst[-1] = val
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Assignment with negative index should use py_index
     assert!(
         out.rust.contains("py_index("),
@@ -132,7 +141,8 @@ fn dict_literal_uses_from() {
 def make_dict() -> dict[str, int]:
     return {"a": 1, "b": 2}
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should use HashMap::from([...]) instead of repeated .insert()
     assert!(
         out.rust.contains("HashMap::from(["),
@@ -146,7 +156,8 @@ fn empty_dict_literal() {
 def make_empty() -> dict[str, int]:
     return {}
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Empty dict should use HashMap::new()
     assert!(
         out.rust.contains("HashMap::new()"),
@@ -160,7 +171,8 @@ fn set_literal_uses_from() {
 def make_set() -> set[int]:
     return {1, 2, 3}
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should use HashSet::from([...]) instead of repeated .insert()
     assert!(
         out.rust.contains("HashSet::from(["),
@@ -174,7 +186,8 @@ fn py_max_helper_is_emitted() {
 def test() -> int:
     return max([1, 2, 3])
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should contain the py_max helper definition
     assert!(
         out.rust.contains("fn py_max<T: Ord"),
@@ -192,7 +205,8 @@ fn py_min_helper_is_emitted() {
 def test() -> int:
     return min([1, 2, 3])
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should contain the py_min helper definition
     assert!(
         out.rust.contains("fn py_min<T: Ord"),
@@ -210,7 +224,8 @@ fn py_parse_int_helper_is_emitted() {
 def test(s: str) -> int:
     return int(s)
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should contain the py_parse_int helper definition
     assert!(
         out.rust.contains("fn py_parse_int("),
@@ -228,7 +243,8 @@ fn py_index_helper_is_emitted() {
 def test(lst: list[int], i: int, v: int) -> None:
     lst[i] = v
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should contain the py_index helper definition
     assert!(
         out.rust.contains("fn py_index("),
@@ -242,7 +258,8 @@ fn py_list_get_helper_is_emitted() {
 def test(lst: list[int], i: int) -> int:
     return lst[i]
 "#;
-    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should contain the py_list_get helper definition
     assert!(
         out.rust.contains("fn py_list_get"),

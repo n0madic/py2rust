@@ -33,10 +33,8 @@ impl<'a> Codegen<'a> {
             return Ok("__NAME__.to_string()".to_string());
         }
         if self.is_global(name) {
-            return Ok(format!(
-                "{}.get().unwrap().lock().unwrap().clone()",
-                self.global_name(name)
-            ));
+            // Global reads go through OnceLock + Mutex with context-rich expects.
+            return Ok(format!("{}.clone()", self.global_lock_expr(name)));
         }
         Ok(name.to_string())
     }

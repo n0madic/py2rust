@@ -47,7 +47,8 @@ impl<'a> Codegen<'a> {
             self.push_line("type Item = T;");
             self.push_line("fn next(&mut self) -> Option<Self::Item> {");
             self.indent += 1;
-            self.push_line("self.inner.lock().unwrap().next()");
+            // Poisoned mutex means iterator state is invalid; panic with context.
+            self.push_line("self.inner.lock().expect(\"PyIter mutex poisoned\").next()");
             self.indent -= 1;
             self.push_line("}");
             self.indent -= 1;

@@ -33,7 +33,11 @@ impl<'a> Codegen<'a> {
     }
 
     pub(crate) fn global_lock_expr(&self, name: &str) -> String {
-        format!("{}.get().unwrap().lock().unwrap()", self.global_name(name))
+        // Use expect to surface clear panic messages if globals are misused.
+        format!(
+            "{}.get().expect(\"global not initialized\").lock().expect(\"global mutex poisoned\")",
+            self.global_name(name)
+        )
     }
 
     pub(crate) fn new_tmp(&mut self) -> String {

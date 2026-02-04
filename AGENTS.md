@@ -101,5 +101,6 @@ After completing any code changes:
   - codegen `scan_expr` for helper imports
 - If you modify statement handling in codegen, update `collect_assign_counts` in `util.rs` to track variable mutations in new statement types.
 - Keep `#![forbid(unsafe_code)]` across crates.
+- Avoid .unwrap(), use .expect() with context or proper error handling.
 - Always update tests when changing behavior.
 - Update documentation in README.md and here as needed.

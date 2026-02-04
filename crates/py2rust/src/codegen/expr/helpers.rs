@@ -266,12 +266,16 @@ impl<'a> Codegen<'a> {
         self.current_function.is_none() && self.top_level_can_throw
     }
 
-    /// Wrap a Result-returning expression with ? or unwrap depending on context.
+    /// Wrap a Result-returning expression with ? or a panic depending on context.
     pub(crate) fn wrap_result(&self, expr: String) -> String {
         if self.in_throwing_context() {
             format!("({}?)", expr)
         } else {
-            format!("{}.unwrap()", expr)
+            // Match CPython-style crashes by panicking with the PyError display message.
+            format!(
+                "{}.unwrap_or_else(|e| panic!(\"Unhandled exception: {{}}\", e))",
+                expr
+            )
         }
     }
 

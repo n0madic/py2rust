@@ -14,8 +14,8 @@ impl<'a> Codegen<'a> {
     /// Mutex: Provides interior mutability and thread safety
     ///
     /// Access pattern in generated code:
-    /// - Read: `GLOBAL_X.get().unwrap().lock().unwrap().clone()`
-    /// - Write: `*GLOBAL_X.get().unwrap().lock().unwrap() = value`
+    /// - Read: `GLOBAL_X.get().expect("global not initialized").lock().expect("global mutex poisoned").clone()`
+    /// - Write: `*GLOBAL_X.get().expect("global not initialized").lock().expect("global mutex poisoned") = value`
     ///
     /// This is verbose but necessary for Rust's safety guarantees.
     pub(crate) fn emit_globals(&mut self) {

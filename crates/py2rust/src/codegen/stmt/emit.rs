@@ -144,11 +144,7 @@ impl<'a> Codegen<'a> {
                         let expected = self.ctx.globals.get(name).cloned();
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                         let expr = self.wrap_global_value(expr, value, expected.as_ref());
-                        let gname = self.global_name(name);
-                        self.push_line(&format!(
-                            "*{}.get().unwrap().lock().unwrap() = {};",
-                            gname, expr
-                        ));
+                        self.push_line(&format!("*{} = {};", self.global_lock_expr(name), expr));
                     } else {
                         let expected = self.local_var_type(name).cloned();
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
