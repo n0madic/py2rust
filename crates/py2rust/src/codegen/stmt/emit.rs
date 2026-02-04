@@ -739,7 +739,12 @@ impl<'a> Codegen<'a> {
                 let iter_src = if let Some(Type::Dict(_, _)) = iter.ty.as_ref() {
                     format!("{}.into_iter().map(|(k, _)| k)", iter_expr)
                 } else {
-                    self.gen_iter_source(iter)?
+                    let IterSource { setup, expr } = self.gen_iter_source(iter)?;
+                    // Keep list lock guards alive for the duration of the loop body.
+                    for line in setup {
+                        self.push_line(&format!("{};", line));
+                    }
+                    expr
                 };
                 self.push_line(&format!("for {} in {} {{", target, iter_src));
                 self.indent += 1;

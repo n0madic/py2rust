@@ -76,6 +76,7 @@ Runtime integration tests are in `crates/py2rust/tests/`:
 
 ## Development Workflow
 **CRITICAL: Always run tests after making changes!**
+**RECOMMENDED: Run `cargo clippy` and `cargo fmt` before committing changes**
 
 After completing any code changes:
 1. Run the full test suite: `cargo test`

@@ -240,6 +240,18 @@ assert max(values) == 4, "max(values) should equal 4"
 assert max(values) - min(values) == 3, "max(values) - min(values) should equal 3"
 
 # ============================================================================
+# reversed() - Reverse iterator
+# ============================================================================
+
+# reversed() over list should produce correct order.
+rev_nums: list[int] = list(reversed([1, 2, 3, 4]))
+assert rev_nums == [4, 3, 2, 1], "reversed([1,2,3,4]) should reverse list"
+
+# reversed() over list of strings should preserve elements.
+rev_words: list[str] = list(reversed(["a", "b", "c"]))
+assert rev_words == ["c", "b", "a"], "reversed(['a','b','c']) should reverse list"
+
+# ============================================================================
 # round() - Rounding
 # ============================================================================
 

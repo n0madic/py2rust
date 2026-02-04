@@ -241,10 +241,12 @@ impl<'a> Codegen<'a> {
                 )));
             }
             let iter_src = self.gen_iter_source(&args[0])?;
-            return Ok(Some(format!(
+            // Scope iterator consumption to avoid holding list locks across expressions.
+            let body = format!(
                 "Arc::new(Mutex::new(({}).collect::<Vec<_>>()))",
-                iter_src
-            )));
+                iter_src.expr
+            );
+            return Ok(Some(iter_src.wrap(body)));
         }
         if name == "tuple" {
             if args.len() > 1 {
@@ -266,10 +268,11 @@ impl<'a> Codegen<'a> {
                 ));
             }
             let iter_src = self.gen_iter_source(&args[0])?;
-            return Ok(Some(format!(
+            let body = format!(
                 "Arc::new(Mutex::new(({}).collect::<Vec<_>>()))",
-                iter_src
-            )));
+                iter_src.expr
+            );
+            return Ok(Some(iter_src.wrap(body)));
         }
         if name == "set" {
             if args.len() > 1 {
@@ -289,7 +292,8 @@ impl<'a> Codegen<'a> {
                 return Ok(Some(format!("{}.clone()", arg_expr)));
             }
             let iter_src = self.gen_iter_source(&args[0])?;
-            return Ok(Some(format!("({}).collect::<HashSet<_>>()", iter_src)));
+            let body = format!("({}).collect::<HashSet<_>>()", iter_src.expr);
+            return Ok(Some(iter_src.wrap(body)));
         }
         if name == "dict" {
             if args.len() > 1 {
@@ -309,7 +313,8 @@ impl<'a> Codegen<'a> {
                 return Ok(Some(format!("{}.clone()", arg_expr)));
             }
             let iter_src = self.gen_iter_source(&args[0])?;
-            return Ok(Some(format!("({}).collect::<HashMap<_, _>>()", iter_src)));
+            let body = format!("({}).collect::<HashMap<_, _>>()", iter_src.expr);
+            return Ok(Some(iter_src.wrap(body)));
         }
         if name == "bytes" {
             if args.len() > 2 {
@@ -348,10 +353,11 @@ impl<'a> Codegen<'a> {
                 | Some(Type::Iterator(_))
                 | Some(Type::Tuple(_)) => {
                     let iter_src = self.gen_iter_source(&args[0])?;
-                    return Ok(Some(format!(
+                    let body = format!(
                         "({}).map(|b| b as i64).collect::<Vec<i64>>()",
-                        iter_src
-                    )));
+                        iter_src.expr
+                    );
+                    return Ok(Some(iter_src.wrap(body)));
                 }
                 Some(Type::Str) => {
                     return Err(self.error(expr.span, "bytes() expects encoding for str"));
@@ -365,36 +371,43 @@ impl<'a> Codegen<'a> {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "enumerate() expects one argument"));
             }
-            let iter_src = self.gen_iter_source(&args[0])?;
+            let iter_expr = self.gen_iter_source_owned(&args[0])?;
             return Ok(Some(format!(
-                "{}.enumerate().map(|(i, v)| (i as i64, v))",
-                iter_src
+                "({}).enumerate().map(|(i, v)| (i as i64, v))",
+                iter_expr
             )));
         }
         if name == "zip" {
             if args.len() != 2 {
                 return Err(self.error(expr.span, "zip() expects two arguments"));
             }
-            let left_iter = self.gen_iter_source(&args[0])?;
-            let right_iter = self.gen_iter_source(&args[1])?;
-            return Ok(Some(format!("{}.zip({})", left_iter, right_iter)));
+            if let (ExprKind::Name(left), ExprKind::Name(right)) = (&args[0].kind, &args[1].kind) {
+                if left == right && matches!(args[0].ty.as_ref(), Some(Type::List(_))) {
+                    let iter_expr = self.gen_iter_source_owned(&args[0])?;
+                    // Use a single list iterator to avoid double-locking the same list.
+                    return Ok(Some(format!("({}).map(|x| (x.clone(), x))", iter_expr)));
+                }
+            }
+            let left_iter = self.gen_iter_source_owned(&args[0])?;
+            let right_iter = self.gen_iter_source_owned(&args[1])?;
+            return Ok(Some(format!("({}).zip({})", left_iter, right_iter)));
         }
         if name == "map" {
             if args.len() != 2 {
                 return Err(self.error(expr.span, "map() expects two arguments"));
             }
-            let iter_expr = self.gen_iter_source(&args[1])?;
+            let iter_expr = self.gen_iter_source_owned(&args[1])?;
             let (func_expr, inline_closure) = match &args[0].kind {
                 ExprKind::Name(n) if n == "str" => ("|x| x.to_string()".to_string(), true),
                 ExprKind::Lambda { .. } => (self.gen_expr(&args[0])?, true),
                 _ => (self.gen_expr(&args[0])?, false),
             };
             if inline_closure {
-                return Ok(Some(format!("{}.map({})", iter_expr, func_expr)));
+                return Ok(Some(format!("({}).map({})", iter_expr, func_expr)));
             }
             let tmp = self.new_tmp();
             return Ok(Some(format!(
-                "{{ let {} = {}; {}.map(move |x| ({})(x)) }}",
+                "{{ let {} = {}; ({}).map(move |x| ({})(x)) }}",
                 tmp, func_expr, iter_expr, tmp
             )));
         }
@@ -402,7 +415,7 @@ impl<'a> Codegen<'a> {
             if args.len() != 2 {
                 return Err(self.error(expr.span, "filter() expects two arguments"));
             }
-            let iter_expr = self.gen_iter_source(&args[1])?;
+            let iter_expr = self.gen_iter_source_owned(&args[1])?;
             if matches!(args[0].kind, ExprKind::Literal(Literal::None)) {
                 let item_ty = args[1]
                     .ty
@@ -413,14 +426,14 @@ impl<'a> Codegen<'a> {
                     None => "true".to_string(),
                 };
                 return Ok(Some(format!(
-                    "{}.filter(|x| {{ let x = x.clone(); {} }})",
+                    "({}).filter(|x| {{ let x = x.clone(); {} }})",
                     iter_expr, truthy
                 )));
             }
             let pred_expr = self.gen_expr(&args[0])?;
             let tmp = self.new_tmp();
             return Ok(Some(format!(
-                "{{ let {} = {}; {}.filter(move |x| {{ let x = x.clone(); ({}) (x) }}) }}",
+                "{{ let {} = {}; ({}).filter(move |x| {{ let x = x.clone(); ({}) (x) }}) }}",
                 tmp, pred_expr, iter_expr, tmp
             )));
         }
@@ -428,7 +441,7 @@ impl<'a> Codegen<'a> {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "all() expects one argument"));
             }
-            let iter_expr = self.gen_iter_source(&args[0])?;
+            let iter_src = self.gen_iter_source(&args[0])?;
             let item_ty = args[0]
                 .ty
                 .as_ref()
@@ -437,16 +450,17 @@ impl<'a> Codegen<'a> {
                 Some(ty) => self.truthy_expr_for_type("v", ty),
                 None => "true".to_string(),
             };
-            return Ok(Some(format!(
+            let body = format!(
                 "{}.all(|v| {{ let v = v.clone(); {} }})",
-                iter_expr, truthy
-            )));
+                iter_src.expr, truthy
+            );
+            return Ok(Some(iter_src.wrap(body)));
         }
         if name == "any" {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "any() expects one argument"));
             }
-            let iter_expr = self.gen_iter_source(&args[0])?;
+            let iter_src = self.gen_iter_source(&args[0])?;
             let item_ty = args[0]
                 .ty
                 .as_ref()
@@ -455,17 +469,40 @@ impl<'a> Codegen<'a> {
                 Some(ty) => self.truthy_expr_for_type("v", ty),
                 None => "true".to_string(),
             };
-            return Ok(Some(format!(
+            let body = format!(
                 "{}.any(|v| {{ let v = v.clone(); {} }})",
-                iter_expr, truthy
-            )));
+                iter_src.expr, truthy
+            );
+            return Ok(Some(iter_src.wrap(body)));
         }
         if name == "reversed" {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "reversed() expects one argument"));
             }
-            let iter_expr = self.gen_iter_source(&args[0])?;
-            return Ok(Some(format!("{}.rev()", iter_expr)));
+            if let Some(Type::List(inner)) = args[0].ty.as_ref() {
+                let arg_expr = self.gen_expr(&args[0])?;
+                let tmp = self.new_tmp();
+                let guard = self.new_tmp();
+                // Lists need a bounded lock scope; collect in reverse, then iterate owned.
+                let body = if self.is_copy_type(inner) {
+                    format!(
+                        "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().unwrap(); {guard}.iter().rev().copied().collect::<Vec<_>>().into_iter() }}",
+                        tmp = tmp,
+                        expr = arg_expr,
+                        guard = guard
+                    )
+                } else {
+                    format!(
+                        "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().unwrap(); {guard}.iter().rev().cloned().collect::<Vec<_>>().into_iter() }}",
+                        tmp = tmp,
+                        expr = arg_expr,
+                        guard = guard
+                    )
+                };
+                return Ok(Some(body));
+            }
+            let iter_expr = self.gen_iter_source_owned(&args[0])?;
+            return Ok(Some(format!("({}).rev()", iter_expr)));
         }
         if name == "max" {
             if args.is_empty() {
@@ -473,8 +510,9 @@ impl<'a> Codegen<'a> {
             }
             if args.len() == 1 {
                 self.uses.py_max = true;
-                let iter_expr = self.gen_iter_source(&args[0])?;
-                return Ok(Some(self.wrap_result(format!("py_max({})", iter_expr))));
+                let iter_src = self.gen_iter_source(&args[0])?;
+                let body = self.wrap_result(format!("py_max({})", iter_src.expr));
+                return Ok(Some(iter_src.wrap(body)));
             }
             let use_float = args
                 .iter()
@@ -495,8 +533,9 @@ impl<'a> Codegen<'a> {
             }
             if args.len() == 1 {
                 self.uses.py_min = true;
-                let iter_expr = self.gen_iter_source(&args[0])?;
-                return Ok(Some(self.wrap_result(format!("py_min({})", iter_expr))));
+                let iter_src = self.gen_iter_source(&args[0])?;
+                let body = self.wrap_result(format!("py_min({})", iter_src.expr));
+                return Ok(Some(iter_src.wrap(body)));
             }
             let use_float = args
                 .iter()
@@ -534,7 +573,7 @@ impl<'a> Codegen<'a> {
             if args.is_empty() || args.len() > 2 {
                 return Err(self.error(expr.span, "sum() expects one or two arguments"));
             }
-            let iter_expr = self.gen_iter_source(&args[0])?;
+            let iter_src = self.gen_iter_source(&args[0])?;
             let item_ty = args[0]
                 .ty
                 .as_ref()
@@ -564,10 +603,11 @@ impl<'a> Codegen<'a> {
             } else {
                 "v".to_string()
             };
-            return Ok(Some(format!(
+            let body = format!(
                 "{}.fold({}, |acc, v| acc + {})",
-                iter_expr, start_expr, value_expr
-            )));
+                iter_src.expr, start_expr, value_expr
+            );
+            return Ok(Some(iter_src.wrap(body)));
         }
         if name == "int" {
             if args.len() > 1 {

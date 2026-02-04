@@ -380,7 +380,7 @@ impl<'a> Codegen<'a> {
         ifs: &[Expr],
     ) -> Result<String, CompileError> {
         let tmp = self.new_tmp();
-        let iter_expr = self.gen_iter_source(iter)?;
+        let iter_src = self.gen_iter_source(iter)?;
         // Ensure the comprehension target is treated as a local binding while
         // generating the element and filter expressions.
         let saved_locals = self.local_vars.clone();
@@ -398,8 +398,12 @@ impl<'a> Codegen<'a> {
         self.local_vars = saved_locals;
         let mut out = String::new();
         out.push('{');
+        // Keep list lock guards alive for the duration of the comprehension.
+        for line in &iter_src.setup {
+            out.push_str(&format!(" {};", line));
+        }
         out.push_str(&format!(" let mut {} = Vec::new();", tmp));
-        out.push_str(&format!(" for {} in {} {{", target, iter_expr));
+        out.push_str(&format!(" for {} in {} {{", target, iter_src.expr));
         if ifs.is_empty() {
             out.push_str(&format!(" {}.push({});", tmp, elt_expr));
         } else {
@@ -425,7 +429,7 @@ impl<'a> Codegen<'a> {
     ) -> Result<String, CompileError> {
         self.uses.hash_set = true;
         let tmp = self.new_tmp();
-        let iter_expr = self.gen_iter_source(iter)?;
+        let iter_src = self.gen_iter_source(iter)?;
         // Treat comprehension target as a local binding for element/filter generation.
         let saved_locals = self.local_vars.clone();
         let mut scoped_locals = saved_locals.clone().unwrap_or_default();
@@ -442,8 +446,12 @@ impl<'a> Codegen<'a> {
         self.local_vars = saved_locals;
         let mut out = String::new();
         out.push('{');
+        // Keep list lock guards alive for the duration of the comprehension.
+        for line in &iter_src.setup {
+            out.push_str(&format!(" {};", line));
+        }
         out.push_str(&format!(" let mut {} = HashSet::new();", tmp));
-        out.push_str(&format!(" for {} in {} {{", target, iter_expr));
+        out.push_str(&format!(" for {} in {} {{", target, iter_src.expr));
         if ifs.is_empty() {
             out.push_str(&format!(" {}.insert({});", tmp, elt_expr));
         } else {

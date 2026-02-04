@@ -68,14 +68,14 @@ impl<'a> Codegen<'a> {
             }
             if self.is_global(name)
                 && matches!(self.ctx.globals.get(name), Some(Type::Option(_)))
-                    && matches!(value.ty.as_ref(), Some(Type::Custom(_)))
-                {
-                    return Ok(format!(
-                        "{}.as_ref().expect(\"optional global is None\").{}",
-                        self.global_lock_expr(name),
-                        attr
-                    ));
-                }
+                && matches!(value.ty.as_ref(), Some(Type::Custom(_)))
+            {
+                return Ok(format!(
+                    "{}.as_ref().expect(\"optional global is None\").{}",
+                    self.global_lock_expr(name),
+                    attr
+                ));
+            }
             if !self.is_global(name)
                 && matches!(self.local_var_type(name), Some(Type::Option(_)))
                 && matches!(value.ty.as_ref(), Some(Type::Custom(_)))
@@ -90,10 +90,8 @@ impl<'a> Codegen<'a> {
                             }
                         });
                         let base_name = self.name_override(name).unwrap_or(name);
-                        let base = format!(
-                            "{}.as_ref().expect(\"optional value is None\")",
-                            base_name
-                        );
+                        let base =
+                            format!("{}.as_ref().expect(\"optional value is None\")", base_name);
                         if let Some(getter) = getter {
                             return Ok(format!("{}.{}()", base, getter));
                         }
@@ -116,10 +114,8 @@ impl<'a> Codegen<'a> {
                             }
                         });
                         let base_name = self.name_override(name).unwrap_or(name);
-                        let base = format!(
-                            "{}.as_ref().expect(\"optional value is None\")",
-                            base_name
-                        );
+                        let base =
+                            format!("{}.as_ref().expect(\"optional value is None\")", base_name);
                         if let Some(getter) = getter {
                             return Ok(format!("{}.{}()", base, getter));
                         }
@@ -139,10 +135,7 @@ impl<'a> Codegen<'a> {
                 });
                 if let ExprKind::Name(name) = &value.kind {
                     let base_name = self.name_override(name).unwrap_or(name);
-                    let base = format!(
-                        "{}.as_ref().expect(\"optional value is None\")",
-                        base_name
-                    );
+                    let base = format!("{}.as_ref().expect(\"optional value is None\")", base_name);
                     if let Some(getter) = getter {
                         return Ok(format!("{}.{}()", base, getter));
                     }

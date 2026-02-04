@@ -58,6 +58,35 @@ pub(crate) struct Uses {
     pub(crate) py_bytes_from_str: bool,
 }
 
+/// Iterator source plus any setup lines required to keep borrows/locks alive.
+pub(crate) struct IterSource {
+    /// Setup statements that must run before the iterator is consumed.
+    pub(crate) setup: Vec<String>,
+    /// Iterator expression to consume within the setup's scope.
+    pub(crate) expr: String,
+}
+
+impl IterSource {
+    /// Wrap a consumer expression so any required setup (e.g., list locks) stays in scope.
+    pub(crate) fn wrap(self, body: String) -> String {
+        if self.setup.is_empty() {
+            return body;
+        }
+        // Keep iterator consumption within the same scope as any lock guard.
+        let mut out = String::new();
+        out.push('{');
+        for line in self.setup {
+            out.push(' ');
+            out.push_str(&line);
+            out.push(';');
+        }
+        out.push(' ');
+        out.push_str(&body);
+        out.push_str(" }");
+        out
+    }
+}
+
 /// The code generator transforms typed HIR into Rust source code.
 ///
 /// Codegen is the final phase of compilation. At this point:
@@ -264,7 +293,11 @@ impl<'a> Codegen<'a> {
         for item in &program.items {
             match item {
                 Item::Function(func) => {
-                    self.collect_used_globals_in_function(func, &module_vars, &mut used_by_functions);
+                    self.collect_used_globals_in_function(
+                        func,
+                        &module_vars,
+                        &mut used_by_functions,
+                    );
                 }
                 Item::Class(class_def) => {
                     for method in &class_def.methods {
@@ -500,7 +533,14 @@ impl<'a> Codegen<'a> {
         }
 
         let outers = HashSet::new();
-        self.collect_used_globals_in_stmts(&func.body, &locals, &outers, &globals, module_vars, used);
+        self.collect_used_globals_in_stmts(
+            &func.body,
+            &locals,
+            &outers,
+            &globals,
+            module_vars,
+            used,
+        );
     }
 
     /// Walk statements and record module globals used by expressions.
@@ -516,10 +556,24 @@ impl<'a> Codegen<'a> {
         for stmt in stmts {
             match &stmt.kind {
                 StmtKind::Let { value, .. } => {
-                    self.collect_used_globals_in_expr(value, locals, outers, globals, module_vars, used);
+                    self.collect_used_globals_in_expr(
+                        value,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
                 }
                 StmtKind::Assign { value, .. } => {
-                    self.collect_used_globals_in_expr(value, locals, outers, globals, module_vars, used);
+                    self.collect_used_globals_in_expr(
+                        value,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
                 }
                 StmtKind::Return { value } => {
                     if let Some(expr) = value {
@@ -534,7 +588,14 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 StmtKind::If { test, body, orelse } => {
-                    self.collect_used_globals_in_expr(test, locals, outers, globals, module_vars, used);
+                    self.collect_used_globals_in_expr(
+                        test,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
                     self.collect_used_globals_in_stmts(
                         body,
                         locals,
@@ -553,7 +614,14 @@ impl<'a> Codegen<'a> {
                     );
                 }
                 StmtKind::While { test, body } => {
-                    self.collect_used_globals_in_expr(test, locals, outers, globals, module_vars, used);
+                    self.collect_used_globals_in_expr(
+                        test,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
                     self.collect_used_globals_in_stmts(
                         body,
                         locals,
@@ -564,7 +632,14 @@ impl<'a> Codegen<'a> {
                     );
                 }
                 StmtKind::For { iter, body, .. } => {
-                    self.collect_used_globals_in_expr(iter, locals, outers, globals, module_vars, used);
+                    self.collect_used_globals_in_expr(
+                        iter,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
                     self.collect_used_globals_in_stmts(
                         body,
                         locals,
@@ -575,10 +650,24 @@ impl<'a> Codegen<'a> {
                     );
                 }
                 StmtKind::Expr(expr) => {
-                    self.collect_used_globals_in_expr(expr, locals, outers, globals, module_vars, used);
+                    self.collect_used_globals_in_expr(
+                        expr,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
                 }
                 StmtKind::Assert { test, msg } => {
-                    self.collect_used_globals_in_expr(test, locals, outers, globals, module_vars, used);
+                    self.collect_used_globals_in_expr(
+                        test,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
                     if let Some(expr) = msg {
                         self.collect_used_globals_in_expr(
                             expr,
@@ -690,11 +779,10 @@ impl<'a> Codegen<'a> {
     ) {
         match &expr.kind {
             ExprKind::Name(name) => {
-                if globals.contains(name) && module_vars.contains(name) {
-                    used.insert(name.clone());
-                } else if module_vars.contains(name)
-                    && !locals.contains(name)
-                    && !outers.contains(name)
+                // Treat module-level names as globals when referenced from non-local scopes.
+                if module_vars.contains(name)
+                    && (globals.contains(name)
+                        || (!locals.contains(name) && !outers.contains(name)))
                 {
                     used.insert(name.clone());
                 }
@@ -723,14 +811,7 @@ impl<'a> Codegen<'a> {
                 );
             }
             ExprKind::Binary { left, right, .. } => {
-                self.collect_used_globals_in_expr(
-                    left,
-                    locals,
-                    outers,
-                    globals,
-                    module_vars,
-                    used,
-                );
+                self.collect_used_globals_in_expr(left, locals, outers, globals, module_vars, used);
                 self.collect_used_globals_in_expr(
                     right,
                     locals,
@@ -751,14 +832,7 @@ impl<'a> Codegen<'a> {
                 );
             }
             ExprKind::Compare { left, right, .. } => {
-                self.collect_used_globals_in_expr(
-                    left,
-                    locals,
-                    outers,
-                    globals,
-                    module_vars,
-                    used,
-                );
+                self.collect_used_globals_in_expr(left, locals, outers, globals, module_vars, used);
                 self.collect_used_globals_in_expr(
                     right,
                     locals,
@@ -888,14 +962,7 @@ impl<'a> Codegen<'a> {
                 ifs,
             } => {
                 // The iterator expression is evaluated in the outer scope.
-                self.collect_used_globals_in_expr(
-                    iter,
-                    locals,
-                    outers,
-                    globals,
-                    module_vars,
-                    used,
-                );
+                self.collect_used_globals_in_expr(iter, locals, outers, globals, module_vars, used);
                 // Comprehensions do not inherit `global` declarations.
                 let empty_globals = HashSet::new();
                 let mut comp_locals = HashSet::new();
@@ -922,8 +989,7 @@ impl<'a> Codegen<'a> {
                 );
             }
             ExprKind::Lambda { params, body } => {
-                let mut lambda_locals: HashSet<String> =
-                    params.iter().cloned().collect();
+                let mut lambda_locals: HashSet<String> = params.iter().cloned().collect();
                 let mut lambda_globals = HashSet::new();
                 if let ExprKind::Block { stmts } = &body.kind {
                     self.collect_scope_locals(stmts, &mut lambda_locals, &mut lambda_globals);
@@ -940,22 +1006,8 @@ impl<'a> Codegen<'a> {
                 );
             }
             ExprKind::IfExpr { test, body, orelse } => {
-                self.collect_used_globals_in_expr(
-                    test,
-                    locals,
-                    outers,
-                    globals,
-                    module_vars,
-                    used,
-                );
-                self.collect_used_globals_in_expr(
-                    body,
-                    locals,
-                    outers,
-                    globals,
-                    module_vars,
-                    used,
-                );
+                self.collect_used_globals_in_expr(test, locals, outers, globals, module_vars, used);
+                self.collect_used_globals_in_expr(body, locals, outers, globals, module_vars, used);
                 self.collect_used_globals_in_expr(
                     orelse,
                     locals,
@@ -1074,12 +1126,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Track list element type assignments from direct list expressions.
-    fn note_list_assignment(
-        &self,
-        name: &str,
-        value: &Expr,
-        inferred: &mut HashMap<String, Type>,
-    ) {
+    fn note_list_assignment(&self, name: &str, value: &Expr, inferred: &mut HashMap<String, Type>) {
         if let Some(Type::List(inner)) = value.ty.as_ref() {
             if !matches!(inner.as_ref(), Type::Unknown) && !inferred.contains_key(name) {
                 inferred.insert(name.to_string(), (*inner.as_ref()).clone());
@@ -1088,20 +1135,18 @@ impl<'a> Codegen<'a> {
     }
 
     /// Walk expressions and record list element types inferred from list method calls.
-    fn collect_list_elem_types_in_expr(
-        &self,
-        expr: &Expr,
-        inferred: &mut HashMap<String, Type>,
-    ) {
+    fn collect_list_elem_types_in_expr(&self, expr: &Expr, inferred: &mut HashMap<String, Type>) {
         match &expr.kind {
             ExprKind::Call { func, args } => {
                 if let ExprKind::Attr { value, attr } = &func.kind {
                     if let ExprKind::Name(name) = &value.kind {
                         let elem_ty = match attr.as_str() {
-                            "append" | "index" | "count" => args.get(0).and_then(|arg| arg.ty.clone()),
+                            "append" | "index" | "count" => {
+                                args.first().and_then(|arg| arg.ty.clone())
+                            }
                             "insert" => args.get(1).and_then(|arg| arg.ty.clone()),
                             "extend" => args
-                                .get(0)
+                                .first()
                                 .and_then(|arg| arg.ty.as_ref())
                                 .and_then(|ty| self.iter_item_type_hint(ty)),
                             _ => None,

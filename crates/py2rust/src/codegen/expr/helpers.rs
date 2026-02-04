@@ -116,7 +116,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Build an iterator source expression that matches Python iteration semantics.
-    pub(crate) fn gen_iter_source(&mut self, expr: &Expr) -> Result<String, CompileError> {
+    pub(crate) fn gen_iter_source(&mut self, expr: &Expr) -> Result<IterSource, CompileError> {
         let rendered = self.gen_expr(expr)?;
         let use_owned = match &expr.kind {
             ExprKind::Name(name) => self.is_global(name),
@@ -124,49 +124,73 @@ impl<'a> Codegen<'a> {
         };
         match expr.ty.as_ref() {
             // Slice references: just .iter() - items are already references.
-            Some(Type::Slice(_)) => Ok(format!("{}.iter().copied()", rendered)),
-            // Lists are shared (Arc<Mutex<...>>), so iterate via a lock guard.
+            Some(Type::Slice(_)) => Ok(IterSource {
+                setup: Vec::new(),
+                expr: format!("{}.iter().copied()", rendered),
+            }),
+            // Lists are shared (Arc<Mutex<...>>), so keep the lock guard in scope.
             Some(Type::List(inner)) => {
-                let _ = inner;
                 let tmp = self.new_tmp();
                 let guard = self.new_tmp();
-                Ok(format!(
-                    "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().unwrap(); {guard}.clone().into_iter() }}",
-                    tmp = tmp,
-                    guard = guard,
-                    expr = rendered
-                ))
+                let iter_expr = if self.is_copy_type(inner) {
+                    format!("{}.iter().copied()", guard)
+                } else {
+                    format!("{}.iter().cloned()", guard)
+                };
+                Ok(IterSource {
+                    // Clone the Arc to avoid moving out of the source expression.
+                    setup: vec![
+                        format!("let {} = {}.clone()", tmp, rendered),
+                        format!("let {} = {}.lock().unwrap()", guard, tmp),
+                    ],
+                    expr: iter_expr,
+                })
             }
             // Owned sets need .iter().cloned() (or .copied() for Copy types).
             Some(Type::Set(inner)) => {
-                if use_owned {
-                    Ok(format!("{}.into_iter()", rendered))
+                let expr = if use_owned {
+                    format!("{}.into_iter()", rendered)
                 } else if self.is_copy_type(inner) {
-                    Ok(format!("{}.iter().copied()", rendered))
+                    format!("{}.iter().copied()", rendered)
                 } else {
-                    Ok(format!("{}.iter().cloned()", rendered))
-                }
+                    format!("{}.iter().cloned()", rendered)
+                };
+                Ok(IterSource {
+                    setup: Vec::new(),
+                    expr,
+                })
             }
             Some(Type::Bytes) => {
-                if use_owned {
-                    Ok(format!("{}.into_iter()", rendered))
+                let expr = if use_owned {
+                    format!("{}.into_iter()", rendered)
                 } else {
-                    Ok(format!("{}.iter().copied()", rendered))
-                }
+                    format!("{}.iter().copied()", rendered)
+                };
+                Ok(IterSource {
+                    setup: Vec::new(),
+                    expr,
+                })
             }
             Some(Type::Str) => {
-                if use_owned {
-                    Ok(format!(
+                let expr = if use_owned {
+                    format!(
                         "{}.chars().map(|c| c.to_string()).collect::<Vec<_>>().into_iter()",
                         rendered
-                    ))
+                    )
                 } else {
-                    Ok(format!("{}.chars().map(|c| c.to_string())", rendered))
-                }
+                    format!("{}.chars().map(|c| c.to_string())", rendered)
+                };
+                Ok(IterSource {
+                    setup: Vec::new(),
+                    expr,
+                })
             }
             Some(Type::Tuple(items)) => {
                 if items.is_empty() {
-                    return Ok("std::iter::empty::<()>()".to_string());
+                    return Ok(IterSource {
+                        setup: Vec::new(),
+                        expr: "std::iter::empty::<()>()".to_string(),
+                    });
                 }
                 let tmp = self.new_tmp();
                 let mut elems = Vec::new();
@@ -178,33 +202,77 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 if use_owned {
-                    Ok(format!(
-                        "{{ let {} = {}; vec![{}].into_iter() }}",
-                        tmp,
-                        rendered,
-                        elems.join(", ")
-                    ))
+                    Ok(IterSource {
+                        setup: Vec::new(),
+                        expr: format!(
+                            "{{ let {} = {}; vec![{}].into_iter() }}",
+                            tmp,
+                            rendered,
+                            elems.join(", ")
+                        ),
+                    })
                 } else {
-                    Ok(format!(
-                        "{{ let {} = &{}; vec![{}].into_iter() }}",
-                        tmp,
-                        rendered,
-                        elems.join(", ")
-                    ))
+                    Ok(IterSource {
+                        setup: Vec::new(),
+                        expr: format!(
+                            "{{ let {} = &{}; vec![{}].into_iter() }}",
+                            tmp,
+                            rendered,
+                            elems.join(", ")
+                        ),
+                    })
                 }
             }
             // References to collections.
             Some(Type::Ref(inner)) => match inner.as_ref() {
                 Type::Set(elem) => {
-                    if self.is_copy_type(elem) {
-                        Ok(format!("{}.iter().copied()", rendered))
+                    let expr = if self.is_copy_type(elem) {
+                        format!("{}.iter().copied()", rendered)
                     } else {
-                        Ok(format!("{}.iter().cloned()", rendered))
-                    }
+                        format!("{}.iter().cloned()", rendered)
+                    };
+                    Ok(IterSource {
+                        setup: Vec::new(),
+                        expr,
+                    })
                 }
-                _ => Ok(format!("{}.iter()", rendered)),
+                _ => Ok(IterSource {
+                    setup: Vec::new(),
+                    expr: format!("{}.iter()", rendered),
+                }),
             },
-            _ => Ok(format!("{}.into_iter()", rendered)),
+            _ => Ok(IterSource {
+                setup: Vec::new(),
+                expr: format!("{}.into_iter()", rendered),
+            }),
+        }
+    }
+
+    /// Build an iterator expression that can be returned or stored safely.
+    pub(crate) fn gen_iter_source_owned(&mut self, expr: &Expr) -> Result<String, CompileError> {
+        let rendered = self.gen_expr(expr)?;
+        match expr.ty.as_ref() {
+            // Lists need a guard that lives inside the returned iterator.
+            Some(Type::List(inner)) => {
+                let tmp = self.new_tmp();
+                let idx = self.new_tmp();
+                let guard = self.new_tmp();
+                let item_expr = if self.is_copy_type(inner) {
+                    format!("{}[{}]", guard, idx)
+                } else {
+                    format!("{}[{}].clone()", guard, idx)
+                };
+                // Lock the list per-iteration to avoid holding a guard across expression boundaries.
+                Ok(format!(
+                    "{{ let {tmp} = {expr}.clone(); let mut {idx}: usize = 0; std::iter::from_fn(move || {{ let {guard} = {tmp}.lock().unwrap(); if {idx} < {guard}.len() {{ let item = {item}; {idx} += 1; Some(item) }} else {{ None }} }}) }}",
+                    tmp = tmp,
+                    expr = rendered,
+                    guard = guard,
+                    idx = idx,
+                    item = item_expr
+                ))
+            }
+            _ => Ok(self.gen_iter_source(expr)?.expr),
         }
     }
 
