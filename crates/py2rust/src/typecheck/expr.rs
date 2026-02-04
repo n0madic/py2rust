@@ -16,7 +16,6 @@ use super::*;
 /// - Set operations (|, &, -, ^) are distinct from bitwise ops
 /// - Division always returns float (Python 3 semantics)
 /// - We track expected types and use them to guide inference
-
 impl<'a> TypeChecker<'a> {
     /// Check an expression and determine its type.
     ///

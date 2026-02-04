@@ -18,7 +18,6 @@ use super::*;
 ///   This makes it easier to determine Rust's `let` vs bare assignment
 /// - We normalize assignment targets (name, attribute, index) into AssignTarget
 /// - Exception handling is preserved in HIR for later analysis
-
 impl<'a> Lowerer<'a> {
     pub(super) fn lower_stmt(&self, stmt: &ast::Stmt) -> Result<Stmt, CompileError> {
         let span = Span::from(stmt.range());

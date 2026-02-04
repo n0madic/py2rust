@@ -19,7 +19,6 @@ use super::*;
 /// - Iterators: `impl Iterator<Item = T>` (no boxing)
 /// - Globals: Need thread-safe wrappers (Arc, Mutex)
 /// - References: &str instead of &String for ergonomics
-
 impl<'a> Codegen<'a> {
     /// Convert a Python Type to its Rust representation.
     ///

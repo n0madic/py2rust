@@ -9,7 +9,6 @@ use super::*;
 /// 4. ensure_assignable: Check type compatibility
 ///
 /// These are fundamental operations used throughout type checking.
-
 impl<'a> TypeChecker<'a> {
     /// Determine the item type for iteration.
     ///
@@ -165,7 +164,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Check if actual type can be assigned to expected type.
-    /// \
+    ///
     /// This is our type compatibility check. Allows:
     /// - Exact matches (int == int)
     /// - int -> float (numeric promotion)
@@ -173,7 +172,7 @@ impl<'a> TypeChecker<'a> {
     /// - None -> Optional[T] (None works for any Optional)
     /// - Callable with matching signatures
     /// - Unknown matches anything (for inference)
-    /// \
+    ///
     /// Why these rules?
     /// - Python allows int in float contexts (1 + 1.5 works)
     /// - Python's None is compatible with Optional types

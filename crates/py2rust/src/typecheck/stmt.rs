@@ -16,7 +16,6 @@ use super::*;
 /// - Lambda assignments need forward declaration for recursion
 /// - Return type must match function signature
 /// - Iterator[T] is only allowed as return type, not variable type
-
 impl<'a> TypeChecker<'a> {
     /// Type check a statement.
     ///

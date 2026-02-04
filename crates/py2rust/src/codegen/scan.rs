@@ -8,7 +8,6 @@ use super::*;
 /// - Some optimizations require whole-program analysis (e.g., __name__ comparison)
 ///
 /// The scan pass is read-only - it doesn't modify the HIR, just sets flags in `Uses`.
-
 impl<'a> Codegen<'a> {
     /// Scan the entire program to determine which helpers are needed.
     ///

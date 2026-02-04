@@ -17,7 +17,6 @@ use std::collections::{HashMap, HashSet};
 ///
 /// This is a multi-phase process because we need class info before
 /// we can properly type-check method bodies.
-
 impl<'a> TypeChecker<'a> {
     /// Collect all function and class signatures from the program.
     ///

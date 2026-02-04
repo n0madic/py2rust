@@ -9,7 +9,6 @@ use super::*;
 /// - Errors stop compilation immediately
 /// - Warnings are collected and shown but don't prevent code generation
 /// - Both need access to source text and filename for rich reporting
-
 impl<'a> TypeChecker<'a> {
     /// Create a type checking error.
     ///

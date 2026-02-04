@@ -15,7 +15,6 @@ use super::*;
 /// - Dict constructor dict(a=1, b=2) is special-cased to become literal syntax
 /// - F-strings are lowered to format!() macro calls
 /// - List/dict/set comprehensions are simplified to single-loop form only
-
 impl<'a> Lowerer<'a> {
     /// Lower a Python expression to HIR.
     ///

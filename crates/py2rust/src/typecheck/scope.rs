@@ -17,7 +17,6 @@ use super::*;
 /// - Python allows reading globals without declaration
 /// - But assignment without `global` creates a local
 /// - This affects code generation (need to use global variable access)
-
 impl<'a> TypeChecker<'a> {
     /// Update a variable's type based on an expression.
     ///

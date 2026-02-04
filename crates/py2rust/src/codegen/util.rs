@@ -9,7 +9,6 @@ use super::*;
 /// - Error creation
 ///
 /// Also includes mutation analysis for determining when variables need `mut`.
-
 impl<'a> Codegen<'a> {
     /// Check if a variable name refers to a global variable.
     ///

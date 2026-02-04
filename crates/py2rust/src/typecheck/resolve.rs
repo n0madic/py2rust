@@ -14,7 +14,6 @@ use super::*;
 /// 2. Validating that generic parameters make sense
 /// 3. Handling special cases (Optional = Union[T, None])
 /// 4. Rejecting invalid uses (Iterator[T] only valid as return type)
-
 impl<'a> TypeChecker<'a> {
     /// Resolve parameter type annotations.
     ///

@@ -1,19 +1,17 @@
+//! Type checking context structures.
+//!
+//! These structures hold all the type information we've gathered about the program:
+//! - Functions and their signatures (params, return type, exception info)
+//! - Classes and their fields/methods
+//! - Union types (for pattern matching)
+//! - Global variables and their types
+//!
+//! Why separate structures?
+//! - FunctionSig: Used for both top-level functions and methods
+//! - ClassInfo: Comprehensive info about a class (fields, methods, iterator protocol)
+//! - UnionInfo: Simple list of variant names for pattern matching
+//! - TypeContext: Global registry of all type information
 use super::*;
-
-/// Type checking context structures.
-///
-/// These structures hold all the type information we've gathered about the program:
-/// - Functions and their signatures (params, return type, exception info)
-/// - Classes and their fields/methods
-/// - Union types (for pattern matching)
-/// - Global variables and their types
-///
-/// Why separate structures?
-/// - FunctionSig: Used for both top-level functions and methods
-/// - ClassInfo: Comprehensive info about a class (fields, methods, iterator protocol)
-/// - UnionInfo: Simple list of variant names for pattern matching
-/// - TypeContext: Global registry of all type information
-
 /// Function signature including exception information.
 ///
 /// This represents both top-level functions and class methods.

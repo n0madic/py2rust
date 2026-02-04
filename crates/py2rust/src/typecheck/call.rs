@@ -15,7 +15,6 @@ use super::*;
 /// - isinstance, type
 ///
 /// Each has its own type rules and some modify their arguments' types.
-
 impl<'a> TypeChecker<'a> {
     /// Type check a function call.
     ///

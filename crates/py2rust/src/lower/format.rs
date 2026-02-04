@@ -23,7 +23,6 @@ use super::*;
 /// - Python {x:d} -> Rust {} (integer formatting is default)
 /// - Python {x:x} -> Rust {:x} (hex)
 /// - Python {x:b} -> Rust {:b} (binary)
-
 impl<'a> Lowerer<'a> {
     /// Escape literal braces in format strings.
     ///

@@ -12,7 +12,6 @@ use super::*;
 /// - Return type inference scans all return statements
 /// - Unknown parameter types can be inferred from usage
 /// - Global variable handling (must be declared before use)
-
 impl<'a> TypeChecker<'a> {
     /// Type check a function definition.
     ///

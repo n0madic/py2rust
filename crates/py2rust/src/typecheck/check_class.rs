@@ -11,7 +11,6 @@ use super::*;
 /// - If __iter__ returns Iterator[T], that's a generator-style iterator
 /// - If __iter__ returns self (or another class), that class must have next() -> Optional[T]
 /// - next() must return Optional[T] where T is the item type
-
 impl<'a> TypeChecker<'a> {
     /// Type check a class definition.
     ///
