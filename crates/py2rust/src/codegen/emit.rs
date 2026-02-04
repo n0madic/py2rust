@@ -617,6 +617,10 @@ impl<'a> Codegen<'a> {
         self.push_line("ZeroDivisionError(String),");
         self.push_line("NameError(String),");
         self.push_line("AssertionError(String),");
+        self.push_line("StopIteration(String),");
+        self.push_line("NotImplementedError(String),");
+        self.push_line("IOError(String),");
+        self.push_line("OverflowError(String),");
 
         self.indent -= 1;
         self.push_line("}");
@@ -640,6 +644,12 @@ impl<'a> Codegen<'a> {
         );
         self.push_line("PyError::NameError(msg) => write!(f, \"NameError: {}\", msg),");
         self.push_line("PyError::AssertionError(msg) => write!(f, \"AssertionError: {}\", msg),");
+        self.push_line("PyError::StopIteration(msg) => write!(f, \"StopIteration: {}\", msg),");
+        self.push_line(
+            "PyError::NotImplementedError(msg) => write!(f, \"NotImplementedError: {}\", msg),",
+        );
+        self.push_line("PyError::IOError(msg) => write!(f, \"IOError: {}\", msg),");
+        self.push_line("PyError::OverflowError(msg) => write!(f, \"OverflowError: {}\", msg),");
         self.indent -= 1;
         self.push_line("}");
         self.indent -= 1;

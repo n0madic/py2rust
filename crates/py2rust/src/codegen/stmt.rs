@@ -293,7 +293,7 @@ impl<'a> Codegen<'a> {
                 self.emit_try_stmt(body, handlers, orelse, finalbody, mut_counts)?;
             }
             StmtKind::Raise { exc, cause } => {
-                self.emit_raise_stmt(exc.as_ref(), cause.as_ref())?;
+                self.emit_raise_stmt(exc.as_ref(), cause.as_ref(), stmt.span)?;
             }
         }
         Ok(())
@@ -614,45 +614,119 @@ impl<'a> Codegen<'a> {
         handler: &ExceptHandler,
         mut_counts: &HashMap<String, usize>,
     ) -> Result<(), CompileError> {
-        if let Some(exc_type) = &handler.exc_type {
-            let pattern = if let Some(name) = &handler.name {
-                format!("Err(PyError::{}({}))", exc_type, name)
-            } else {
-                format!("Err(PyError::{}(_))", exc_type)
-            };
+        // Check if handler body contains a bare raise
+        let needs_current_exception = self.handler_has_bare_raise(&handler.body);
 
-            self.push_line(&format!("{} => {{", pattern));
-            self.indent += 1;
-            for stmt in &handler.body {
-                self.emit_stmt(stmt, mut_counts)?;
+        if let Some(exc_type) = &handler.exc_type {
+            // Handle "Exception" as catch-all
+            if exc_type == "Exception" {
+                let pattern = if let Some(name) = &handler.name {
+                    format!("Err({})", name)
+                } else {
+                    "Err(_e)".to_string()
+                };
+
+                self.push_line(&format!("{} => {{", pattern));
+                self.indent += 1;
+
+                // Save exception for bare raise if needed
+                if needs_current_exception {
+                    let exc_var = handler.name.as_deref().unwrap_or("_e");
+                    self.push_line(&format!("let _current_exception = {}.clone();", exc_var));
+                }
+
+                for stmt in &handler.body {
+                    self.emit_stmt(stmt, mut_counts)?;
+                }
+                self.indent -= 1;
+                self.push_line("}");
+            } else {
+                let pattern = if let Some(name) = &handler.name {
+                    format!("Err(PyError::{}({}))", exc_type, name)
+                } else {
+                    format!("Err(PyError::{}(_e))", exc_type)
+                };
+
+                self.push_line(&format!("{} => {{", pattern));
+                self.indent += 1;
+
+                // Save exception for bare raise if needed
+                if needs_current_exception {
+                    let exc_var = handler.name.as_deref().unwrap_or("_e");
+                    self.push_line(&format!(
+                        "let _current_exception = PyError::{}({}.clone());",
+                        exc_type, exc_var
+                    ));
+                }
+
+                for stmt in &handler.body {
+                    self.emit_stmt(stmt, mut_counts)?;
+                }
+                self.indent -= 1;
+                self.push_line("}");
             }
-            self.indent -= 1;
-            self.push_line("}");
         } else {
-            // Catch all
+            // Catch all (no type specified)
             let pattern = if let Some(name) = &handler.name {
                 format!("Err({})", name)
             } else {
-                "Err(_)".to_string()
+                "Err(_e)".to_string()
             };
 
             self.push_line(&format!("{} => {{", pattern));
             self.indent += 1;
+
+            // Save exception for bare raise if needed
+            if needs_current_exception {
+                let exc_var = handler.name.as_deref().unwrap_or("_e");
+                self.push_line(&format!("let _current_exception = {}.clone();", exc_var));
+            }
+
             for stmt in &handler.body {
                 self.emit_stmt(stmt, mut_counts)?;
             }
             self.indent -= 1;
             self.push_line("}");
-        } // Close the else block
+        }
 
         Ok(())
+    }
+
+    /// Check if handler body contains a bare raise statement
+    fn handler_has_bare_raise(&self, stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Raise { exc: None, .. } => return true,
+                StmtKind::If { body, orelse, .. } => {
+                    if self.handler_has_bare_raise(body) || self.handler_has_bare_raise(orelse) {
+                        return true;
+                    }
+                }
+                StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+                    if self.handler_has_bare_raise(body) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     fn emit_raise_stmt(
         &mut self,
         exc: Option<&Expr>,
-        _cause: Option<&Expr>,
+        cause: Option<&Expr>,
+        span: Span,
     ) -> Result<(), CompileError> {
+        // Check for unsupported exception chaining
+        if cause.is_some() {
+            return Err(self.error(
+                span,
+                "Exception chaining (raise ... from ...) is not supported",
+            ));
+        }
+
         if let Some(exc_expr) = exc {
             // Check if it's exception constructor call
             if let ExprKind::Call { func, args } = &exc_expr.kind {

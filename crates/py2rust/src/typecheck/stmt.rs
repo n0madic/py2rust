@@ -493,7 +493,8 @@ impl<'a> TypeChecker<'a> {
     fn is_builtin_exception(&self, name: &str) -> bool {
         matches!(
             name,
-            "ValueError"
+            "Exception"
+                | "ValueError"
                 | "TypeError"
                 | "RuntimeError"
                 | "KeyError"
@@ -502,6 +503,10 @@ impl<'a> TypeChecker<'a> {
                 | "ZeroDivisionError"
                 | "NameError"
                 | "AssertionError"
+                | "StopIteration"
+                | "NotImplementedError"
+                | "IOError"
+                | "OverflowError"
         )
     }
 }

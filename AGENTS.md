@@ -37,7 +37,7 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - `__iter__/next` for custom iterators.
 - `lambda`, `if` expression, `round`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`, `reversed`, `max`, `min`, `int`, `float`, `str`, `isinstance`, `type`.
 - Decorators: one simple name decorator on top-level functions only (rewritten).
-- Exception handling: `try/except/else/finally`, `raise`, exception propagation through function calls.
+- Exception handling: `try/except/else/finally`, `raise`, bare `raise` (re-raise), `except Exception` (catch-all), exception propagation through function calls.
 
 ## Type System Notes
 - `str` maps to `String` (not `&str`).
@@ -55,6 +55,9 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - Exception handling uses `Result<T, PyError>` with closures for try blocks.
 - Variables declared in try block are exposed to else via `Option<T>` wrapper.
 - Functions with unhandled exceptions return `Result<T, PyError>`.
+- Supported exception types: `Exception` (catch-all), `ValueError`, `TypeError`, `RuntimeError`, `KeyError`, `IndexError`, `AttributeError`, `ZeroDivisionError`, `NameError`, `AssertionError`, `StopIteration`, `NotImplementedError`, `IOError`, `OverflowError`.
+- Bare `raise` in except handler re-raises the current exception.
+- `raise X from Y` (exception chaining) is not supported and produces a compile error.
 
 ## Test Structure
 Runtime integration tests are in `crates/py2rust/tests/`:
@@ -70,12 +73,22 @@ Runtime integration tests are in `crates/py2rust/tests/`:
   - `exceptions.rs` - try/except/finally/raise
 - Each category has one comprehensive test to minimize compilation overhead.
 
+## Development Workflow
+**CRITICAL: Always run tests after making changes!**
+
+After completing any code changes:
+1. Run the full test suite: `cargo test`
+2. If any tests fail, fix the issues before considering the work complete
+3. Never leave broken tests - all tests must pass before finishing
+4. If you add new functionality, add corresponding test coverage
+
 ## Common Pitfalls
 - If you modify HIR, update typeck and codegen in sync.
 - If you add new builtins, update:
   - typeck `check_call` for type rules
   - codegen `gen_expr` for emission
   - codegen `scan_expr` for helper imports
+- If you modify statement handling in codegen, update `collect_assign_counts` in `util.rs` to track variable mutations in new statement types.
 - Keep `#![forbid(unsafe_code)]` across crates.
 - Always update tests when changing behavior.
 - Update documentation in README.md and here as needed.

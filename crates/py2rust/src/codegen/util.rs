@@ -75,6 +75,27 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                     }
                 }
             }
+            StmtKind::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                for stmt in body {
+                    visit(stmt, counts);
+                }
+                for handler in handlers {
+                    for stmt in &handler.body {
+                        visit(stmt, counts);
+                    }
+                }
+                for stmt in orelse {
+                    visit(stmt, counts);
+                }
+                for stmt in finalbody {
+                    visit(stmt, counts);
+                }
+            }
             StmtKind::Expr(expr) => {
                 if let ExprKind::Call { func, .. } = &expr.kind {
                     if let ExprKind::Attr { value, attr } = &func.kind {
