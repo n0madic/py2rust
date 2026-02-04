@@ -100,12 +100,30 @@ pub enum StmtKind {
         subject: Expr,
         cases: Vec<MatchCase>,
     },
+    Try {
+        body: Vec<Stmt>,
+        handlers: Vec<ExceptHandler>,
+        orelse: Vec<Stmt>,
+        finalbody: Vec<Stmt>,
+    },
+    Raise {
+        exc: Option<Expr>,
+        cause: Option<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct MatchCase {
     pub variant: String,
     pub bindings: Vec<String>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExceptHandler {
+    pub exc_type: Option<String>,
+    pub name: Option<String>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }

@@ -5,6 +5,8 @@ pub struct FunctionSig {
     pub params: Vec<Type>,
     pub ret: Type,
     pub span: Span,
+    pub can_throw: bool,
+    pub thrown_exceptions: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

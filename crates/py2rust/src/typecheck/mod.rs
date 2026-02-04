@@ -15,6 +15,7 @@ mod resolve;
 mod scope;
 mod signatures;
 mod stmt;
+mod throws;
 mod type_ops;
 
 pub use context::{ClassInfo, FunctionSig, TypeContext, UnionInfo};
@@ -32,6 +33,7 @@ pub struct TypeChecker<'a> {
     scopes: Vec<HashMap<String, Type>>,
     global_scopes: Vec<GlobalScope>,
     warnings: Vec<Warning>,
+    except_handler_depth: usize,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -86,6 +88,7 @@ impl<'a> TypeChecker<'a> {
             scopes: Vec::new(),
             global_scopes: Vec::new(),
             warnings: Vec::new(),
+            except_handler_depth: 0,
         };
 
         checker.collect_signatures(program)?;
@@ -116,6 +119,25 @@ impl<'a> TypeChecker<'a> {
                 Item::Union(_) => {}
             }
         }
+
+        // Run throw analysis AFTER type checking
+        let mut throw_analyzer = throws::ThrowAnalyzer::new(&self.ctx);
+        let throw_map = throw_analyzer.analyze_program(program);
+
+        // Update function signatures with throw information
+        for (func_name, can_throw) in throw_map {
+            if let Some(sig) = self.ctx.functions.get_mut(&func_name) {
+                sig.can_throw = can_throw;
+                if can_throw {
+                    // Wrap return type in Result
+                    sig.ret = sig
+                        .ret
+                        .clone()
+                        .wrap_result(Type::Exception("PyError".to_string()));
+                }
+            }
+        }
+
         self.scopes.pop();
         Ok(self.ctx.clone())
     }

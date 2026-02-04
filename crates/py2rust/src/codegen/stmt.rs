@@ -130,19 +130,38 @@ impl<'a> Codegen<'a> {
                 }
             },
             StmtKind::Return { value } => {
+                // Check if we're in a throwing function
+                let in_throwing_fn = self.current_function_throws();
+
                 if let Some(expr) = value {
                     if matches!(&expr.kind, ExprKind::Literal(Literal::None)) {
                         if matches!(expr.ty.as_ref(), Some(Type::Option(_))) {
-                            self.push_line("return None;");
+                            if in_throwing_fn {
+                                self.push_line("return Ok(None);");
+                            } else {
+                                self.push_line("return None;");
+                            }
                         } else {
-                            self.push_line("return;");
+                            if in_throwing_fn {
+                                self.push_line("return Ok(());");
+                            } else {
+                                self.push_line("return;");
+                            }
                         }
                     } else {
                         let expr_str = self.gen_expr(expr)?;
-                        self.push_line(&format!("return {};", expr_str));
+                        if in_throwing_fn {
+                            self.push_line(&format!("return Ok({});", expr_str));
+                        } else {
+                            self.push_line(&format!("return {};", expr_str));
+                        }
                     }
                 } else {
-                    self.push_line("return;");
+                    if in_throwing_fn {
+                        self.push_line("return Ok(());");
+                    } else {
+                        self.push_line("return;");
+                    }
                 }
             }
             StmtKind::If { test, body, orelse } => {
@@ -261,6 +280,17 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.push_line("}");
             }
+            StmtKind::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                self.emit_try_stmt(body, handlers, orelse, finalbody, mut_counts)?;
+            }
+            StmtKind::Raise { exc, cause } => {
+                self.emit_raise_stmt(exc.as_ref(), cause.as_ref())?;
+            }
         }
         Ok(())
     }
@@ -309,5 +339,175 @@ impl<'a> Codegen<'a> {
             }
         }
         None
+    }
+
+    fn emit_try_stmt(
+        &mut self,
+        body: &[Stmt],
+        handlers: &[ExceptHandler],
+        orelse: &[Stmt],
+        finalbody: &[Stmt],
+        mut_counts: &HashMap<String, usize>,
+    ) -> Result<(), CompileError> {
+        let has_finally = !finalbody.is_empty();
+
+        if has_finally {
+            // Use Drop trait for guaranteed cleanup
+            self.push_line("{"); // Open finally scope
+            self.indent += 1;
+
+            // Define Finally struct
+            self.push_line("struct Finally<F: FnOnce()>(Option<F>);");
+            self.push_line("impl<F: FnOnce()> Drop for Finally<F> {");
+            self.indent += 1;
+            self.push_line("fn drop(&mut self) {");
+            self.indent += 1;
+            self.push_line("if let Some(f) = self.0.take() { f(); }");
+            self.indent -= 1;
+            self.push_line("}"); // Close drop fn
+            self.indent -= 1;
+            self.push_line("}"); // Close impl block
+
+            // Create Finally instance with closure
+            self.push_line("let _finally = Finally(Some(|| {");
+            self.indent += 1;
+            for stmt in finalbody {
+                self.emit_stmt(stmt, mut_counts)?;
+            }
+            self.indent -= 1;
+            self.push_line("}));"); // Close closure and Finally()
+        }
+
+        // Generate try body as closure returning Result
+        self.push_line("let _try_result = (|| -> Result<(), PyError> {");
+        self.indent += 1;
+        for stmt in body {
+            self.emit_stmt(stmt, mut_counts)?;
+        }
+        self.push_line("Ok(())");
+        self.indent -= 1;
+        self.push_line("})();");
+
+        // Generate exception handlers
+        if !handlers.is_empty() {
+            self.push_line("match _try_result {");
+            self.indent += 1;
+
+            self.push_line("Ok(_) => {");
+            self.indent += 1;
+            for stmt in orelse {
+                self.emit_stmt(stmt, mut_counts)?;
+            }
+            self.indent -= 1;
+            self.push_line("}");
+
+            for handler in handlers {
+                self.emit_except_handler(handler, mut_counts)?;
+            }
+
+            // Add catch-all to re-propagate unhandled exceptions
+            let has_catch_all = handlers.iter().any(|h| h.exc_type.is_none());
+            if !has_catch_all {
+                self.push_line("Err(e) => return Err(e),");
+            }
+
+            self.indent -= 1;
+            self.push_line("}");
+        } else {
+            // No exception handlers, so propagate if function can throw
+            if self.current_function_throws() {
+                self.push_line("_try_result?;");
+            } else {
+                // Function doesn't throw, so unwrap (should never fail)
+                self.push_line("_try_result.unwrap();");
+            }
+            for stmt in orelse {
+                self.emit_stmt(stmt, mut_counts)?;
+            }
+        }
+
+        // Close the finally scope if we opened it
+        if has_finally {
+            self.indent -= 1;
+            self.push_line("}"); // Close the scope that contains Finally
+        }
+
+        Ok(())
+    }
+
+    fn emit_except_handler(
+        &mut self,
+        handler: &ExceptHandler,
+        mut_counts: &HashMap<String, usize>,
+    ) -> Result<(), CompileError> {
+        if let Some(exc_type) = &handler.exc_type {
+            let pattern = if let Some(name) = &handler.name {
+                format!("Err(PyError::{}({}))", exc_type, name)
+            } else {
+                format!("Err(PyError::{}(_))", exc_type)
+            };
+
+            self.push_line(&format!("{} => {{", pattern));
+            self.indent += 1;
+            for stmt in &handler.body {
+                self.emit_stmt(stmt, mut_counts)?;
+            }
+            self.indent -= 1;
+            self.push_line("}");
+        } else {
+            // Catch all
+            let pattern = if let Some(name) = &handler.name {
+                format!("Err({})", name)
+            } else {
+                "Err(_)".to_string()
+            };
+
+            self.push_line(&format!("{} => {{", pattern));
+            self.indent += 1;
+            for stmt in &handler.body {
+                self.emit_stmt(stmt, mut_counts)?;
+            }
+            self.indent -= 1;
+            self.push_line("}");
+        } // Close the else block
+
+        Ok(())
+    }
+
+    fn emit_raise_stmt(
+        &mut self,
+        exc: Option<&Expr>,
+        _cause: Option<&Expr>,
+    ) -> Result<(), CompileError> {
+        if let Some(exc_expr) = exc {
+            // Check if it's exception constructor call
+            if let ExprKind::Call { func, args } = &exc_expr.kind {
+                if let ExprKind::Name(exc_name) = &func.kind {
+                    let msg = if !args.is_empty() {
+                        self.gen_expr(&args[0])?
+                    } else {
+                        "String::new()".to_string()
+                    };
+
+                    self.push_line(&format!("return Err(PyError::{}({}));", exc_name, msg));
+                    return Ok(());
+                }
+            }
+
+            let exc_code = self.gen_expr(exc_expr)?;
+            self.push_line(&format!("return Err({});", exc_code));
+        } else {
+            // Re-raise - use captured exception
+            self.push_line("return Err(_current_exception);");
+        }
+
+        Ok(())
+    }
+
+    fn current_function_throws(&self) -> bool {
+        self.current_function
+            .as_ref()
+            .and_then(|name| self.ctx.functions.get(name))
+            .map_or(false, |sig| sig.can_throw)
     }
 }

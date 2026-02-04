@@ -78,6 +78,11 @@ impl<'a> TypeChecker<'a> {
                     Err(self.error(span, "Inline unions are only allowed for Optional[T]"))
                 }
             }
+            TypeRef::Result(ok, err) => Ok(Type::Result(
+                Box::new(self.resolve_type_ref(ok, span)?),
+                Box::new(self.resolve_type_ref(err, span)?),
+            )),
+            TypeRef::Exception(name) => Ok(Type::Exception(name.clone())),
             TypeRef::Unknown => Ok(Type::Unknown),
         }
     }

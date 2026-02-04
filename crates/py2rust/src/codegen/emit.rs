@@ -18,6 +18,11 @@ impl<'a> Codegen<'a> {
     }
 
     pub(crate) fn emit_helpers(&mut self) {
+        // Emit PyError if any function throws
+        if self.needs_py_error() {
+            self.emit_py_error_enum();
+        }
+
         if self.uses.print {
             self.push_line("fn py_print<T: std::fmt::Display>(v: T) {");
             self.indent += 1;
@@ -367,6 +372,9 @@ impl<'a> Codegen<'a> {
         func: &Function,
         class: Option<&ClassDef>,
     ) -> Result<(), CompileError> {
+        // Set current function for tracking throws
+        self.current_function = Some(func.name.clone());
+
         let sig = if let Some(class) = class {
             self.method_signature(func, class)?
         } else {
@@ -379,21 +387,68 @@ impl<'a> Codegen<'a> {
         for stmt in &func.body {
             self.emit_stmt(stmt, &mut_counts)?;
         }
+
+        // If function can throw and doesn't end with explicit return, add Ok(())
+        let can_throw = self
+            .ctx
+            .functions
+            .get(&func.name)
+            .map_or(false, |s| s.can_throw);
+        if can_throw && !self.ends_with_return(&func.body) {
+            self.push_line("Ok(())");
+        }
+
         self.indent -= 1;
         self.push_line("}");
         self.push_line("");
+
+        // Clear current function
+        self.current_function = None;
         Ok(())
     }
 
     pub(crate) fn emit_main(&mut self, body: &[Stmt]) -> Result<(), CompileError> {
-        self.push_line("fn main() {");
-        self.indent += 1;
-        let mut_counts = collect_assign_counts(body);
-        for stmt in body {
-            self.emit_stmt(stmt, &mut_counts)?;
+        // Check if top-level contains exception handling
+        let top_level_can_throw = self.analyze_top_level_throws(body);
+
+        if top_level_can_throw {
+            // Wrap in try closure that catches errors
+            self.push_line("fn main() {");
+            self.indent += 1;
+            self.push_line("let _result = (|| -> Result<(), PyError> {");
+            self.indent += 1;
+
+            let mut_counts = collect_assign_counts(body);
+            for stmt in body {
+                self.emit_stmt(stmt, &mut_counts)?;
+            }
+
+            self.push_line("Ok(())");
+            self.indent -= 1;
+            self.push_line("})();");
+
+            self.push_line("");
+            self.push_line("if let Err(e) = _result {");
+            self.indent += 1;
+            self.push_line("eprintln!(\"Uncaught exception: {}\", e);");
+            self.push_line("std::process::exit(1);");
+            self.indent -= 1;
+            self.push_line("}");
+
+            self.indent -= 1;
+            self.push_line("}");
+        } else {
+            // Normal main
+            self.push_line("fn main() {");
+            self.indent += 1;
+            let mut_counts = collect_assign_counts(body);
+            for stmt in body {
+                self.emit_stmt(stmt, &mut_counts)?;
+            }
+            self.indent -= 1;
+            self.push_line("}");
         }
-        self.indent -= 1;
-        self.push_line("}");
+
         Ok(())
     }
 
@@ -417,7 +472,14 @@ impl<'a> Codegen<'a> {
             };
             params.push(format!("{}: {}", param.name, ty_str));
         }
-        let ret_ty = self.resolve_type_ref(&func.ret, func.span)?;
+
+        // Get the return type from context (already wrapped in Result if can_throw)
+        let ret_ty = if let Some(sig) = self.ctx.functions.get(&func.name) {
+            sig.ret.clone()
+        } else {
+            self.resolve_type_ref(&func.ret, func.span)?
+        };
+
         let ret_str = if matches!(ret_ty, Type::Unknown) {
             "()".to_string()
         } else {
@@ -460,6 +522,8 @@ impl<'a> Codegen<'a> {
             Type::Lambda { .. } => ty.clone(),
             // Reference types stay as-is
             Type::Ref(_) | Type::MutRef(_) | Type::Slice(_) => ty.clone(),
+            // Result and Exception stay as-is
+            Type::Result(_, _) | Type::Exception(_) => ty.clone(),
             // Unknown stays as-is
             Type::Unknown => ty.clone(),
         }
@@ -532,5 +596,158 @@ impl<'a> Codegen<'a> {
             }
         }
         func.body.iter().any(stmt_mutates)
+    }
+
+    fn needs_py_error(&self) -> bool {
+        self.ctx.functions.values().any(|sig| sig.can_throw)
+    }
+
+    fn emit_py_error_enum(&mut self) {
+        self.push_line("#[derive(Debug, Clone)]");
+        self.push_line("pub enum PyError {");
+        self.indent += 1;
+
+        // Built-in exceptions
+        self.push_line("ValueError(String),");
+        self.push_line("TypeError(String),");
+        self.push_line("RuntimeError(String),");
+        self.push_line("KeyError(String),");
+        self.push_line("IndexError(String),");
+        self.push_line("AttributeError(String),");
+        self.push_line("ZeroDivisionError(String),");
+        self.push_line("NameError(String),");
+        self.push_line("AssertionError(String),");
+
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+
+        // Implement Display
+        self.push_line("impl std::fmt::Display for PyError {");
+        self.indent += 1;
+        self.push_line("fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {");
+        self.indent += 1;
+        self.push_line("match self {");
+        self.indent += 1;
+        self.push_line("PyError::ValueError(msg) => write!(f, \"ValueError: {}\", msg),");
+        self.push_line("PyError::TypeError(msg) => write!(f, \"TypeError: {}\", msg),");
+        self.push_line("PyError::RuntimeError(msg) => write!(f, \"RuntimeError: {}\", msg),");
+        self.push_line("PyError::KeyError(msg) => write!(f, \"KeyError: {}\", msg),");
+        self.push_line("PyError::IndexError(msg) => write!(f, \"IndexError: {}\", msg),");
+        self.push_line("PyError::AttributeError(msg) => write!(f, \"AttributeError: {}\", msg),");
+        self.push_line(
+            "PyError::ZeroDivisionError(msg) => write!(f, \"ZeroDivisionError: {}\", msg),",
+        );
+        self.push_line("PyError::NameError(msg) => write!(f, \"NameError: {}\", msg),");
+        self.push_line("PyError::AssertionError(msg) => write!(f, \"AssertionError: {}\", msg),");
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+
+        // Implement std::error::Error
+        self.push_line("impl std::error::Error for PyError {}");
+        self.push_line("");
+    }
+
+    fn ends_with_return(&self, stmts: &[Stmt]) -> bool {
+        if let Some(last) = stmts.last() {
+            matches!(last.kind, StmtKind::Return { .. } | StmtKind::Raise { .. })
+        } else {
+            false
+        }
+    }
+
+    fn analyze_top_level_throws(&self, stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            if self.stmt_can_throw(stmt) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn stmt_can_throw(&self, stmt: &Stmt) -> bool {
+        match &stmt.kind {
+            StmtKind::Raise { .. } => true,
+            StmtKind::Try { .. } => true, // Has exception handling
+            StmtKind::Expr(expr) => self.expr_can_throw(expr),
+            StmtKind::Let { value, .. } | StmtKind::Assign { value, .. } => {
+                self.expr_can_throw(value)
+            }
+            StmtKind::Return { value } => value.as_ref().map_or(false, |e| self.expr_can_throw(e)),
+            StmtKind::If { test, body, orelse } => {
+                self.expr_can_throw(test)
+                    || body.iter().any(|s| self.stmt_can_throw(s))
+                    || orelse.iter().any(|s| self.stmt_can_throw(s))
+            }
+            StmtKind::While { test, body } => {
+                self.expr_can_throw(test) || body.iter().any(|s| self.stmt_can_throw(s))
+            }
+            StmtKind::For { iter, body, .. } => {
+                self.expr_can_throw(iter) || body.iter().any(|s| self.stmt_can_throw(s))
+            }
+            StmtKind::Match { subject, cases } => {
+                self.expr_can_throw(subject)
+                    || cases
+                        .iter()
+                        .any(|c| c.body.iter().any(|s| self.stmt_can_throw(s)))
+            }
+            _ => false,
+        }
+    }
+
+    fn expr_can_throw(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Call { func, .. } => {
+                if let ExprKind::Name(name) = &func.kind {
+                    self.ctx
+                        .functions
+                        .get(name)
+                        .map_or(false, |sig| sig.can_throw)
+                } else {
+                    false
+                }
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.expr_can_throw(left) || self.expr_can_throw(right)
+            }
+            ExprKind::Unary { expr, .. } => self.expr_can_throw(expr),
+            ExprKind::Compare { left, right, .. } => {
+                self.expr_can_throw(left) || self.expr_can_throw(right)
+            }
+            ExprKind::BoolOp { values, .. } => values.iter().any(|v| self.expr_can_throw(v)),
+            ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
+                items.iter().any(|e| self.expr_can_throw(e))
+            }
+            ExprKind::Dict(pairs) => pairs
+                .iter()
+                .any(|(k, v)| self.expr_can_throw(k) || self.expr_can_throw(v)),
+            ExprKind::Index { value, index } => {
+                self.expr_can_throw(value) || self.expr_can_throw(index)
+            }
+            ExprKind::Slice { value, start, end } => {
+                self.expr_can_throw(value)
+                    || start.as_ref().map_or(false, |s| self.expr_can_throw(s))
+                    || end.as_ref().map_or(false, |e| self.expr_can_throw(e))
+            }
+            ExprKind::ListComp { elt, iter, ifs, .. } => {
+                self.expr_can_throw(elt)
+                    || self.expr_can_throw(iter)
+                    || ifs.iter().any(|i| self.expr_can_throw(i))
+            }
+            ExprKind::UnionCtor { inner, .. } => self.expr_can_throw(inner),
+            ExprKind::Lambda { body, .. } => self.expr_can_throw(body),
+            ExprKind::IfExpr { test, body, orelse } => {
+                self.expr_can_throw(test)
+                    || self.expr_can_throw(body)
+                    || self.expr_can_throw(orelse)
+            }
+            ExprKind::Attr { value, .. } => self.expr_can_throw(value),
+            _ => false,
+        }
     }
 }

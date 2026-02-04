@@ -172,6 +172,35 @@ fn rename_main_calls_in_stmt(stmt: &mut hir::Stmt, new_name: &str) {
                 }
             }
         }
+        hir::StmtKind::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+        } => {
+            for stmt in body {
+                rename_main_calls_in_stmt(stmt, new_name);
+            }
+            for handler in handlers {
+                for stmt in &mut handler.body {
+                    rename_main_calls_in_stmt(stmt, new_name);
+                }
+            }
+            for stmt in orelse {
+                rename_main_calls_in_stmt(stmt, new_name);
+            }
+            for stmt in finalbody {
+                rename_main_calls_in_stmt(stmt, new_name);
+            }
+        }
+        hir::StmtKind::Raise { exc, cause } => {
+            if let Some(expr) = exc {
+                rename_main_calls_in_expr(expr, new_name);
+            }
+            if let Some(expr) = cause {
+                rename_main_calls_in_expr(expr, new_name);
+            }
+        }
         hir::StmtKind::Global { .. } => {}
         hir::StmtKind::Break | hir::StmtKind::Continue => {}
     }

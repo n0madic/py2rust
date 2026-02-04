@@ -574,6 +574,51 @@ impl<'a> Lowerer<'a> {
                 span,
                 ty: None,
             }),
+            ast::Stmt::Try(try_stmt) => {
+                let body_stmts = try_stmt
+                    .body
+                    .iter()
+                    .map(|s| self.lower_stmt(s))
+                    .collect::<Result<_, _>>()?;
+
+                let handlers = try_stmt
+                    .handlers
+                    .iter()
+                    .map(|h| self.lower_except_handler(h))
+                    .collect::<Result<_, _>>()?;
+
+                let orelse_stmts = try_stmt
+                    .orelse
+                    .iter()
+                    .map(|s| self.lower_stmt(s))
+                    .collect::<Result<_, _>>()?;
+
+                let final_stmts = try_stmt
+                    .finalbody
+                    .iter()
+                    .map(|s| self.lower_stmt(s))
+                    .collect::<Result<_, _>>()?;
+
+                StmtKind::Try {
+                    body: body_stmts,
+                    handlers,
+                    orelse: orelse_stmts,
+                    finalbody: final_stmts,
+                }
+            }
+            ast::Stmt::Raise(raise_stmt) => {
+                let exc = raise_stmt
+                    .exc
+                    .as_ref()
+                    .map(|e| self.lower_expr(e))
+                    .transpose()?;
+                let cause = raise_stmt
+                    .cause
+                    .as_ref()
+                    .map(|e| self.lower_expr(e))
+                    .transpose()?;
+                StmtKind::Raise { exc, cause }
+            }
             _ => return Err(self.error(stmt.range(), "Unsupported statement")),
         };
         Ok(Stmt { kind, span })
@@ -595,6 +640,39 @@ impl<'a> Lowerer<'a> {
             body,
             span,
         })
+    }
+
+    fn lower_except_handler(
+        &self,
+        handler: &ast::ExceptHandler,
+    ) -> Result<ExceptHandler, CompileError> {
+        match handler {
+            ast::ExceptHandler::ExceptHandler(eh) => {
+                let exc_type = match eh.type_.as_deref() {
+                    Some(ast::Expr::Name(name)) => Some(name.id.to_string()),
+                    Some(_) => {
+                        return Err(
+                            self.error(handler.range(), "Exception type must be a simple name")
+                        )
+                    }
+                    None => None,
+                };
+
+                let name = eh.name.as_ref().map(|id| id.to_string());
+                let body = eh
+                    .body
+                    .iter()
+                    .map(|s| self.lower_stmt(s))
+                    .collect::<Result<_, _>>()?;
+
+                Ok(ExceptHandler {
+                    exc_type,
+                    name,
+                    body,
+                    span: Span::from(handler.range()),
+                })
+            }
+        }
     }
 
     fn lower_pattern(&self, pattern: &ast::Pattern) -> Result<(String, Vec<String>), CompileError> {

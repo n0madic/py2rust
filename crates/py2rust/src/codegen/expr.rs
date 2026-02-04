@@ -367,8 +367,13 @@ impl<'a> Codegen<'a> {
                 }
                 // Check if this is a user-defined function
                 if let ExprKind::Name(name) = &func.kind {
-                    if self.ctx.functions.contains_key(name) {
-                        return Ok(format!("{}({})", name, self.gen_call_args(name, args)?));
+                    if let Some(sig) = self.ctx.functions.get(name) {
+                        let call = format!("{}({})", name, self.gen_call_args(name, args)?);
+                        // Add ? operator if function can throw
+                        if sig.can_throw {
+                            return Ok(format!("({}?)", call));
+                        }
+                        return Ok(call);
                     }
                 }
                 Ok(format!(

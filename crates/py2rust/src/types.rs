@@ -16,9 +16,11 @@ pub enum Type {
     Union(String),
     Iterator(Box<Type>),
     Lambda { params: Vec<Type>, ret: Box<Type> },
-    Ref(Box<Type>),    // &T (immutable reference)
-    MutRef(Box<Type>), // &mut T (mutable reference)
-    Slice(Box<Type>),  // &[T] (slice reference)
+    Ref(Box<Type>),               // &T (immutable reference)
+    MutRef(Box<Type>),            // &mut T (mutable reference)
+    Slice(Box<Type>),             // &[T] (slice reference)
+    Result(Box<Type>, Box<Type>), // Result<T, E>
+    Exception(String),            // PyError or custom exception
     Unknown,
 }
 
@@ -36,6 +38,21 @@ impl Type {
             Type::Option(inner) => Some(inner.as_ref()),
             _ => None,
         }
+    }
+
+    pub fn is_exception(&self) -> bool {
+        matches!(self, Type::Exception(_))
+    }
+
+    pub fn unwrap_result(&self) -> Option<(&Type, &Type)> {
+        match self {
+            Type::Result(ok, err) => Some((ok.as_ref(), err.as_ref())),
+            _ => None,
+        }
+    }
+
+    pub fn wrap_result(self, error_type: Type) -> Type {
+        Type::Result(Box::new(self), Box::new(error_type))
     }
 }
 
@@ -62,6 +79,8 @@ impl fmt::Display for Type {
             Type::Ref(inner) => write!(f, "&{inner}"),
             Type::MutRef(inner) => write!(f, "&mut {inner}"),
             Type::Slice(inner) => write!(f, "&[{inner}]"),
+            Type::Result(ok, err) => write!(f, "Result[{ok}, {err}]"),
+            Type::Exception(name) => write!(f, "{name}"),
             Type::Unknown => write!(f, "<unknown>"),
         }
     }
@@ -81,6 +100,8 @@ pub enum TypeRef {
         params: Vec<TypeRef>,
         ret: Box<TypeRef>,
     },
+    Result(Box<TypeRef>, Box<TypeRef>),
+    Exception(String),
     Unknown,
     None,
 }
@@ -103,6 +124,8 @@ impl fmt::Display for TypeRef {
             }
             TypeRef::Iterator(inner) => write!(f, "Iterator[{inner}]"),
             TypeRef::Lambda { .. } => write!(f, "callable"),
+            TypeRef::Result(ok, err) => write!(f, "Result[{ok}, {err}]"),
+            TypeRef::Exception(name) => write!(f, "{name}"),
             TypeRef::Unknown => write!(f, "_"),
             TypeRef::None => write!(f, "None"),
         }

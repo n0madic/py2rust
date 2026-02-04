@@ -315,6 +315,35 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                    StmtKind::Try {
+                        body,
+                        handlers,
+                        orelse,
+                        finalbody,
+                    } => {
+                        for stmt in body {
+                            collect_names_in_stmt(stmt, out);
+                        }
+                        for handler in handlers {
+                            for stmt in &handler.body {
+                                collect_names_in_stmt(stmt, out);
+                            }
+                        }
+                        for stmt in orelse {
+                            collect_names_in_stmt(stmt, out);
+                        }
+                        for stmt in finalbody {
+                            collect_names_in_stmt(stmt, out);
+                        }
+                    }
+                    StmtKind::Raise { exc, cause } => {
+                        if let Some(expr) = exc {
+                            collect_names(expr, out);
+                        }
+                        if let Some(expr) = cause {
+                            collect_names(expr, out);
+                        }
+                    }
                     StmtKind::Global { .. } => {}
                     StmtKind::Break | StmtKind::Continue => {}
                 }
@@ -364,6 +393,35 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                    StmtKind::Try {
+                        body,
+                        handlers,
+                        orelse,
+                        finalbody,
+                    } => {
+                        for stmt in body {
+                            visit_stmt(stmt, out);
+                        }
+                        for handler in handlers {
+                            for stmt in &handler.body {
+                                visit_stmt(stmt, out);
+                            }
+                        }
+                        for stmt in orelse {
+                            visit_stmt(stmt, out);
+                        }
+                        for stmt in finalbody {
+                            visit_stmt(stmt, out);
+                        }
+                    }
+                    StmtKind::Raise { exc, cause } => {
+                        if let Some(expr) = exc {
+                            visit_expr(expr, out);
+                        }
+                        if let Some(expr) = cause {
+                            visit_expr(expr, out);
+                        }
+                    }
                     StmtKind::Global { .. } => {}
                     StmtKind::Break | StmtKind::Continue => {}
                 }
@@ -387,6 +445,8 @@ impl<'a> TypeChecker<'a> {
                         params: params.clone(),
                         ret: ret.clone(),
                         span: func.span,
+                        can_throw: false,
+                        thrown_exceptions: Vec::new(),
                     },
                 );
             }
@@ -397,6 +457,8 @@ impl<'a> TypeChecker<'a> {
                     params,
                     ret,
                     span: func.span,
+                    can_throw: false,
+                    thrown_exceptions: Vec::new(),
                 },
             );
         }

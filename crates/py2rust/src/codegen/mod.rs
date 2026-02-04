@@ -42,6 +42,8 @@ pub struct Codegen<'a> {
     pub(crate) name_compare_only: bool,
     /// Parameters that have been converted to borrowed types (e.g., &[T], &str, &HashMap)
     pub(crate) borrowed_params: HashSet<String>,
+    /// Current function being emitted (for tracking if returns should be wrapped in Ok)
+    pub(crate) current_function: Option<String>,
 }
 
 impl<'a> Codegen<'a> {
@@ -56,6 +58,7 @@ impl<'a> Codegen<'a> {
             uses: Uses::default(),
             name_compare_only: false,
             borrowed_params: HashSet::new(),
+            current_function: None,
         }
     }
 

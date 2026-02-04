@@ -82,6 +82,11 @@ impl<'a> TypeChecker<'a> {
             },
             // Reference types are internal to codegen, convert to underlying type
             Type::Ref(inner) | Type::MutRef(inner) | Type::Slice(inner) => Self::type_to_ref(inner),
+            Type::Result(ok, err) => TypeRef::Result(
+                Box::new(Self::type_to_ref(ok)),
+                Box::new(Self::type_to_ref(err)),
+            ),
+            Type::Exception(name) => TypeRef::Exception(name.clone()),
             Type::Unknown => TypeRef::Unknown,
         }
     }

@@ -12,6 +12,8 @@ impl<'a> TypeChecker<'a> {
                         params,
                         ret,
                         span: func.span,
+                        can_throw: false,
+                        thrown_exceptions: Vec::new(),
                     },
                 );
             }
@@ -42,6 +44,8 @@ impl<'a> TypeChecker<'a> {
                         params,
                         ret: ret.clone(),
                         span: method.span,
+                        can_throw: false,
+                        thrown_exceptions: Vec::new(),
                     };
                     if method.name == "__init__" {
                         init = Some(sig.clone());

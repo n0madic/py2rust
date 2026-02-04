@@ -57,6 +57,10 @@ impl<'a> Codegen<'a> {
             }
             Type::MutRef(inner) => format!("&mut {}", self.rust_type(inner)),
             Type::Slice(inner) => format!("&[{}]", self.rust_type(inner)),
+            Type::Result(ok, err) => {
+                format!("Result<{}, {}>", self.rust_type(ok), self.rust_type(err))
+            }
+            Type::Exception(name) => name.clone(),
             Type::Unknown => "_".to_string(),
         }
     }
@@ -109,6 +113,11 @@ impl<'a> Codegen<'a> {
                     ret: Box::new(ret_ty),
                 })
             }
+            TypeRef::Result(ok, err) => Ok(Type::Result(
+                Box::new(self.resolve_type_ref(ok, span)?),
+                Box::new(self.resolve_type_ref(err, span)?),
+            )),
+            TypeRef::Exception(name) => Ok(Type::Exception(name.clone())),
             TypeRef::Unknown => Ok(Type::Unknown),
             TypeRef::Union(parts) => {
                 let mut has_none = false;

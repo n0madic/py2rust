@@ -48,8 +48,13 @@ impl<'a> Codegen<'a> {
             Type::Ref(inner) | Type::MutRef(inner) | Type::Slice(inner) => {
                 self.scan_type_uses(inner);
             }
+            Type::Result(ok, err) => {
+                self.scan_type_uses(ok);
+                self.scan_type_uses(err);
+            }
             Type::Custom(_)
             | Type::Union(_)
+            | Type::Exception(_)
             | Type::Int
             | Type::Float
             | Type::Bool
@@ -107,6 +112,35 @@ impl<'a> Codegen<'a> {
                         for stmt in &case.body {
                             visit_stmt(stmt, ok);
                         }
+                    }
+                }
+                StmtKind::Try {
+                    body,
+                    handlers,
+                    orelse,
+                    finalbody,
+                } => {
+                    for stmt in body {
+                        visit_stmt(stmt, ok);
+                    }
+                    for handler in handlers {
+                        for stmt in &handler.body {
+                            visit_stmt(stmt, ok);
+                        }
+                    }
+                    for stmt in orelse {
+                        visit_stmt(stmt, ok);
+                    }
+                    for stmt in finalbody {
+                        visit_stmt(stmt, ok);
+                    }
+                }
+                StmtKind::Raise { exc, cause } => {
+                    if let Some(expr) = exc {
+                        visit_expr(expr, ok);
+                    }
+                    if let Some(expr) = cause {
+                        visit_expr(expr, ok);
                     }
                 }
                 StmtKind::Global { .. } => {}
@@ -289,6 +323,35 @@ impl<'a> Codegen<'a> {
                     for stmt in &case.body {
                         self.scan_stmt(stmt)?;
                     }
+                }
+            }
+            StmtKind::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                for stmt in body {
+                    self.scan_stmt(stmt)?;
+                }
+                for handler in handlers {
+                    for stmt in &handler.body {
+                        self.scan_stmt(stmt)?;
+                    }
+                }
+                for stmt in orelse {
+                    self.scan_stmt(stmt)?;
+                }
+                for stmt in finalbody {
+                    self.scan_stmt(stmt)?;
+                }
+            }
+            StmtKind::Raise { exc, cause } => {
+                if let Some(expr) = exc {
+                    self.scan_expr(expr)?;
+                }
+                if let Some(expr) = cause {
+                    self.scan_expr(expr)?;
                 }
             }
             StmtKind::Global { .. } => {}
