@@ -251,6 +251,37 @@ impl<'a> Lowerer<'a> {
                     cases: lowered_cases,
                 }
             }
+            ast::Stmt::Import(import) => {
+                if import
+                    .names
+                    .iter()
+                    .all(|alias| alias.name.as_str() == "typing")
+                {
+                    StmtKind::Expr(Expr {
+                        kind: ExprKind::Literal(Literal::None),
+                        span,
+                        ty: None,
+                    })
+                } else {
+                    return Err(self.error(stmt.range(), "Unsupported import"));
+                }
+            }
+            ast::Stmt::ImportFrom(import) => {
+                let module_ok = import
+                    .module
+                    .as_ref()
+                    .is_some_and(|m| m.as_str() == "typing");
+                let level_ok = import.level.map(|lvl| lvl.to_u32()).unwrap_or(0) == 0;
+                if module_ok && level_ok {
+                    StmtKind::Expr(Expr {
+                        kind: ExprKind::Literal(Literal::None),
+                        span,
+                        ty: None,
+                    })
+                } else {
+                    return Err(self.error(stmt.range(), "Unsupported import"));
+                }
+            }
             ast::Stmt::Pass(_) => StmtKind::Expr(Expr {
                 kind: ExprKind::Literal(Literal::None),
                 span,

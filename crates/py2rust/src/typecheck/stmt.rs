@@ -11,8 +11,8 @@ impl<'a> TypeChecker<'a> {
                 if name == "__name__" {
                     return Err(self.error(stmt.span, "Assignment to __name__ is not supported"));
                 }
-                if self.in_function() {
-                    if self.is_declared_global(name) {
+                if self.in_function()
+                    && self.is_declared_global(name) {
                         let global_ty = self.ctx.globals.get(name).cloned().ok_or_else(|| {
                             self.error(
                                 stmt.span,
@@ -45,13 +45,6 @@ impl<'a> TypeChecker<'a> {
                         };
                         return Ok(());
                     }
-                    if self.ctx.globals.contains_key(name) {
-                        return Err(self.error(
-                            stmt.span,
-                            format!("Local binding shadows global variable `{name}`"),
-                        ));
-                    }
-                }
                 if let ExprKind::Lambda { params, .. } = &value.kind {
                     let placeholder = Type::Lambda {
                         params: vec![Type::Unknown; params.len()],
@@ -79,6 +72,9 @@ impl<'a> TypeChecker<'a> {
                             );
                         }
                         self.insert_var(name, ty, stmt.span)?;
+                    }
+                    if !self.in_function() {
+                        self.lambda_defs.insert(name.clone(), value.clone());
                     }
                     return Ok(());
                 }
@@ -128,24 +124,20 @@ impl<'a> TypeChecker<'a> {
                                 );
                             }
                             self.ensure_assignable(&ty, &global_ty, stmt.span)?;
+                        } else if let Some(existing) = self.lookup_var(name) {
+                            self.ensure_assignable(&ty, &existing, stmt.span)?;
                         } else {
-                            if self.in_function() && self.ctx.globals.contains_key(name) {
-                                return Err(self.error(
-                                    stmt.span,
-                                    format!("Local binding shadows global variable `{name}`"),
-                                ));
+                            if matches!(ty, Type::Unknown) {
+                                return Err(self
+                                    .error(stmt.span, "Unable to infer type; add annotation"));
                             }
-                            if let Some(existing) = self.lookup_var(name) {
-                                self.ensure_assignable(&ty, &existing, stmt.span)?;
-                            } else {
-                                if matches!(ty, Type::Unknown) {
-                                    return Err(self
-                                        .error(stmt.span, "Unable to infer type; add annotation"));
-                                }
-                                promote_to_let = Some((name.clone(), value.clone()));
-                                self.insert_var(name, ty, stmt.span)?;
-                            }
+                            promote_to_let = Some((name.clone(), value.clone()));
+                            self.insert_var(name, ty, stmt.span)?;
                         }
+                        if !self.in_function()
+                            && matches!(value.kind, ExprKind::Lambda { .. }) {
+                                self.lambda_defs.insert(name.clone(), value.clone());
+                            }
                     }
                     AssignTarget::Attr { value: obj, attr } => {
                         let obj_ty = self.check_expr(obj, None)?;
@@ -246,18 +238,10 @@ impl<'a> TypeChecker<'a> {
                         )
                     })?;
                     self.ensure_assignable(&item_ty, &global_ty, stmt.span)?;
+                } else if let Some(existing) = self.lookup_var(target) {
+                    self.ensure_assignable(&item_ty, &existing, stmt.span)?;
                 } else {
-                    if self.in_function() && self.ctx.globals.contains_key(target) {
-                        return Err(self.error(
-                            stmt.span,
-                            format!("Local binding shadows global variable `{target}`"),
-                        ));
-                    }
-                    if let Some(existing) = self.lookup_var(target) {
-                        self.ensure_assignable(&item_ty, &existing, stmt.span)?;
-                    } else {
-                        self.insert_var(target, item_ty, stmt.span)?;
-                    }
+                    self.insert_var(target, item_ty, stmt.span)?;
                 }
                 for stmt in body {
                     self.check_stmt(stmt, expected_ret)?;

@@ -49,13 +49,41 @@ impl<'a> TypeChecker<'a> {
         if matches!(right, Type::Unknown) {
             return left;
         }
-        if left.is_numeric() && right.is_numeric() {
-            if matches!(left, Type::Float) || matches!(right, Type::Float) {
-                return Type::Float;
+        match (left, right) {
+            (
+                Type::Lambda {
+                    params: left_params,
+                    ret: left_ret,
+                },
+                Type::Lambda {
+                    params: right_params,
+                    ret: right_ret,
+                },
+            ) => {
+                if left_params.len() != right_params.len() {
+                    return Type::Lambda {
+                        params: left_params,
+                        ret: left_ret,
+                    };
+                }
+                let params = left_params
+                    .into_iter()
+                    .zip(right_params)
+                    .map(|(l, r)| Self::merge_types(l, r))
+                    .collect();
+                let ret = Box::new(Self::merge_types(*left_ret, *right_ret));
+                Type::Lambda { params, ret }
             }
-            return Type::Int;
+            (left, right) => {
+                if left.is_numeric() && right.is_numeric() {
+                    if matches!(left, Type::Float) || matches!(right, Type::Float) {
+                        return Type::Float;
+                    }
+                    return Type::Int;
+                }
+                left
+            }
         }
-        left
     }
 
     pub(super) fn type_to_ref(ty: &Type) -> TypeRef {

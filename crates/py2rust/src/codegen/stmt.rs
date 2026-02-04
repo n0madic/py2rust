@@ -2,6 +2,29 @@ use super::util::collect_assign_counts;
 use super::*;
 
 impl<'a> Codegen<'a> {
+    fn wrap_global_value(&mut self, expr: String, value: &Expr, expected: Option<&Type>) -> String {
+        match expected {
+            Some(Type::Lambda { .. }) => {
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        return expr;
+                    }
+                }
+                format!("Arc::new({})", expr)
+            }
+            Some(Type::Iterator(_)) => {
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        return expr;
+                    }
+                }
+                self.uses.py_iter = true;
+                format!("py_iter({})", expr)
+            }
+            _ => expr,
+        }
+    }
+
     pub(crate) fn emit_stmt(
         &mut self,
         stmt: &Stmt,
@@ -10,7 +33,9 @@ impl<'a> Codegen<'a> {
         match &stmt.kind {
             StmtKind::Let { name, ann, value } => {
                 if self.is_global(name) {
-                    let expr = self.gen_expr(value)?;
+                    let expected = self.ctx.globals.get(name).cloned();
+                    let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                    let expr = self.wrap_global_value(expr, value, expected.as_ref());
                     let gname = self.global_name(name);
                     self.push_line(&format!(
                         "let _ = {}.get_or_init(|| Mutex::new({}));",
@@ -62,44 +87,121 @@ impl<'a> Codegen<'a> {
                         return Ok(());
                     }
                 }
-                let expr = self.gen_expr(value)?;
+                let expected = if let Some(ann) = ann {
+                    Some(self.resolve_type_ref(ann, stmt.span)?)
+                } else {
+                    None
+                };
+                let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                 let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
                     "mut "
                 } else {
                     ""
                 };
-                if let Some(ann) = ann {
-                    let ty = self.resolve_type_ref(ann, stmt.span)?;
+                if ann.is_some() {
+                    let ty = expected.expect("resolved above");
                     let ty_str = self.rust_type(&ty);
                     self.push_line(&format!("let {}{}: {} = {};", mut_kw, name, ty_str, expr));
+                    self.set_local_var_type(name, ty);
                 } else {
                     self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                    if let Some(ty) = value.ty.clone() {
+                        self.set_local_var_type(name, ty);
+                    }
                 }
             }
             StmtKind::Assign { target, value } => match target {
                 AssignTarget::Name(name) => {
-                    let expr = self.gen_expr(value)?;
                     if self.is_global(name) {
+                        let expected = self.ctx.globals.get(name).cloned();
+                        let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                        let expr = self.wrap_global_value(expr, value, expected.as_ref());
                         let gname = self.global_name(name);
                         self.push_line(&format!(
                             "*{}.get().unwrap().lock().unwrap() = {};",
                             gname, expr
                         ));
                     } else {
+                        let expected = self.local_var_type(name).cloned();
+                        let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                         self.push_line(&format!("{} = {};", name, expr));
                     }
                 }
                 AssignTarget::Attr { value: obj, attr } => {
                     let obj_expr = self.gen_expr(obj)?;
-                    let val_expr = self.gen_expr(value)?;
+                    let expected = match obj.ty.as_ref() {
+                        Some(Type::Custom(class_name)) => self
+                            .ctx
+                            .classes
+                            .get(class_name)
+                            .and_then(|info| info.fields.get(attr))
+                            .cloned(),
+                        _ => None,
+                    };
+                    let val_expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                     self.push_line(&format!("{}.{} = {};", obj_expr, attr, val_expr));
                 }
                 AssignTarget::Index {
                     value: container,
                     index,
                 } => {
+                    let expected = match container.ty.as_ref() {
+                        Some(Type::List(inner)) | Some(Type::Set(inner)) => Some(inner.as_ref()),
+                        Some(Type::Dict(_, val)) => Some(val.as_ref()),
+                        Some(Type::Tuple(items)) => {
+                            if let ExprKind::Literal(Literal::Int(idx)) = &index.kind {
+                                if *idx >= 0 {
+                                    items.get(*idx as usize)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    let val_expr = self.gen_expr_with_expected(value, expected)?;
+                    if let ExprKind::Name(name) = &container.kind {
+                        if self.is_global(name) {
+                            let guard = self.new_tmp();
+                            self.push_line("{");
+                            self.indent += 1;
+                            self.push_line(&format!(
+                                "let mut {} = {};",
+                                guard,
+                                self.global_lock_expr(name)
+                            ));
+                            if let Some(Type::Dict(_, _)) = container.ty.as_ref() {
+                                let idx_expr = self.gen_expr(index)?;
+                                self.push_line(&format!(
+                                    "{}.insert({}, {});",
+                                    guard, idx_expr, val_expr
+                                ));
+                            } else if matches!(
+                                container.ty.as_ref(),
+                                Some(Type::List(_)) | Some(Type::Tuple(_))
+                            ) {
+                                let idx_raw = self.gen_expr(index)?;
+                                if self.may_be_negative(index) {
+                                    self.uses.py_index = true;
+                                    self.push_line(&format!(
+                                        "{}[py_index({}, {}.len())] = {};",
+                                        guard, idx_raw, guard, val_expr
+                                    ));
+                                } else {
+                                    self.push_line(&format!(
+                                        "{}[{} as usize] = {};",
+                                        guard, idx_raw, val_expr
+                                    ));
+                                }
+                            }
+                            self.indent -= 1;
+                            self.push_line("}");
+                            return Ok(());
+                        }
+                    }
                     let cont_expr = self.gen_expr(container)?;
-                    let val_expr = self.gen_expr(value)?;
                     if let Some(Type::Dict(_, _)) = container.ty.as_ref() {
                         let idx_expr = self.gen_expr(index)?;
                         self.push_line(&format!(
@@ -138,25 +240,18 @@ impl<'a> Codegen<'a> {
                 let wrap_in_ok = in_throwing_fn || in_try_with_value;
 
                 if let Some(expr) = value {
-                    if matches!(&expr.kind, ExprKind::Literal(Literal::None)) {
-                        if matches!(expr.ty.as_ref(), Some(Type::Option(_))) {
-                            if wrap_in_ok {
-                                self.push_line("return Ok(None);");
-                            } else {
-                                self.push_line("return None;");
-                            }
-                        } else if wrap_in_ok {
-                            self.push_line("return Ok(());");
+                    let expected = self.current_function_ret.as_ref().map(|ty| {
+                        if let Some((ok, _)) = ty.unwrap_result() {
+                            ok.clone()
                         } else {
-                            self.push_line("return;");
+                            ty.clone()
                         }
+                    });
+                    let expr_str = self.gen_expr_with_expected(expr, expected.as_ref())?;
+                    if wrap_in_ok {
+                        self.push_line(&format!("return Ok({});", expr_str));
                     } else {
-                        let expr_str = self.gen_expr(expr)?;
-                        if wrap_in_ok {
-                            self.push_line(&format!("return Ok({});", expr_str));
-                        } else {
-                            self.push_line(&format!("return {};", expr_str));
-                        }
+                        self.push_line(&format!("return {};", expr_str));
                     }
                 } else if wrap_in_ok {
                     self.push_line("return Ok(());");
@@ -196,6 +291,10 @@ impl<'a> Codegen<'a> {
                             if let Some(ann) = ann {
                                 let ty = self.resolve_type_ref(&ann, stmt.span)?;
                                 let ty_str = self.rust_type(&ty);
+                                let left_expr =
+                                    self.gen_expr_with_expected(&val_left, Some(&ty))?;
+                                let right_expr =
+                                    self.gen_expr_with_expected(&val_right, Some(&ty))?;
                                 self.push_line(&format!(
                                     "let {}{}: {} = if {} {{ {} }} else {{ {} }};",
                                     mut_kw, name_left, ty_str, test_expr, left_expr, right_expr
@@ -248,9 +347,19 @@ impl<'a> Codegen<'a> {
                 };
                 self.push_line(&format!("for {} in {} {{", target, iter_src));
                 self.indent += 1;
+                let saved_locals = self.local_vars.clone();
+                let mut scoped_locals = saved_locals.clone().unwrap_or_default();
+                let item_ty = iter
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| self.iter_item_type_hint(ty))
+                    .unwrap_or(Type::Unknown);
+                scoped_locals.insert(target.clone(), item_ty);
+                self.local_vars = Some(scoped_locals);
                 for stmt in body {
                     self.emit_stmt(stmt, mut_counts)?;
                 }
+                self.local_vars = saved_locals;
                 self.indent -= 1;
                 self.push_line("}");
             }

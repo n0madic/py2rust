@@ -70,6 +70,23 @@ def test_dicts() -> None:
     d["a"] = 10
     assert d["a"] == 10
 
+    # dict() constructors
+    empty: dict[str, int] = dict()
+    assert len(empty) == 0
+
+    kw: dict[str, int] = dict(a=1, b=2)
+    assert kw["a"] == 1
+    assert kw["b"] == 2
+
+    pairs: list[tuple[str, int]] = [("x", 10), ("y", 20)]
+    from_pairs: dict[str, int] = dict(pairs)
+    assert from_pairs["x"] == 10
+    assert from_pairs["y"] == 20
+
+    copied: dict[str, int] = dict(d)
+    assert copied["a"] == 10
+    assert copied["b"] == 2
+
 # Run all tests
 test_lists()
 test_strings()

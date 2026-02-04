@@ -11,7 +11,7 @@ impl<'a> Codegen<'a> {
             self.push_line("use std::collections::HashSet;");
         }
         if !self.ctx.globals.is_empty() {
-            self.push_line("use std::sync::{Mutex, OnceLock};");
+            self.push_line("use std::sync::{Arc, Mutex, OnceLock};");
         }
         self.push_line("const __NAME__: &str = \"__main__\";");
         self.push_line("");
@@ -21,6 +21,45 @@ impl<'a> Codegen<'a> {
         // Emit PyError if any function throws
         if self.needs_py_error() {
             self.emit_py_error_enum();
+        }
+
+        if self.uses.py_iter {
+            self.push_line("#[derive(Clone)]");
+            self.push_line("struct PyIter<T> {");
+            self.indent += 1;
+            self.push_line("inner: Arc<Mutex<Box<dyn Iterator<Item = T> + Send>>>,");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl<T> PyIter<T> {");
+            self.indent += 1;
+            self.push_line("fn new<I: Iterator<Item = T> + Send + 'static>(iter: I) -> Self {");
+            self.indent += 1;
+            self.push_line("Self { inner: Arc::new(Mutex::new(Box::new(iter))) }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl<T> Iterator for PyIter<T> {");
+            self.indent += 1;
+            self.push_line("type Item = T;");
+            self.push_line("fn next(&mut self) -> Option<Self::Item> {");
+            self.indent += 1;
+            self.push_line("self.inner.lock().unwrap().next()");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("fn py_iter<T, I>(iter: I) -> PyIter<T>");
+            self.indent += 1;
+            self.push_line("where");
+            self.indent += 1;
+            self.push_line("I: Iterator<Item = T> + Send + 'static,");
+            self.indent -= 1;
+            self.push_line("{");
+            self.indent += 1;
+            self.push_line("PyIter::new(iter)");
+            self.indent -= 1;
+            self.push_line("}");
         }
 
         if self.uses.print {
@@ -71,11 +110,54 @@ impl<'a> Codegen<'a> {
                 "fn py_range2(start: i64, end: i64) -> std::ops::Range<i64> { start..end }",
             );
         }
+        if self.uses.range3 {
+            self.push_line(
+                "fn py_range3(start: i64, end: i64, step: i64) -> Box<dyn Iterator<Item = i64>> {",
+            );
+            self.indent += 1;
+            self.push_line("if step == 0 { panic!(\"range() arg 3 must not be zero\"); }");
+            self.push_line("if step > 0 {");
+            self.indent += 1;
+            self.push_line("Box::new((start..end).step_by(step as usize))");
+            self.indent -= 1;
+            self.push_line("} else {");
+            self.indent += 1;
+            self.push_line("let step = (-step) as usize;");
+            self.push_line("if start <= end {");
+            self.indent += 1;
+            self.push_line("Box::new(std::iter::empty::<i64>())");
+            self.indent -= 1;
+            self.push_line("} else {");
+            self.indent += 1;
+            self.push_line("Box::new(((end + 1)..=start).rev().step_by(step))");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+        }
         if self.uses.round {
+            self.push_line("fn py_round_ties_even(value: f64) -> f64 {");
+            self.indent += 1;
+            self.push_line("let rounded = value.round();");
+            self.push_line("let diff = (value - rounded).abs();");
+            self.push_line("if (diff - 0.5).abs() < 1e-12 {");
+            self.indent += 1;
+            self.push_line("let floor = value.floor();");
+            self.push_line("if (floor as i64) % 2 == 0 { floor } else { floor + 1.0 }");
+            self.indent -= 1;
+            self.push_line("} else {");
+            self.indent += 1;
+            self.push_line("rounded");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
             self.push_line("fn py_round(value: f64, ndigits: i64) -> f64 {");
             self.indent += 1;
             self.push_line("let factor = 10f64.powi(ndigits as i32);");
-            self.push_line("(value * factor).round() / factor");
+            self.push_line("py_round_ties_even(value * factor) / factor");
             self.indent -= 1;
             self.push_line("}");
         }
@@ -101,16 +183,22 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
         }
         if self.uses.py_parse_int {
-            self.push_line("fn py_parse_int(s: &str) -> i64 {");
+            self.push_line("fn py_parse_int(s: &str) -> Result<i64, PyError> {");
             self.indent += 1;
-            self.push_line("s.trim().parse().unwrap_or_else(|_| panic!(\"invalid literal for int() with base 10: '{}'\", s.trim()))");
+            self.push_line("let trimmed = s.trim();");
+            self.push_line(
+                "trimmed.parse().map_err(|_| PyError::ValueError(format!(\"invalid literal for int() with base 10: '{}'\", trimmed)))",
+            );
             self.indent -= 1;
             self.push_line("}");
         }
         if self.uses.py_parse_float {
-            self.push_line("fn py_parse_float(s: &str) -> f64 {");
+            self.push_line("fn py_parse_float(s: &str) -> Result<f64, PyError> {");
             self.indent += 1;
-            self.push_line("s.trim().parse().unwrap_or_else(|_| panic!(\"could not convert string to float: '{}'\", s.trim()))");
+            self.push_line("let trimmed = s.trim();");
+            self.push_line(
+                "trimmed.parse().map_err(|_| PyError::ValueError(format!(\"could not convert string to float: '{}'\", trimmed)))",
+            );
             self.indent -= 1;
             self.push_line("}");
         }
@@ -156,7 +244,7 @@ impl<'a> Codegen<'a> {
             return;
         }
         for (name, ty) in &self.ctx.globals {
-            let ty_str = self.rust_type(ty);
+            let ty_str = self.rust_type_for_global(ty);
             let gname = self.global_name(name);
             self.push_line(&format!(
                 "static {}: OnceLock<Mutex<{}>> = OnceLock::new();",
@@ -374,6 +462,37 @@ impl<'a> Codegen<'a> {
     ) -> Result<(), CompileError> {
         // Set current function for tracking throws
         self.current_function = Some(func.name.clone());
+        self.local_vars = Some(HashMap::new());
+
+        // Track parameter types and return type for option coercions
+        let mut param_types: Option<Vec<Type>> = None;
+        let mut ret_ty: Option<Type> = None;
+        if let Some(class_def) = class {
+            if let Some(info) = self.ctx.classes.get(&class_def.name) {
+                if let Some(sig) = info.methods.get(&func.name) {
+                    param_types = Some(sig.params.clone());
+                    ret_ty = Some(sig.ret.clone());
+                }
+            }
+        } else if let Some(sig) = self.ctx.functions.get(&func.name) {
+            param_types = Some(sig.params.clone());
+            ret_ty = Some(sig.ret.clone());
+        }
+        if ret_ty.is_none() {
+            ret_ty = Some(self.resolve_type_ref(&func.ret, func.span)?);
+        }
+        self.current_function_ret = ret_ty;
+
+        if let Some(params) = param_types {
+            for (param, ty) in func.params.iter().zip(params.into_iter()) {
+                self.set_local_var_type(&param.name, ty);
+            }
+        } else {
+            for param in &func.params {
+                let ty = self.resolve_type_ref(&param.ann, param.span)?;
+                self.set_local_var_type(&param.name, ty);
+            }
+        }
 
         let sig = if let Some(class) = class {
             self.method_signature(func, class)?
@@ -404,12 +523,15 @@ impl<'a> Codegen<'a> {
 
         // Clear current function
         self.current_function = None;
+        self.current_function_ret = None;
+        self.local_vars = None;
         Ok(())
     }
 
     pub(crate) fn emit_main(&mut self, body: &[Stmt]) -> Result<(), CompileError> {
         // Check if top-level contains exception handling
         let top_level_can_throw = self.analyze_top_level_throws(body);
+        self.top_level_can_throw = top_level_can_throw;
 
         if top_level_can_throw {
             // Wrap in try closure that catches errors
@@ -599,7 +721,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn needs_py_error(&self) -> bool {
-        self.ctx.functions.values().any(|sig| sig.can_throw)
+        self.top_level_can_throw || self.ctx.functions.values().any(|sig| sig.can_throw)
     }
 
     fn emit_py_error_enum(&mut self) {

@@ -55,6 +55,17 @@ assert classify(-5) == "negative"
 assert classify(0) == "zero"
 assert classify(42) == "positive"
 
+# typing import is a no-op; Union works in annotations
+from typing import Union
+
+def test_typing_import() -> None:
+    x: Union[int, None] = None
+    assert x is None
+    y: Union[int, None] = 3
+    assert y is not None
+
+test_typing_import()
+
 print("All function tests passed!")
 "#,
         Some("All function tests passed!"),

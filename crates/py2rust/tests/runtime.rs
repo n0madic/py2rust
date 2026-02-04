@@ -7,6 +7,8 @@ mod common;
 
 #[path = "runtime/assert.rs"]
 mod assert_tests;
+#[path = "runtime/builtins.rs"]
+mod builtins;
 #[path = "runtime/classes.rs"]
 mod classes;
 #[path = "runtime/collections.rs"]

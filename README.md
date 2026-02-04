@@ -16,6 +16,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - `match/case` on union variants
 - Custom iterators via `__iter__` and `next`
 - Simple list comprehensions
+- Builtins: `abs`, `all`, `any`, `bin`, `bool`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `str`, `sum`, `tuple`, `type`, `zip`
 
 ## Usage
 
@@ -46,6 +47,8 @@ Run tests:
 cargo test -p py2rust
 ```
 
+Runtime integration coverage lives in `crates/py2rust/tests/runtime/` (see `crates/py2rust/tests/runtime/builtins.rs` for builtin coverage).
+
 ## Runtime helpers
 The generated Rust injects tiny helper functions only when needed:
 - `py_print`
@@ -56,6 +59,8 @@ The generated Rust injects tiny helper functions only when needed:
 ## Notes and Limitations
 - `self` can be unannotated in methods; other parameters require annotations.
 - `Union[A, B]` and `A | B` are allowed only for enum-like class unions.
+- `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
+- Keyword arguments are supported only for `dict()`; other keyword args are rejected.
 - `__init__` is treated as a constructor; it must only assign `self` fields.
 - `dict` indexing uses `HashMap` indexing and will panic on missing keys.
 - String slicing uses byte offsets (Rust rules apply).

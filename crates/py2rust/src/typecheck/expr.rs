@@ -92,6 +92,11 @@ impl<'a> TypeChecker<'a> {
                     self.maybe_update_from_expr(right, &left_ty);
                 }
                 if matches!(left_ty, Type::Unknown) || matches!(right_ty, Type::Unknown) {
+                    if matches!(op, BinOp::Add)
+                        && (matches!(left_ty, Type::Str) || matches!(right_ty, Type::Str))
+                    {
+                        return Ok(Type::Str);
+                    }
                     return Ok(Type::Unknown);
                 }
                 match op {
@@ -155,6 +160,17 @@ impl<'a> TypeChecker<'a> {
                             expr.ty = Some(ty.clone());
                             return Ok(ty);
                         }
+                        if matches!(op, BinOp::Mul) {
+                            let left_is_str = matches!(left_ty, Type::Str);
+                            let right_is_str = matches!(right_ty, Type::Str);
+                            let left_is_int = matches!(left_ty, Type::Int);
+                            let right_is_int = matches!(right_ty, Type::Int);
+                            if (left_is_str && right_is_int) || (right_is_str && left_is_int) {
+                                let ty = Type::Str;
+                                expr.ty = Some(ty.clone());
+                                return Ok(ty);
+                            }
+                        }
                         if !left_ty.is_numeric() || !right_ty.is_numeric() {
                             if matches!(op, BinOp::Add) {
                                 if let (Type::Tuple(left_items), Type::Tuple(right_items)) =
@@ -215,6 +231,18 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Compare { op, left, right } => {
                 let left_ty = self.check_expr(left, None)?;
                 let right_ty = self.check_expr(right, None)?;
+                if let (Type::List(left_inner), Type::List(right_inner)) = (&left_ty, &right_ty) {
+                    if matches!(left_inner.as_ref(), Type::Unknown)
+                        && !matches!(right_inner.as_ref(), Type::Unknown)
+                    {
+                        left.ty = Some(Type::List(right_inner.clone()));
+                    }
+                    if matches!(right_inner.as_ref(), Type::Unknown)
+                        && !matches!(left_inner.as_ref(), Type::Unknown)
+                    {
+                        right.ty = Some(Type::List(left_inner.clone()));
+                    }
+                }
                 match op {
                     CmpOp::In | CmpOp::NotIn => {
                         if matches!(right_ty, Type::Unknown) {
@@ -261,10 +289,9 @@ impl<'a> TypeChecker<'a> {
                             return Ok(Type::Bool);
                         }
                         if left_ty != elem_ty {
-                            return Err(self.error(
-                                expr.span,
-                                "Membership requires matching element type",
-                            ));
+                            return Err(
+                                self.error(expr.span, "Membership requires matching element type")
+                            );
                         }
                         Type::Bool
                     }
@@ -288,7 +315,36 @@ impl<'a> TypeChecker<'a> {
                             return Ok(Type::Bool);
                         }
                         if left_ty != right_ty {
-                            return Err(self.error(expr.span, "Comparison requires matching types"));
+                            let opt_matches = match (&left_ty, &right_ty) {
+                                (Type::Option(_), Type::None) | (Type::None, Type::Option(_)) => {
+                                    true
+                                }
+                                (Type::Option(inner), other) => inner.as_ref() == other,
+                                (other, Type::Option(inner)) => inner.as_ref() == other,
+                                _ => false,
+                            };
+                            let container_unknown_matches = match (&left_ty, &right_ty) {
+                                (Type::List(l), Type::List(r)) => {
+                                    matches!(l.as_ref(), Type::Unknown)
+                                        || matches!(r.as_ref(), Type::Unknown)
+                                }
+                                (Type::Set(l), Type::Set(r)) => {
+                                    matches!(l.as_ref(), Type::Unknown)
+                                        || matches!(r.as_ref(), Type::Unknown)
+                                }
+                                (Type::Dict(lk, lv), Type::Dict(rk, rv)) => {
+                                    matches!(lk.as_ref(), Type::Unknown)
+                                        || matches!(lv.as_ref(), Type::Unknown)
+                                        || matches!(rk.as_ref(), Type::Unknown)
+                                        || matches!(rv.as_ref(), Type::Unknown)
+                                }
+                                _ => false,
+                            };
+                            if !opt_matches && !container_unknown_matches {
+                                return Err(
+                                    self.error(expr.span, "Comparison requires matching types")
+                                );
+                            }
                         }
                         Type::Bool
                     }
@@ -311,12 +367,28 @@ impl<'a> TypeChecker<'a> {
                         Type::List(Box::new(Type::Unknown))
                     }
                 } else {
-                    let first_ty = self.check_expr(&mut items[0], None)?;
-                    for item in &mut items[1..] {
-                        let ty = self.check_expr(item, Some(&first_ty))?;
-                        self.ensure_assignable(&ty, &first_ty, expr.span)?;
+                    let mut elem_ty = match expected {
+                        Some(Type::List(inner)) => Some((*inner.as_ref()).clone()),
+                        _ => None,
+                    };
+                    if elem_ty.is_none() {
+                        for item in items.iter_mut() {
+                            let ty = self.check_expr(item, None)?;
+                            if !matches!(ty, Type::Unknown) {
+                                elem_ty = Some(ty);
+                                break;
+                            }
+                        }
                     }
-                    Type::List(Box::new(first_ty))
+                    if let Some(elem_ty) = elem_ty {
+                        for item in items.iter_mut() {
+                            let ty = self.check_expr(item, Some(&elem_ty))?;
+                            self.ensure_assignable(&ty, &elem_ty, expr.span)?;
+                        }
+                        Type::List(Box::new(elem_ty))
+                    } else {
+                        Type::List(Box::new(Type::Unknown))
+                    }
                 }
             }
             ExprKind::Tuple(items) => {

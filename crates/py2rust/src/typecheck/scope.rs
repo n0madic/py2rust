@@ -78,12 +78,6 @@ impl<'a> TypeChecker<'a> {
         ty: Type,
         span: Span,
     ) -> Result<(), CompileError> {
-        if self.in_function() && self.ctx.globals.contains_key(name) {
-            return Err(self.error(
-                span,
-                format!("Local binding shadows global variable `{name}`"),
-            ));
-        }
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), ty);
             Ok(())

@@ -53,8 +53,14 @@ impl<'a> TypeChecker<'a> {
                     return Ok(Type::Int);
                 }
                 if name == "list" {
-                    if args.len() != 1 {
-                        return Err(self.error(span, "list() expects one argument"));
+                    if args.len() > 1 {
+                        return Err(self.error(span, "list() expects zero or one argument"));
+                    }
+                    if args.is_empty() {
+                        if let Some(Type::List(inner)) = expected {
+                            return Ok(Type::List(inner.clone()));
+                        }
+                        return Ok(Type::List(Box::new(Type::Unknown)));
                     }
                     let arg_ty = self.check_expr(&mut args[0], None)?;
                     let item_ty = match arg_ty {
@@ -78,6 +84,33 @@ impl<'a> TypeChecker<'a> {
                         }
                     };
                     return Ok(Type::List(Box::new(item_ty)));
+                }
+                if name == "dict" {
+                    if args.len() > 1 {
+                        return Err(self.error(span, "dict() expects at most one argument"));
+                    }
+                    if args.is_empty() {
+                        if let Some(Type::Dict(k, v)) = expected {
+                            return Ok(Type::Dict(k.clone(), v.clone()));
+                        }
+                        return Ok(Type::Dict(Box::new(Type::Unknown), Box::new(Type::Unknown)));
+                    }
+                    let arg_ty = self.check_expr(&mut args[0], None)?;
+                    return match arg_ty {
+                        Type::Dict(k, v) => Ok(Type::Dict(k, v)),
+                        Type::List(inner) | Type::Set(inner) | Type::Iterator(inner) => {
+                            if let Type::Tuple(items) = *inner {
+                                if items.len() == 2 {
+                                    return Ok(Type::Dict(
+                                        Box::new(items[0].clone()),
+                                        Box::new(items[1].clone()),
+                                    ));
+                                }
+                            }
+                            Err(self.error(span, "dict() expects iterable of key/value pairs"))
+                        }
+                        _ => Err(self.error(span, "dict() expects a dict or iterable of pairs")),
+                    };
                 }
                 if name == "enumerate" {
                     if args.len() != 1 {
@@ -136,16 +169,99 @@ impl<'a> TypeChecker<'a> {
                     return Ok(Type::Iterator(Box::new(item_ty)));
                 }
                 if name == "max" || name == "min" {
+                    if args.is_empty() {
+                        return Err(self.error(span, "max()/min() expect at least one argument"));
+                    }
+                    if args.len() == 1 {
+                        let iter_ty = self.check_expr(&mut args[0], None)?;
+                        let item_ty = self.iter_item_type(&iter_ty, span)?;
+                        return Ok(item_ty);
+                    }
+                    let mut has_float = false;
+                    let mut has_int = false;
+                    for arg in args.iter_mut() {
+                        let ty = self.check_expr(arg, None)?;
+                        match ty {
+                            Type::Int => has_int = true,
+                            Type::Float => has_float = true,
+                            Type::Bool => has_int = true,
+                            Type::Unknown => {}
+                            _ => {
+                                return Err(
+                                    self.error(span, "max()/min() expect numeric arguments")
+                                );
+                            }
+                        }
+                    }
+                    if has_float {
+                        return Ok(Type::Float);
+                    }
+                    if has_int {
+                        return Ok(Type::Int);
+                    }
+                    return Ok(Type::Unknown);
+                }
+                if name == "abs" {
                     if args.len() != 1 {
-                        return Err(self.error(span, "max()/min() expect one argument"));
+                        return Err(self.error(span, "abs() expects one argument"));
+                    }
+                    let arg_ty = self.check_expr(&mut args[0], None)?;
+                    return Ok(match arg_ty {
+                        Type::Int => Type::Int,
+                        Type::Float => Type::Float,
+                        Type::Bool => Type::Int,
+                        Type::Unknown => Type::Unknown,
+                        _ => {
+                            return Err(self.error(span, "abs() expects int or float"));
+                        }
+                    });
+                }
+                if name == "pow" {
+                    if args.len() != 2 {
+                        return Err(self.error(span, "pow() expects two arguments"));
+                    }
+                    let left_ty = self.check_expr(&mut args[0], None)?;
+                    let right_ty = self.check_expr(&mut args[1], None)?;
+                    let left_ok = matches!(left_ty, Type::Int | Type::Float | Type::Unknown);
+                    let right_ok = matches!(right_ty, Type::Int | Type::Float | Type::Unknown);
+                    if !left_ok || !right_ok {
+                        return Err(self.error(span, "pow() expects numeric arguments"));
+                    }
+                    return Ok(Type::Float);
+                }
+                if name == "sum" {
+                    if args.is_empty() || args.len() > 2 {
+                        return Err(self.error(span, "sum() expects one or two arguments"));
                     }
                     let iter_ty = self.check_expr(&mut args[0], None)?;
                     let item_ty = self.iter_item_type(&iter_ty, span)?;
-                    return Ok(item_ty);
+                    let mut result_ty = match item_ty {
+                        Type::Int => Type::Int,
+                        Type::Float => Type::Float,
+                        Type::Bool => Type::Int,
+                        Type::Unknown => Type::Unknown,
+                        _ => {
+                            return Err(self.error(span, "sum() expects numeric items"));
+                        }
+                    };
+                    if args.len() == 2 {
+                        let start_ty = self.check_expr(&mut args[1], None)?;
+                        match start_ty {
+                            Type::Float => result_ty = Type::Float,
+                            Type::Int | Type::Bool | Type::Unknown => {}
+                            _ => {
+                                return Err(self.error(span, "sum() start must be numeric"));
+                            }
+                        }
+                    }
+                    return Ok(result_ty);
                 }
                 if name == "int" {
-                    if args.len() != 1 {
-                        return Err(self.error(span, "int() expects one argument"));
+                    if args.len() > 1 {
+                        return Err(self.error(span, "int() expects zero or one argument"));
+                    }
+                    if args.is_empty() {
+                        return Ok(Type::Int);
                     }
                     let _ = self.check_expr(&mut args[0], None)?;
                     if let ExprKind::Name(var) = &args[0].kind {
@@ -156,8 +272,11 @@ impl<'a> TypeChecker<'a> {
                     return Ok(Type::Int);
                 }
                 if name == "float" {
-                    if args.len() != 1 {
-                        return Err(self.error(span, "float() expects one argument"));
+                    if args.len() > 1 {
+                        return Err(self.error(span, "float() expects zero or one argument"));
+                    }
+                    if args.is_empty() {
+                        return Ok(Type::Float);
                     }
                     let _ = self.check_expr(&mut args[0], None)?;
                     if let ExprKind::Name(var) = &args[0].kind {
@@ -166,6 +285,15 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     return Ok(Type::Float);
+                }
+                if name == "bool" {
+                    if args.len() > 1 {
+                        return Err(self.error(span, "bool() expects zero or one argument"));
+                    }
+                    if args.len() == 1 {
+                        let _ = self.check_expr(&mut args[0], None)?;
+                    }
+                    return Ok(Type::Bool);
                 }
                 if name == "str" {
                     if args.len() != 1 {
@@ -181,12 +309,101 @@ impl<'a> TypeChecker<'a> {
                     let _ = self.check_expr(&mut args[0], None)?;
                     return Ok(Type::Bool);
                 }
+                if name == "chr" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, "chr() expects one argument"));
+                    }
+                    let arg_ty = self.check_expr(&mut args[0], None)?;
+                    if !matches!(arg_ty, Type::Int | Type::Unknown) {
+                        return Err(self.error(span, "chr() expects int"));
+                    }
+                    return Ok(Type::Str);
+                }
+                if name == "ord" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, "ord() expects one argument"));
+                    }
+                    let arg_ty = self.check_expr(&mut args[0], None)?;
+                    if !matches!(arg_ty, Type::Str | Type::Unknown) {
+                        return Err(self.error(span, "ord() expects str"));
+                    }
+                    return Ok(Type::Int);
+                }
+                if name == "hash" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, "hash() expects one argument"));
+                    }
+                    let _ = self.check_expr(&mut args[0], None)?;
+                    return Ok(Type::Int);
+                }
+                if name == "id" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, "id() expects one argument"));
+                    }
+                    let _ = self.check_expr(&mut args[0], None)?;
+                    return Ok(Type::Int);
+                }
+                if name == "divmod" {
+                    if args.len() != 2 {
+                        return Err(self.error(span, "divmod() expects two arguments"));
+                    }
+                    let left_ty = self.check_expr(&mut args[0], None)?;
+                    let right_ty = self.check_expr(&mut args[1], None)?;
+                    let numeric = |ty: &Type| {
+                        matches!(ty, Type::Int | Type::Float | Type::Bool | Type::Unknown)
+                    };
+                    if !numeric(&left_ty) || !numeric(&right_ty) {
+                        return Err(self.error(span, "divmod() expects numeric arguments"));
+                    }
+                    let use_float =
+                        matches!(left_ty, Type::Float) || matches!(right_ty, Type::Float);
+                    if use_float {
+                        return Ok(Type::Tuple(vec![Type::Float, Type::Float]));
+                    }
+                    return Ok(Type::Tuple(vec![Type::Int, Type::Int]));
+                }
+                if name == "next" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, "next() expects one argument"));
+                    }
+                    let iter_ty = self.check_expr(&mut args[0], None)?;
+                    let item_ty = self.iter_item_type(&iter_ty, span)?;
+                    return Ok(item_ty);
+                }
+                if name == "bin" || name == "hex" || name == "oct" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, format!("{name}() expects one argument")));
+                    }
+                    let arg_ty = self.check_expr(&mut args[0], None)?;
+                    if !matches!(arg_ty, Type::Int | Type::Unknown) {
+                        return Err(self.error(span, format!("{name}() expects int")));
+                    }
+                    return Ok(Type::Str);
+                }
+                if name == "repr" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, "repr() expects one argument"));
+                    }
+                    let _ = self.check_expr(&mut args[0], None)?;
+                    return Ok(Type::Str);
+                }
+                if name == "tuple" {
+                    if args.len() > 1 {
+                        return Err(self.error(span, "tuple() expects zero or one argument"));
+                    }
+                    if args.is_empty() {
+                        return Ok(Type::List(Box::new(Type::Unknown)));
+                    }
+                    let iter_ty = self.check_expr(&mut args[0], None)?;
+                    let item_ty = self.iter_item_type(&iter_ty, span)?;
+                    return Ok(Type::List(Box::new(item_ty)));
+                }
                 if name == "type" {
                     if args.len() != 1 {
                         return Err(self.error(span, "type() expects one argument"));
                     }
                     let _ = self.check_expr(&mut args[0], None)?;
-                    return Ok(Type::Unknown);
+                    return Ok(Type::Str);
                 }
                 if name == "exit" {
                     if args.len() > 1 {
@@ -419,6 +636,26 @@ impl<'a> TypeChecker<'a> {
                     return Ok(sig.ret);
                 }
                 if let Some(Type::Lambda { params, ret }) = self.lookup_var(name) {
+                    let needs_refine = matches!(ret.as_ref(), Type::Unknown)
+                        || params.iter().any(|p| matches!(p, Type::Unknown));
+                    if needs_refine {
+                        if let Some(lambda_expr) = self.lambda_defs.get(name).cloned() {
+                            let expected = Type::Lambda {
+                                params: vec![arg_ty.clone()],
+                                ret: Box::new(Type::Unknown),
+                            };
+                            let mut expr_clone = lambda_expr.clone();
+                            let inferred = self.check_expr(&mut expr_clone, Some(&expected))?;
+                            if let Type::Lambda { params, ret } = inferred {
+                                let updated = Type::Lambda {
+                                    params: params.clone(),
+                                    ret: ret.clone(),
+                                };
+                                self.set_var_type(name, updated);
+                                return Ok(*ret);
+                            }
+                        }
+                    }
                     if !params.is_empty() && params.len() != 1 {
                         return Err(self.error(span, "Callable must take exactly one argument"));
                     }
@@ -443,6 +680,10 @@ impl<'a> TypeChecker<'a> {
                 self.insert_var(&params[0], arg_ty.clone(), span)?;
                 let ret_ty = self.check_expr(body, None)?;
                 self.scopes.pop();
+                func.ty = Some(Type::Lambda {
+                    params: vec![arg_ty.clone()],
+                    ret: Box::new(ret_ty.clone()),
+                });
                 Ok(ret_ty)
             }
             _ => {

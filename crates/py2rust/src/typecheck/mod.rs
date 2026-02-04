@@ -34,6 +34,7 @@ pub struct TypeChecker<'a> {
     global_scopes: Vec<GlobalScope>,
     warnings: Vec<Warning>,
     except_handler_depth: usize,
+    lambda_defs: HashMap<String, Expr>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -89,6 +90,7 @@ impl<'a> TypeChecker<'a> {
             global_scopes: Vec::new(),
             warnings: Vec::new(),
             except_handler_depth: 0,
+            lambda_defs: HashMap::new(),
         };
 
         checker.collect_signatures(program)?;

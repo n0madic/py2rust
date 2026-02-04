@@ -19,6 +19,7 @@ pub(crate) struct Uses {
     pub(crate) len: bool,
     pub(crate) range: bool,
     pub(crate) range2: bool,
+    pub(crate) range3: bool,
     pub(crate) round: bool,
     pub(crate) hash_map: bool,
     pub(crate) hash_set: bool,
@@ -29,6 +30,7 @@ pub(crate) struct Uses {
     pub(crate) py_parse_float: bool,
     pub(crate) py_index: bool,
     pub(crate) py_str_slice: bool,
+    pub(crate) py_iter: bool,
 }
 
 pub struct Codegen<'a> {
@@ -44,8 +46,14 @@ pub struct Codegen<'a> {
     pub(crate) borrowed_params: HashSet<String>,
     /// Current function being emitted (for tracking if returns should be wrapped in Ok)
     pub(crate) current_function: Option<String>,
+    /// Return type of current function (resolved), if any
+    pub(crate) current_function_ret: Option<Type>,
     /// Return type when inside a try block with value returns
     pub(crate) try_block_return_type: Option<Type>,
+    /// Local variable types for current function (function scope)
+    pub(crate) local_vars: Option<HashMap<String, Type>>,
+    /// Whether top-level main has exception handling
+    pub(crate) top_level_can_throw: bool,
 }
 
 impl<'a> Codegen<'a> {
@@ -61,8 +69,21 @@ impl<'a> Codegen<'a> {
             name_compare_only: false,
             borrowed_params: HashSet::new(),
             current_function: None,
+            current_function_ret: None,
             try_block_return_type: None,
+            local_vars: None,
+            top_level_can_throw: false,
         }
+    }
+
+    pub(crate) fn set_local_var_type(&mut self, name: &str, ty: Type) {
+        if let Some(vars) = self.local_vars.as_mut() {
+            vars.insert(name.to_string(), ty);
+        }
+    }
+
+    pub(crate) fn local_var_type(&self, name: &str) -> Option<&Type> {
+        self.local_vars.as_ref().and_then(|vars| vars.get(name))
     }
 
     pub fn emit_program(mut self, program: &Program) -> Result<String, CompileError> {

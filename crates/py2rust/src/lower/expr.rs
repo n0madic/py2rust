@@ -19,17 +19,48 @@ impl<'a> Lowerer<'a> {
                 _ => return Err(self.error(expr.range(), "Unsupported literal")),
             },
             ast::Expr::Call(call) => {
+                let is_dict_ctor =
+                    matches!(&*call.func, ast::Expr::Name(name) if name.id.as_str() == "dict");
                 if !call.keywords.is_empty() {
-                    return Err(self.error(expr.range(), "Keyword arguments are not supported"));
-                }
-                let func = Box::new(self.lower_expr(&call.func)?);
-                let mut lowered_args = Vec::new();
-                for arg in &call.args {
-                    lowered_args.push(self.lower_expr(arg)?);
-                }
-                ExprKind::Call {
-                    func,
-                    args: lowered_args,
+                    if !is_dict_ctor {
+                        return Err(self.error(expr.range(), "Keyword arguments are not supported"));
+                    }
+                    if !call.args.is_empty() {
+                        return Err(self.error(
+                            expr.range(),
+                            "dict() with positional and keyword args is not supported",
+                        ));
+                    }
+                    let mut items = Vec::new();
+                    for kw in &call.keywords {
+                        let key = match &kw.arg {
+                            Some(arg) => Expr {
+                                kind: ExprKind::Literal(Literal::Str(arg.to_string())),
+                                span,
+                                ty: None,
+                            },
+                            None => {
+                                return Err(
+                                    self.error(expr.range(), "dict() does not support **kwargs")
+                                )
+                            }
+                        };
+                        let value = self.lower_expr(&kw.value)?;
+                        items.push((key, value));
+                    }
+                    ExprKind::Dict(items)
+                } else if is_dict_ctor && call.args.is_empty() {
+                    ExprKind::Dict(Vec::new())
+                } else {
+                    let func = Box::new(self.lower_expr(&call.func)?);
+                    let mut lowered_args = Vec::new();
+                    for arg in &call.args {
+                        lowered_args.push(self.lower_expr(arg)?);
+                    }
+                    ExprKind::Call {
+                        func,
+                        args: lowered_args,
+                    }
                 }
             }
             ast::Expr::Attribute(attr) => ExprKind::Attr {
