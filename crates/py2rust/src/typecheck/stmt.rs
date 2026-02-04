@@ -163,6 +163,19 @@ impl<'a> TypeChecker<'a> {
                                         .error(stmt.span, "Unable to infer type; add annotation"));
                                 }
                                 self.ensure_assignable(&ty, &global_ty, stmt.span)?;
+                            } else if self.in_function() && !self.is_declared_global(name) {
+                                if let Some(existing) = self.lookup_local_var(name) {
+                                    self.ensure_assignable(&ty, &existing, stmt.span)?;
+                                } else {
+                                    if matches!(ty, Type::Unknown) {
+                                        return Err(self.error(
+                                            stmt.span,
+                                            "Unable to infer type; add annotation",
+                                        ));
+                                    }
+                                    promote_to_let = Some((name.clone(), value.clone()));
+                                    self.insert_var(name, ty, stmt.span)?;
+                                }
                             } else if let Some(existing) = self.lookup_var(name) {
                                 self.ensure_assignable(&ty, &existing, stmt.span)?;
                             } else {
@@ -180,6 +193,14 @@ impl<'a> TypeChecker<'a> {
                         }
                         AssignTarget::Attr { value: obj, attr } => {
                             let obj_ty = self.check_expr(obj, None)?;
+                            if let ExprKind::Name(name) = &obj.kind {
+                                if let Some(class_info) = self.ctx.classes.get(name) {
+                                    if let Some(attr_info) = class_info.class_attrs.get(attr) {
+                                        self.ensure_assignable(&ty, &attr_info.ty, stmt.span)?;
+                                        return Ok(());
+                                    }
+                                }
+                            }
                             if let Type::Custom(class_name) = obj_ty {
                                 let class_info =
                                     self.ctx.classes.get(&class_name).ok_or_else(|| {
@@ -188,6 +209,21 @@ impl<'a> TypeChecker<'a> {
                                             format!("Unknown class: {class_name}"),
                                         )
                                     })?;
+                                if let Some(prop) = class_info.properties.get(attr) {
+                                    if let Some(setter_name) = &prop.setter {
+                                        if let Some(sig) = class_info.methods.get(setter_name) {
+                                            if sig.params.len() >= 2 {
+                                                let expected = sig.params[1].clone();
+                                                self.ensure_assignable(&ty, &expected, stmt.span)?;
+                                            }
+                                            return Ok(());
+                                        }
+                                    }
+                                    return Err(self.error(
+                                        stmt.span,
+                                        format!("Property {class_name}.{attr} has no setter"),
+                                    ));
+                                }
                                 let field_ty = class_info.fields.get(attr).ok_or_else(|| {
                                     self.error(
                                         stmt.span,
@@ -261,11 +297,57 @@ impl<'a> TypeChecker<'a> {
             StmtKind::If { test, body, orelse } => {
                 let cond_ty = self.check_expr(test, Some(&Type::Bool))?;
                 self.ensure_assignable(&cond_ty, &Type::Bool, stmt.span)?;
-                for stmt in body {
-                    self.check_stmt(stmt, expected_ret)?;
+                let mut narrowed: Option<(String, Type, Type)> = None;
+                if let ExprKind::Compare { op, left, right } = &test.kind {
+                    let (name_expr, none_expr) = match (&left.kind, &right.kind) {
+                        (ExprKind::Name(_), ExprKind::Literal(Literal::None)) => (left, right),
+                        (ExprKind::Literal(Literal::None), ExprKind::Name(_)) => (right, left),
+                        _ => (left, right),
+                    };
+                    if let ExprKind::Name(name) = &name_expr.kind {
+                        if matches!(none_expr.kind, ExprKind::Literal(Literal::None)) {
+                            if let Some(orig_ty) = self.lookup_var(name) {
+                                if let Type::Option(inner) = orig_ty.clone() {
+                                    let some_ty = *inner.clone();
+                                    let none_ty = Type::None;
+                                    match op {
+                                        CmpOp::IsNot => {
+                                            narrowed = Some((name.clone(), some_ty, none_ty));
+                                        }
+                                        CmpOp::Is => {
+                                            narrowed = Some((name.clone(), none_ty, some_ty));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                for stmt in orelse {
-                    self.check_stmt(stmt, expected_ret)?;
+                if let Some((name, true_ty, false_ty)) = narrowed {
+                    self.scopes.push(HashMap::new());
+                    if let Some(scope) = self.scopes.last_mut() {
+                        scope.insert(name.clone(), true_ty);
+                    }
+                    for stmt in body {
+                        self.check_stmt(stmt, expected_ret)?;
+                    }
+                    self.scopes.pop();
+                    self.scopes.push(HashMap::new());
+                    if let Some(scope) = self.scopes.last_mut() {
+                        scope.insert(name.clone(), false_ty);
+                    }
+                    for stmt in orelse {
+                        self.check_stmt(stmt, expected_ret)?;
+                    }
+                    self.scopes.pop();
+                } else {
+                    for stmt in body {
+                        self.check_stmt(stmt, expected_ret)?;
+                    }
+                    for stmt in orelse {
+                        self.check_stmt(stmt, expected_ret)?;
+                    }
                 }
             }
             StmtKind::While { test, body } => {
@@ -286,6 +368,12 @@ impl<'a> TypeChecker<'a> {
                         )
                     })?;
                     self.ensure_assignable(&item_ty, &global_ty, stmt.span)?;
+                } else if self.in_function() {
+                    if let Some(existing) = self.lookup_local_var(target) {
+                        self.ensure_assignable(&item_ty, &existing, stmt.span)?;
+                    } else {
+                        self.insert_var(target, item_ty, stmt.span)?;
+                    }
                 } else if let Some(existing) = self.lookup_var(target) {
                     self.ensure_assignable(&item_ty, &existing, stmt.span)?;
                 } else {
@@ -521,11 +609,33 @@ impl<'a> TypeChecker<'a> {
             }
             AssignTarget::Attr { value: obj, attr } => {
                 let obj_ty = self.check_expr(obj, None)?;
+                if let ExprKind::Name(name) = &obj.kind {
+                    if let Some(class_info) = self.ctx.classes.get(name) {
+                        if let Some(attr_info) = class_info.class_attrs.get(attr) {
+                            self.ensure_assignable(value_ty, &attr_info.ty, span)?;
+                            return Ok(());
+                        }
+                    }
+                }
                 if let Type::Custom(class_name) = obj_ty {
                     let class_info =
                         self.ctx.classes.get(&class_name).ok_or_else(|| {
                             self.error(span, format!("Unknown class: {class_name}"))
                         })?;
+                    if let Some(prop) = class_info.properties.get(attr) {
+                        if let Some(setter_name) = &prop.setter {
+                            if let Some(sig) = class_info.methods.get(setter_name) {
+                                if sig.params.len() >= 2 {
+                                    let expected = sig.params[1].clone();
+                                    self.ensure_assignable(value_ty, &expected, span)?;
+                                }
+                                return Ok(());
+                            }
+                        }
+                        return Err(
+                            self.error(span, format!("Property {class_name}.{attr} has no setter"))
+                        );
+                    }
                     let field_ty = class_info.fields.get(attr).ok_or_else(|| {
                         self.error(span, format!("Unknown field {class_name}.{attr}"))
                     })?;

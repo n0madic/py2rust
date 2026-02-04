@@ -21,7 +21,21 @@ impl<'a> Codegen<'a> {
         // Check if this is a user-defined function.
         if let ExprKind::Name(name) = &func.kind {
             if let Some(sig) = self.ctx.functions.get(name) {
-                let call = format!("{}({})", name, self.gen_call_args(name, args)?);
+                let param_types: Vec<Type> = sig
+                    .params
+                    .iter()
+                    .map(|t| self.to_borrowed_param_type(t))
+                    .collect();
+                let full_args = if let Some(def) = self.function_defs.get(name) {
+                    self.fill_trailing_defaults(args, &def.params, &param_types, None, name)?
+                } else {
+                    args.to_vec()
+                };
+                let call = format!(
+                    "{}({})",
+                    name,
+                    self.gen_call_args_for_sig(&param_types, &full_args)?
+                );
                 // Add ? operator if function can throw.
                 if sig.can_throw {
                     return Ok(format!("({}?)", call));
@@ -34,6 +48,40 @@ impl<'a> Codegen<'a> {
             self.gen_expr(func)?,
             self.gen_args(args)?
         ))
+    }
+
+    /// Fill missing trailing arguments with default globals.
+    pub(crate) fn fill_trailing_defaults(
+        &self,
+        args: &[Expr],
+        params: &[Param],
+        param_types: &[Type],
+        class_name: Option<&str>,
+        func_name: &str,
+    ) -> Result<Vec<Expr>, CompileError> {
+        if args.len() > params.len() {
+            return Ok(args.to_vec());
+        }
+        let mut out = args.to_vec();
+        for (idx, param) in params.iter().enumerate().skip(out.len()) {
+            if param.default.is_none() {
+                return Err(self.error(
+                    param.span,
+                    format!("Missing required argument for {func_name}"),
+                ));
+            }
+            let global_name = self.default_global_name(class_name, func_name, param.name.as_str());
+            let mut ty = param_types.get(idx).cloned();
+            if let Some(Type::Ref(inner)) = ty.clone() {
+                ty = Some(*inner);
+            }
+            out.push(Expr {
+                kind: ExprKind::Name(global_name),
+                span: param.span,
+                ty,
+            });
+        }
+        Ok(out)
     }
 
     /// Try to lower a builtin call; return Some(expr) if handled.
@@ -52,10 +100,16 @@ impl<'a> Codegen<'a> {
                 if matches!(args[0].ty.as_ref(), Some(Type::None)) {
                     return Ok(Some("py_print(String::from(\"None\"))".to_string()));
                 }
-                let arg_expr = self.gen_expr(&args[0])?;
+                if matches!(args[0].ty.as_ref(), Some(Type::List(_))) {
+                    let arg_expr = self.gen_expr(&args[0])?;
+                    self.uses.py_list_str = true;
+                    return Ok(Some(format!("py_print(py_list_str(&{}))", arg_expr)));
+                }
                 if self.print_needs_debug(&args[0]) {
+                    let arg_expr = self.debug_arg_expr(&args[0])?;
                     return Ok(Some(format!("py_print(format!(\"{{:?}}\", {}))", arg_expr)));
                 }
+                let arg_expr = self.gen_expr(&args[0])?;
                 return Ok(Some(format!("py_print({})", arg_expr)));
             }
             let mut fmt = String::new();
@@ -67,6 +121,10 @@ impl<'a> Codegen<'a> {
                 if matches!(arg.ty.as_ref(), Some(Type::None)) {
                     fmt.push_str("{}");
                     vals.push("String::from(\"None\")".to_string());
+                } else if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
+                    fmt.push_str("{}");
+                    self.uses.py_list_str = true;
+                    vals.push(format!("py_list_str(&{})", self.gen_expr(arg)?));
                 } else {
                     let spec = if self.print_needs_debug(arg) {
                         "{:?}"
@@ -74,7 +132,11 @@ impl<'a> Codegen<'a> {
                         "{}"
                     };
                     fmt.push_str(spec);
-                    vals.push(self.gen_expr(arg)?);
+                    if spec == "{:?}" {
+                        vals.push(self.debug_arg_expr(arg)?);
+                    } else {
+                        vals.push(self.gen_expr(arg)?);
+                    }
                 }
             }
             return Ok(Some(format!(
@@ -85,6 +147,14 @@ impl<'a> Codegen<'a> {
         }
         if name == "len" {
             self.uses.len = true;
+            if let Some(Type::Custom(class_name)) = args[0].ty.as_ref() {
+                if let Some(class_info) = self.ctx.classes.get(class_name) {
+                    if class_info.methods.contains_key("__len__") {
+                        let arg_expr = self.gen_expr(&args[0])?;
+                        return Ok(Some(format!("{}.__len__()", arg_expr)));
+                    }
+                }
+            }
             let arg_expr = self.gen_expr(&args[0])?;
             // Don't add & if already a reference type or if it's a borrowed parameter.
             let is_borrowed = self.is_reference_type(args[0].ty.as_ref())
@@ -142,7 +212,7 @@ impl<'a> Codegen<'a> {
                 return Err(self.error(expr.span, "list() expects zero or one argument"));
             }
             if args.is_empty() {
-                return Ok(Some("Vec::new()".to_string()));
+                return Ok(Some("Arc::new(Mutex::new(Vec::new()))".to_string()));
             }
             if let Some(Type::Tuple(items)) = args[0].ty.as_ref() {
                 let tmp = self.new_tmp();
@@ -152,24 +222,30 @@ impl<'a> Codegen<'a> {
                     elems.push(format!("{}.{}", tmp, idx));
                 }
                 return Ok(Some(format!(
-                    "{{ let {} = {}; vec![{}] }}",
+                    "{{ let {} = {}; Arc::new(Mutex::new(vec![{}])) }}",
                     tmp,
                     base,
                     elems.join(", ")
                 )));
             }
             let iter_src = self.gen_iter_source(&args[0])?;
-            return Ok(Some(format!("({}).collect::<Vec<_>>()", iter_src)));
+            return Ok(Some(format!(
+                "Arc::new(Mutex::new(({}).collect::<Vec<_>>()))",
+                iter_src
+            )));
         }
         if name == "tuple" {
             if args.len() > 1 {
                 return Err(self.error(expr.span, "tuple() expects zero or one argument"));
             }
             if args.is_empty() {
-                return Ok(Some("Vec::new()".to_string()));
+                return Ok(Some("Arc::new(Mutex::new(Vec::new()))".to_string()));
             }
             let iter_src = self.gen_iter_source(&args[0])?;
-            return Ok(Some(format!("({}).collect::<Vec<_>>()", iter_src)));
+            return Ok(Some(format!(
+                "Arc::new(Mutex::new(({}).collect::<Vec<_>>()))",
+                iter_src
+            )));
         }
         if name == "set" {
             if args.len() > 1 {
@@ -544,6 +620,15 @@ impl<'a> Codegen<'a> {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "hash() expects one argument"));
             }
+            if let Some(Type::Custom(class_name)) = args[0].ty.as_ref() {
+                let arg_expr = self.gen_expr(&args[0])?;
+                if let Some(info) = self.ctx.classes.get(class_name) {
+                    if info.methods.contains_key("__hash__") {
+                        return Ok(Some(format!("{}.__hash__()", arg_expr)));
+                    }
+                }
+                return Ok(Some(format!("(&{} as *const _ as usize) as i64", arg_expr)));
+            }
             let arg_expr = self.gen_expr(&args[0])?;
             return Ok(Some(match args[0].ty.as_ref() {
                 Some(Type::Int) => arg_expr,
@@ -647,6 +732,18 @@ impl<'a> Codegen<'a> {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "repr() expects one argument"));
             }
+            if let Some(Type::Custom(class_name)) = args[0].ty.as_ref() {
+                let arg_expr = self.gen_expr(&args[0])?;
+                if let Some(info) = self.ctx.classes.get(class_name) {
+                    if info.methods.contains_key("__repr__") {
+                        return Ok(Some(format!("{}.__repr__()", arg_expr)));
+                    }
+                }
+                return Ok(Some(format!(
+                    "format!(\"<{} instance at {{:p}}>\", &{})",
+                    class_name, arg_expr
+                )));
+            }
             let arg_expr = self.gen_expr(&args[0])?;
             return Ok(Some(match args[0].ty.as_ref() {
                 Some(Type::Int | Type::Float) => format!("format!(\"{{}}\", {})", arg_expr),
@@ -656,12 +753,28 @@ impl<'a> Codegen<'a> {
                 ),
                 Some(Type::None) => "String::from(\"None\")".to_string(),
                 Some(Type::Str) => format!("format!(\"'{{}}'\", {})", arg_expr),
+                Some(Type::List(_)) => {
+                    self.uses.py_list_str = true;
+                    format!("py_list_str(&{})", arg_expr)
+                }
                 _ => format!("format!(\"{{:?}}\", {})", arg_expr),
             }));
         }
         if name == "str" {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "str() expects one argument"));
+            }
+            if let Some(Type::Custom(class_name)) = args[0].ty.as_ref() {
+                let arg_expr = self.gen_expr(&args[0])?;
+                if let Some(info) = self.ctx.classes.get(class_name) {
+                    if info.methods.contains_key("__str__") {
+                        return Ok(Some(format!("{}.__str__()", arg_expr)));
+                    }
+                }
+                return Ok(Some(format!(
+                    "format!(\"<{} instance at {{:p}}>\", &{})",
+                    class_name, arg_expr
+                )));
             }
             let arg_expr = self.gen_expr(&args[0])?;
             return Ok(Some(match args[0].ty.as_ref() {
@@ -672,6 +785,10 @@ impl<'a> Codegen<'a> {
                 ),
                 Some(Type::None) => "String::from(\"None\")".to_string(),
                 Some(Type::Int | Type::Float) => format!("{}.to_string()", arg_expr),
+                Some(Type::List(_)) => {
+                    self.uses.py_list_str = true;
+                    format!("py_list_str(&{})", arg_expr)
+                }
                 _ => format!("format!(\"{{:?}}\", {})", arg_expr),
             }));
         }
@@ -681,12 +798,22 @@ impl<'a> Codegen<'a> {
             }
             if let ExprKind::Name(type_name) = &args[1].kind {
                 let matches = match type_name.as_str() {
-                    "int" => matches!(args[0].ty.as_ref(), Some(Type::Int)),
+                    "int" => matches!(args[0].ty.as_ref(), Some(Type::Int) | Some(Type::Bool)),
                     "float" => matches!(args[0].ty.as_ref(), Some(Type::Float)),
                     "bool" => matches!(args[0].ty.as_ref(), Some(Type::Bool)),
                     "str" => matches!(args[0].ty.as_ref(), Some(Type::Str)),
                     "bytes" => matches!(args[0].ty.as_ref(), Some(Type::Bytes)),
-                    _ => false,
+                    _ => {
+                        if self.ctx.classes.contains_key(type_name) {
+                            if let Some(Type::Custom(class_name)) = args[0].ty.as_ref() {
+                                self.is_subclass_of(class_name, type_name)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
                 };
                 return Ok(Some(matches.to_string()));
             }
@@ -720,7 +847,39 @@ impl<'a> Codegen<'a> {
             )));
         }
         if self.ctx.classes.contains_key(name) {
-            let call = format!("{}::new({})", name, self.gen_args(args)?);
+            let call = if let Some(class_def) = self.class_defs.get(name) {
+                if let Some(init_def) = class_def.methods.iter().find(|m| m.name == "__init__") {
+                    let init_sig = self
+                        .ctx
+                        .classes
+                        .get(name)
+                        .and_then(|info| info.init.clone());
+                    let param_types: Vec<Type> = init_sig
+                        .map(|sig| sig.params.into_iter().skip(1).collect())
+                        .unwrap_or_default();
+                    let full_args = self.fill_trailing_defaults(
+                        args,
+                        &init_def.params[1..],
+                        &param_types,
+                        Some(name),
+                        "__init__",
+                    )?;
+                    format!(
+                        "{}::new({})",
+                        name,
+                        self.gen_call_args_for_sig(&param_types, &full_args)?
+                    )
+                } else {
+                    if !args.is_empty() {
+                        return Err(
+                            self.error(expr.span, format!("Class {name} takes no arguments"))
+                        );
+                    }
+                    format!("{}::new()", name)
+                }
+            } else {
+                format!("{}::new({})", name, self.gen_args(args)?)
+            };
             if let Some(Type::Union(union_name)) = expr.ty.as_ref() {
                 return Ok(Some(format!("{}::{}({})", union_name, name, call)));
             }
@@ -740,12 +899,12 @@ impl<'a> Codegen<'a> {
             if let Some(Type::List(_)) = value.ty.as_ref() {
                 let target = if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
-                        self.global_lock_expr(name)
+                        format!("{}.lock().unwrap()", self.global_lock_expr(name))
                     } else {
-                        self.gen_expr(value)?
+                        format!("{}.lock().unwrap()", self.gen_expr(value)?)
                     }
                 } else {
-                    self.gen_expr(value)?
+                    format!("{}.lock().unwrap()", self.gen_expr(value)?)
                 };
                 return Ok(format!("{}.push({})", target, self.gen_args(args)?));
             }
@@ -754,12 +913,12 @@ impl<'a> Codegen<'a> {
             if let Some(Type::List(_)) = value.ty.as_ref() {
                 let target = if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
-                        self.global_lock_expr(name)
+                        format!("{}.lock().unwrap()", self.global_lock_expr(name))
                     } else {
-                        self.gen_expr(value)?
+                        format!("{}.lock().unwrap()", self.gen_expr(value)?)
                     }
                 } else {
-                    self.gen_expr(value)?
+                    format!("{}.lock().unwrap()", self.gen_expr(value)?)
                 };
                 if args.is_empty() {
                     return Ok(format!("{{ {}.extend(std::iter::empty()); }}", target));
@@ -784,7 +943,10 @@ impl<'a> Codegen<'a> {
                     ));
                 }
                 let arg_expr = self.gen_expr(arg)?;
-                return Ok(format!("{}.extend({}.iter().cloned())", target, arg_expr));
+                return Ok(format!(
+                    "{}.extend({}.lock().unwrap().iter().cloned())",
+                    target, arg_expr
+                ));
             }
         }
         if attr == "pop" {
@@ -792,9 +954,10 @@ impl<'a> Codegen<'a> {
                 if args.len() > 1 {
                     return Err(self.error(value.span, "list.pop() expects zero or one argument"));
                 }
-                let idx_arg = args.get(0);
+                let idx_arg = args.first();
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         if let Some(arg) = idx_arg {
                             let idx_raw = self.gen_expr(arg)?;
@@ -802,7 +965,8 @@ impl<'a> Codegen<'a> {
                             let len_tmp = self.new_tmp();
                             let idx_tmp = self.new_tmp();
                             return Ok(format!(
-                                "{{ let mut {guard} = {lock}; let {len_tmp} = {guard}.len(); let {idx_tmp} = {idx_expr}; {guard}.remove({idx_tmp}) }}",
+                                "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().unwrap(); let {len_tmp} = {guard}.len(); let {idx_tmp} = {idx_expr}; {guard}.remove({idx_tmp}) }}",
+                                outer = outer,
                                 guard = guard,
                                 lock = self.global_lock_expr(name),
                                 len_tmp = len_tmp,
@@ -815,7 +979,8 @@ impl<'a> Codegen<'a> {
                             guard
                         );
                         return Ok(format!(
-                            "{{ let mut {guard} = {lock}; {pop} }}",
+                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().unwrap(); {pop} }}",
+                            outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name),
                             pop = self.wrap_result(pop_expr),
@@ -827,14 +992,16 @@ impl<'a> Codegen<'a> {
                 // For non-name targets, evaluate once into a mutable temporary.
                 if !matches!(value.kind, ExprKind::Name(_)) {
                     let tmp = self.new_tmp();
+                    let guard = self.new_tmp();
                     if let Some(arg) = idx_arg {
                         let idx_raw = self.gen_expr(arg)?;
                         self.uses.py_index = true;
                         let len_tmp = self.new_tmp();
                         let idx_tmp = self.new_tmp();
                         return Ok(format!(
-                            "{{ let mut {tmp} = {target}; let {len_tmp} = {tmp}.len(); let {idx_tmp} = {idx_expr}; {tmp}.remove({idx_tmp}) }}",
+                            "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().unwrap(); let {len_tmp} = {guard}.len(); let {idx_tmp} = {idx_expr}; {guard}.remove({idx_tmp}) }}",
                             tmp = tmp,
+                            guard = guard,
                             target = target_expr,
                             len_tmp = len_tmp,
                             idx_tmp = idx_tmp,
@@ -843,11 +1010,12 @@ impl<'a> Codegen<'a> {
                     }
                     let pop_expr = format!(
                         "{}.pop().ok_or_else(|| PyError::IndexError(String::from(\"IndexError\")))",
-                        tmp
+                        guard
                     );
                     return Ok(format!(
-                        "{{ let mut {tmp} = {target}; {pop} }}",
+                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().unwrap(); {pop} }}",
                         tmp = tmp,
+                        guard = guard,
                         target = target_expr,
                         pop = self.wrap_result(pop_expr),
                     ));
@@ -859,19 +1027,24 @@ impl<'a> Codegen<'a> {
                     self.uses.py_index = true;
                     let len_tmp = self.new_tmp();
                     let idx_tmp = self.new_tmp();
+                    let guard = self.new_tmp();
                     return Ok(format!(
-                        "{{ let {len_tmp} = {target}.len(); let {idx_tmp} = {idx_expr}; {target}.remove({idx_tmp}) }}",
+                        "{{ let mut {guard} = {target}.lock().unwrap(); let {len_tmp} = {guard}.len(); let {idx_tmp} = {idx_expr}; {guard}.remove({idx_tmp}) }}",
                         len_tmp = len_tmp,
                         target = target_expr,
                         idx_tmp = idx_tmp,
                         idx_expr = self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp)),
+                        guard = guard,
                     ));
                 }
                 let pop_expr = format!(
                     "{}.pop().ok_or_else(|| PyError::IndexError(String::from(\"IndexError\")))",
-                    target_expr
+                    "guard"
                 );
-                return Ok(self.wrap_result(pop_expr));
+                return Ok(self.wrap_result(format!(
+                    "{{ let mut guard = {}.lock().unwrap(); {} }}",
+                    target_expr, pop_expr
+                )));
             }
         }
         if attr == "insert" {
@@ -884,11 +1057,13 @@ impl<'a> Codegen<'a> {
                 self.uses.py_insert_index = true;
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         let len_tmp = self.new_tmp();
                         let idx_tmp = self.new_tmp();
                         return Ok(format!(
-                            "{{ let mut {guard} = {lock}; let {len_tmp} = {guard}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {guard}.insert({idx_tmp}, {val}); }}",
+                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().unwrap(); let {len_tmp} = {guard}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {guard}.insert({idx_tmp}, {val}); }}",
+                            outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name),
                             len_tmp = len_tmp,
@@ -901,11 +1076,13 @@ impl<'a> Codegen<'a> {
                 let target_expr = self.gen_expr(value)?;
                 if !matches!(value.kind, ExprKind::Name(_)) {
                     let tmp = self.new_tmp();
+                    let guard = self.new_tmp();
                     let len_tmp = self.new_tmp();
                     let idx_tmp = self.new_tmp();
                     return Ok(format!(
-                        "{{ let mut {tmp} = {target}; let {len_tmp} = {tmp}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {tmp}.insert({idx_tmp}, {val}); }}",
+                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().unwrap(); let {len_tmp} = {guard}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {guard}.insert({idx_tmp}, {val}); }}",
                         tmp = tmp,
+                        guard = guard,
                         target = target_expr,
                         len_tmp = len_tmp,
                         idx_tmp = idx_tmp,
@@ -916,7 +1093,7 @@ impl<'a> Codegen<'a> {
                 let len_tmp = self.new_tmp();
                 let idx_tmp = self.new_tmp();
                 return Ok(format!(
-                    "{{ let {len_tmp} = {target}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {target}.insert({idx_tmp}, {val}); }}",
+                    "{{ let mut guard = {target}.lock().unwrap(); let {len_tmp} = guard.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); guard.insert({idx_tmp}, {val}); }}",
                     len_tmp = len_tmp,
                     idx_tmp = idx_tmp,
                     idx_raw = idx_raw,
@@ -932,9 +1109,11 @@ impl<'a> Codegen<'a> {
                 }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         return Ok(format!(
-                            "{{ let mut {guard} = {lock}; {guard}.clear(); }}",
+                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().unwrap(); {guard}.clear(); }}",
+                            outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name)
                         ));
@@ -943,13 +1122,18 @@ impl<'a> Codegen<'a> {
                 let target_expr = self.gen_expr(value)?;
                 if !matches!(value.kind, ExprKind::Name(_)) {
                     let tmp = self.new_tmp();
+                    let guard = self.new_tmp();
                     return Ok(format!(
-                        "{{ let mut {tmp} = {target}; {tmp}.clear(); }}",
+                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().unwrap(); {guard}.clear(); }}",
                         tmp = tmp,
+                        guard = guard,
                         target = target_expr
                     ));
                 }
-                return Ok(format!("{}.clear()", target_expr));
+                return Ok(format!(
+                    "{{ let mut guard = {}.lock().unwrap(); guard.clear(); }}",
+                    target_expr
+                ));
             }
         }
         if attr == "copy" {
@@ -959,11 +1143,17 @@ impl<'a> Codegen<'a> {
                 }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
-                        return Ok(format!("{}.clone()", self.global_lock_expr(name)));
+                        return Ok(format!(
+                            "Arc::new(Mutex::new({}.lock().unwrap().clone()))",
+                            self.global_lock_expr(name)
+                        ));
                     }
                 }
                 let target_expr = self.gen_expr(value)?;
-                return Ok(format!("{}.clone()", target_expr));
+                return Ok(format!(
+                    "Arc::new(Mutex::new({}.lock().unwrap().clone()))",
+                    target_expr
+                ));
             }
         }
         if attr == "reverse" {
@@ -973,9 +1163,11 @@ impl<'a> Codegen<'a> {
                 }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         return Ok(format!(
-                            "{{ let mut {guard} = {lock}; {guard}.reverse(); }}",
+                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().unwrap(); {guard}.reverse(); }}",
+                            outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name)
                         ));
@@ -984,13 +1176,18 @@ impl<'a> Codegen<'a> {
                 let target_expr = self.gen_expr(value)?;
                 if !matches!(value.kind, ExprKind::Name(_)) {
                     let tmp = self.new_tmp();
+                    let guard = self.new_tmp();
                     return Ok(format!(
-                        "{{ let mut {tmp} = {target}; {tmp}.reverse(); }}",
+                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().unwrap(); {guard}.reverse(); }}",
                         tmp = tmp,
+                        guard = guard,
                         target = target_expr
                     ));
                 }
-                return Ok(format!("{}.reverse()", target_expr));
+                return Ok(format!(
+                    "{{ let mut guard = {}.lock().unwrap(); guard.reverse(); }}",
+                    target_expr
+                ));
             }
         }
         if attr == "index" {
@@ -1002,6 +1199,7 @@ impl<'a> Codegen<'a> {
                 let needle_expr = self.gen_expr(&args[0])?;
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         let call = format!(
                             "py_list_index(&{guard}, &{needle})",
@@ -1009,15 +1207,19 @@ impl<'a> Codegen<'a> {
                             needle = needle_expr
                         );
                         return Ok(format!(
-                            "{{ let {guard} = {lock}; {result} }}",
-                            guard = guard,
+                            "{{ let {outer} = {lock}; let {guard} = {outer}.lock().unwrap(); {result} }}",
+                            outer = outer,
                             lock = self.global_lock_expr(name),
+                            guard = guard,
                             result = self.wrap_result(call)
                         ));
                     }
                 }
                 let target_expr = self.gen_expr(value)?;
-                let call = format!("py_list_index(&{}, &{})", target_expr, needle_expr);
+                let call = format!(
+                    "py_list_index(&{}.lock().unwrap(), &{})",
+                    target_expr, needle_expr
+                );
                 return Ok(self.wrap_result(call));
             }
         }
@@ -1033,9 +1235,11 @@ impl<'a> Codegen<'a> {
                 };
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         return Ok(format!(
-                            "{{ let mut {guard} = {lock}; {guard}.{sort_call}; }}",
+                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().unwrap(); {guard}.{sort_call}; }}",
+                            outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name),
                             sort_call = sort_call
@@ -1045,14 +1249,19 @@ impl<'a> Codegen<'a> {
                 let target_expr = self.gen_expr(value)?;
                 if !matches!(value.kind, ExprKind::Name(_)) {
                     let tmp = self.new_tmp();
+                    let guard = self.new_tmp();
                     return Ok(format!(
-                        "{{ let mut {tmp} = {target}; {tmp}.{sort_call}; }}",
+                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().unwrap(); {guard}.{sort_call}; }}",
                         tmp = tmp,
+                        guard = guard,
                         target = target_expr,
                         sort_call = sort_call
                     ));
                 }
-                return Ok(format!("{}.{}", target_expr, sort_call));
+                return Ok(format!(
+                    "{{ let mut guard = {}.lock().unwrap(); guard.{}; }}",
+                    target_expr, sort_call
+                ));
             }
         }
         if attr == "count" {
@@ -1064,17 +1273,22 @@ impl<'a> Codegen<'a> {
                 let needle_expr = self.gen_expr(&args[0])?;
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         return Ok(format!(
-                            "{{ let {guard} = {lock}; py_list_count(&{guard}, &{needle}) }}",
-                            guard = guard,
+                            "{{ let {outer} = {lock}; let {guard} = {outer}.lock().unwrap(); py_list_count(&{guard}, &{needle}) }}",
+                            outer = outer,
                             lock = self.global_lock_expr(name),
+                            guard = guard,
                             needle = needle_expr
                         ));
                     }
                 }
                 let target_expr = self.gen_expr(value)?;
-                return Ok(format!("py_list_count(&{}, &{})", target_expr, needle_expr));
+                return Ok(format!(
+                    "py_list_count(&{}.lock().unwrap(), &{})",
+                    target_expr, needle_expr
+                ));
             }
         }
         if attr == "get" {
@@ -1375,14 +1589,121 @@ impl<'a> Codegen<'a> {
                 }
                 let mut vals = Vec::new();
                 for arg in args {
-                    let arg_expr = self.gen_expr(arg)?;
-                    if self.print_needs_debug(arg) {
+                    if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
+                        self.uses.py_list_str = true;
+                        vals.push(format!("py_list_str(&{})", self.gen_expr(arg)?));
+                    } else if self.print_needs_debug(arg) {
+                        let arg_expr = self.debug_arg_expr(arg)?;
                         vals.push(format!("format!(\"{{:?}}\", {})", arg_expr));
                     } else {
-                        vals.push(arg_expr);
+                        vals.push(self.gen_expr(arg)?);
                     }
                 }
                 return Ok(format!("format!({}, {})", fmt_lit, vals.join(", ")));
+            }
+        }
+        if let Some((class_name, is_class_value)) = match &value.kind {
+            ExprKind::Name(name) if self.ctx.classes.contains_key(name) => {
+                Some((name.as_str(), true))
+            }
+            _ => value.ty.as_ref().and_then(|ty| match ty {
+                Type::Custom(name) => Some((name.as_str(), false)),
+                _ => None,
+            }),
+        } {
+            if let Some(class_info) = self.ctx.classes.get(class_name) {
+                if let Some(sig) = class_info.methods.get(attr) {
+                    let kind = class_info
+                        .method_kinds
+                        .get(attr)
+                        .copied()
+                        .unwrap_or(MethodKind::Instance);
+                    let method_def =
+                        self.method_def(class_name, attr).cloned().ok_or_else(|| {
+                            self.error(value.span, format!("Unknown method {class_name}.{attr}"))
+                        })?;
+                    let mut call = match kind {
+                        MethodKind::Instance => {
+                            if is_class_value {
+                                return Err(
+                                    self.error(value.span, "Instance methods require an instance")
+                                );
+                            }
+                            let param_types: Vec<Type> = sig
+                                .params
+                                .iter()
+                                .skip(1)
+                                .map(|t| self.to_borrowed_param_type(t))
+                                .collect();
+                            let full_args = self.fill_trailing_defaults(
+                                args,
+                                &method_def.params[1..],
+                                &param_types,
+                                Some(class_name),
+                                attr,
+                            )?;
+                            let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
+                            if self.method_is_mutating(&method_def) {
+                                if let ExprKind::Name(name) = &value.kind {
+                                    if self.is_global(name) {
+                                        let guard = self.new_tmp();
+                                        return Ok(format!(
+                                            "{{ let mut {guard} = {lock}; {guard}.{attr}({args}) }}",
+                                            guard = guard,
+                                            lock = self.global_lock_expr(name),
+                                            attr = attr,
+                                            args = call_args
+                                        ));
+                                    }
+                                }
+                            }
+                            format!("{}.{}({})", self.gen_expr(value)?, attr, call_args)
+                        }
+                        MethodKind::Static => {
+                            let param_types: Vec<Type> = sig
+                                .params
+                                .iter()
+                                .map(|t| self.to_borrowed_param_type(t))
+                                .collect();
+                            let full_args = self.fill_trailing_defaults(
+                                args,
+                                &method_def.params,
+                                &param_types,
+                                Some(class_name),
+                                attr,
+                            )?;
+                            let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
+                            format!("{}::{}({})", class_name, attr, call_args)
+                        }
+                        MethodKind::Class => {
+                            let param_types: Vec<Type> = sig
+                                .params
+                                .iter()
+                                .map(|t| self.to_borrowed_param_type(t))
+                                .collect();
+                            let mut args_with_cls = Vec::with_capacity(args.len() + 1);
+                            args_with_cls.push(Expr {
+                                kind: ExprKind::Literal(Literal::Int(0)),
+                                span: value.span,
+                                ty: Some(Type::Int),
+                            });
+                            args_with_cls.extend_from_slice(args);
+                            let full_args = self.fill_trailing_defaults(
+                                &args_with_cls,
+                                &method_def.params,
+                                &param_types,
+                                Some(class_name),
+                                attr,
+                            )?;
+                            let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
+                            format!("{}::{}({})", class_name, attr, call_args)
+                        }
+                    };
+                    if sig.can_throw {
+                        call = format!("({}?)", call);
+                    }
+                    return Ok(call);
+                }
             }
         }
         Ok(format!(

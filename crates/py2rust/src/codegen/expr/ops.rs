@@ -15,17 +15,37 @@ impl<'a> Codegen<'a> {
             let left_is_str = matches!(left.ty.as_ref(), Some(Type::Str));
             let right_is_str = matches!(right.ty.as_ref(), Some(Type::Str));
             if left_is_str || right_is_str {
-                let left_expr = self.gen_expr(left)?;
-                let right_expr = self.gen_expr(right)?;
-                let left_spec = if self.print_needs_debug(left) {
+                let left_is_list = matches!(left.ty.as_ref(), Some(Type::List(_)));
+                let right_is_list = matches!(right.ty.as_ref(), Some(Type::List(_)));
+                let left_spec = if left_is_list {
+                    "{}"
+                } else if self.print_needs_debug(left) {
                     "{:?}"
                 } else {
                     "{}"
                 };
-                let right_spec = if self.print_needs_debug(right) {
+                let right_spec = if right_is_list {
+                    "{}"
+                } else if self.print_needs_debug(right) {
                     "{:?}"
                 } else {
                     "{}"
+                };
+                let left_expr = if left_is_list {
+                    self.uses.py_list_str = true;
+                    format!("py_list_str(&{})", self.gen_expr(left)?)
+                } else if left_spec == "{:?}" {
+                    self.debug_arg_expr(left)?
+                } else {
+                    self.gen_expr(left)?
+                };
+                let right_expr = if right_is_list {
+                    self.uses.py_list_str = true;
+                    format!("py_list_str(&{})", self.gen_expr(right)?)
+                } else if right_spec == "{:?}" {
+                    self.debug_arg_expr(right)?
+                } else {
+                    self.gen_expr(right)?
                 };
                 return Ok(format!(
                     "format!(\"{}{}\", {}, {})",
@@ -171,7 +191,10 @@ impl<'a> Codegen<'a> {
             let left_expr = self.gen_expr(left)?;
             let right_expr = self.gen_expr(right)?;
             let mut expr = match right.ty.as_ref() {
-                Some(Type::List(_)) | Some(Type::Set(_)) | Some(Type::Slice(_)) => {
+                Some(Type::List(_)) => {
+                    format!("{}.lock().unwrap().contains(&{})", right_expr, left_expr)
+                }
+                Some(Type::Set(_)) | Some(Type::Slice(_)) => {
                     format!("{}.contains(&{})", right_expr, left_expr)
                 }
                 Some(Type::Dict(_, _)) => format!("{}.contains_key(&{})", right_expr, left_expr),
@@ -238,6 +261,56 @@ impl<'a> Codegen<'a> {
         }
         if matches!(op, CmpOp::Eq | CmpOp::NotEq) {
             let op_str = if matches!(op, CmpOp::Eq) { "==" } else { "!=" };
+            if let Some(Type::Custom(class_name)) = left.ty.as_ref() {
+                if let Some(info) = self.ctx.classes.get(class_name) {
+                    let left_expr = self.gen_expr(left)?;
+                    let mut right_expr = self.gen_expr(right)?;
+                    if info.methods.contains_key("__eq__") {
+                        if let Some(sig) = info.methods.get("__eq__") {
+                            if let Some(param_ty) = sig.params.get(1) {
+                                let expected = self.to_borrowed_param_type(param_ty);
+                                if matches!(expected, Type::Ref(_)) {
+                                    right_expr = format!("&{}", right_expr);
+                                }
+                            }
+                        }
+                        let call = format!("{}.{}({})", left_expr, "__eq__", right_expr);
+                        if matches!(op, CmpOp::Eq) {
+                            return Ok(call);
+                        }
+                        return Ok(format!("!({})", call));
+                    }
+                    let eq_expr = format!("std::ptr::eq(&{}, &{})", left_expr, right_expr);
+                    if matches!(op, CmpOp::Eq) {
+                        return Ok(eq_expr);
+                    }
+                    return Ok(format!("!({})", eq_expr));
+                }
+            }
+            if matches!(left.ty.as_ref(), Some(Type::List(_)))
+                && matches!(right.ty.as_ref(), Some(Type::List(_)))
+            {
+                let left_expr = self.gen_expr(left)?;
+                let right_expr = self.gen_expr(right)?;
+                let left_tmp = self.new_tmp();
+                let right_tmp = self.new_tmp();
+                let left_guard = self.new_tmp();
+                let right_guard = self.new_tmp();
+                let eq_expr = format!(
+                    // Clone the Arcs to avoid moving list values out of scope.
+                    "{{ let {left_tmp} = {left_expr}.clone(); let {right_tmp} = {right_expr}.clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().unwrap(); let {right_guard} = {right_tmp}.lock().unwrap(); {left_guard}.iter().eq({right_guard}.iter()) }} }}",
+                    left_tmp = left_tmp,
+                    right_tmp = right_tmp,
+                    left_guard = left_guard,
+                    right_guard = right_guard,
+                    left_expr = left_expr,
+                    right_expr = right_expr
+                );
+                if matches!(op, CmpOp::Eq) {
+                    return Ok(eq_expr);
+                }
+                return Ok(format!("!({})", eq_expr));
+            }
             if let (Some(Type::Option(inner)), Some(right_ty)) =
                 (left.ty.as_ref(), right.ty.as_ref())
             {

@@ -18,7 +18,41 @@ impl<'a> TypeChecker<'a> {
     /// Checks methods and validates iterator protocol if present.
     pub(super) fn check_class(&mut self, class: &mut ClassDef) -> Result<(), CompileError> {
         for method in &mut class.methods {
-            self.check_function(method, Some(&class.name))?;
+            let kind = class
+                .method_kinds
+                .get(&method.name)
+                .copied()
+                .unwrap_or(MethodKind::Instance);
+            let require_self = matches!(kind, MethodKind::Instance);
+            self.check_function(method, Some(class.name.as_str()), require_self)?;
+        }
+
+        // Type check class attribute initializers.
+        if !class.class_attrs.is_empty() {
+            for attr in &mut class.class_attrs {
+                let expected = if let Some(ann) = &attr.ann {
+                    Some(self.resolve_type_ref(ann, attr.span)?)
+                } else {
+                    None
+                };
+                let ty = self.check_expr(&mut attr.value, expected.as_ref())?;
+                if let Some(expected) = expected {
+                    if !matches!(ty, Type::Unknown) && !matches!(expected, Type::Unknown) {
+                        self.ensure_assignable(&ty, &expected, attr.span)?;
+                    }
+                }
+                if let Some(info) = self.ctx.classes.get_mut(&class.name) {
+                    if let Some(existing) = info.class_attrs.get_mut(&attr.name) {
+                        if matches!(existing.ty, Type::Unknown) && !matches!(ty, Type::Unknown) {
+                            existing.ty = ty.clone();
+                            if let Some(global_ty) = self.ctx.globals.get_mut(&existing.global_name)
+                            {
+                                *global_ty = ty.clone();
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Validate class-specific constraints

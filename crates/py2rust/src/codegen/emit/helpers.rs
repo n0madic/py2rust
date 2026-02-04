@@ -99,6 +99,12 @@ impl<'a> Codegen<'a> {
             self.push_line("fn py_len(&self) -> i64 { self.len() as i64 }");
             self.indent -= 1;
             self.push_line("}");
+            self.push_line("impl<T> PyLen for Arc<Mutex<Vec<T>>> {");
+            self.indent += 1;
+            // Lock the list to obtain a consistent length snapshot.
+            self.push_line("fn py_len(&self) -> i64 { self.lock().expect(\"list mutex poisoned\").len() as i64 }");
+            self.indent -= 1;
+            self.push_line("}");
             self.push_line("impl PyLen for String {");
             self.indent += 1;
             self.push_line("fn py_len(&self) -> i64 { self.chars().count() as i64 }");
@@ -445,6 +451,83 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.push_line("}");
             self.push_line("count");
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_list_str {
+            self.push_line("trait PyListRepr {");
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String;");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl PyListRepr for i64 {");
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String { self.to_string() }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl PyListRepr for f64 {");
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl PyListRepr for bool {");
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String { if *self { String::from(\"True\") } else { String::from(\"False\") } }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl PyListRepr for String {");
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
+            self.indent -= 1;
+            self.push_line("}");
+            if self.uses.py_repr {
+                self.push_line("impl PyListRepr for PyRepr {");
+                self.indent += 1;
+                self.push_line("fn py_repr(&self) -> String { self.0.clone() }");
+                self.indent -= 1;
+                self.push_line("}");
+            }
+            self.push_line("impl<T1: std::fmt::Debug> PyListRepr for (T1,) {");
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line(
+                "impl<T1: std::fmt::Debug, T2: std::fmt::Debug> PyListRepr for (T1, T2) {",
+            );
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line(
+                "impl<T1: std::fmt::Debug, T2: std::fmt::Debug, T3: std::fmt::Debug> PyListRepr for (T1, T2, T3) {",
+            );
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line(
+                "impl<T1: std::fmt::Debug, T2: std::fmt::Debug, T3: std::fmt::Debug, T4: std::fmt::Debug> PyListRepr for (T1, T2, T3, T4) {",
+            );
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl<T: PyListRepr> PyListRepr for Arc<Mutex<Vec<T>>> {");
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String { py_list_str(self) }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("fn py_list_str<T: PyListRepr>(list: &Arc<Mutex<Vec<T>>>) -> String {");
+            self.indent += 1;
+            self.push_line("let guard = list.lock().expect(\"list mutex poisoned\");");
+            self.push_line("let mut parts: Vec<String> = Vec::new();");
+            self.push_line("for item in guard.iter() {");
+            self.indent += 1;
+            self.push_line("parts.push(item.py_repr());");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("format!(\"[{}]\", parts.join(\", \"))");
             self.indent -= 1;
             self.push_line("}");
         }

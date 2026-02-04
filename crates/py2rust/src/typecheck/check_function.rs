@@ -21,32 +21,53 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         func: &mut Function,
         class_name: Option<&str>,
+        require_self: bool,
     ) -> Result<(), CompileError> {
+        let prev_class = self.current_class.clone();
+        self.current_class = class_name.map(|name| name.to_string());
         // Create a new scope for this function
         self.scopes.push(HashMap::new());
         self.global_scopes.push(GlobalScope::default());
+        self.function_scopes.push(self.scopes.len() - 1);
         // For methods, validate and insert `self` parameter
-        if let Some(class_name) = class_name {
-            if let Some(first) = func.params.first() {
-                let self_ty = self.resolve_type_ref(&first.ann, first.span)?;
-                self.insert_var(&first.name, self_ty, first.span)?;
-                if first.name != "self" {
-                    return Err(self.error(first.span, "First parameter in methods must be self"));
+        if require_self {
+            if let Some(class_name) = class_name {
+                if let Some(first) = func.params.first() {
+                    let self_ty = self.resolve_type_ref(&first.ann, first.span)?;
+                    self.insert_var(&first.name, self_ty, first.span)?;
+                    if first.name != "self" {
+                        return Err(
+                            self.error(first.span, "First parameter in methods must be self")
+                        );
+                    }
+                } else {
+                    return Err(self.error(func.span, "Methods must take self parameter"));
                 }
-            } else {
-                return Err(self.error(func.span, "Methods must take self parameter"));
-            }
-            if class_name != func.params[0].ann.to_string() && !class_name.is_empty() {
-                // Ignore mismatch for now if annotated differently.
+                if class_name != func.params[0].ann.to_string() && !class_name.is_empty() {
+                    // Ignore mismatch for now if annotated differently.
+                }
             }
         }
-        for param in func
-            .params
-            .iter()
-            .skip(if class_name.is_some() { 1 } else { 0 })
-        {
+        for param in func.params.iter().skip(if require_self { 1 } else { 0 }) {
             let ty = self.resolve_type_ref(&param.ann, param.span)?;
             self.insert_var(&param.name, ty, param.span)?;
+        }
+
+        // Type check default argument expressions.
+        for (idx, param) in func.params.iter_mut().enumerate() {
+            if let Some(default) = &mut param.default {
+                let expected = if require_self && idx == 0 {
+                    None
+                } else {
+                    Some(self.resolve_type_ref(&param.ann, param.span)?)
+                };
+                let ty = self.check_expr(default, expected.as_ref())?;
+                if let Some(expected) = expected {
+                    if !matches!(ty, Type::Unknown) && !matches!(expected, Type::Unknown) {
+                        self.ensure_assignable(&ty, &expected, default.span)?;
+                    }
+                }
+            }
         }
 
         for stmt in &mut func.body {
@@ -476,34 +497,40 @@ impl<'a> TypeChecker<'a> {
         }
         let params = self.resolve_params(&func.params)?;
         let ret = self.resolve_type_ref(&func.ret, func.span)?;
+        let defaults = func.params.iter().filter(|p| p.default.is_some()).count();
+        for (param, ty) in func.params.iter().zip(params.iter()) {
+            if param.default.is_some() {
+                let gname = if let Some(class_name) = class_name {
+                    format!("__default_{}_{}_{}", class_name, func.name, param.name)
+                } else {
+                    format!("__default_{}_{}", func.name, param.name)
+                };
+                self.ctx.globals.entry(gname).or_insert_with(|| ty.clone());
+            }
+        }
+        let sig = FunctionSig {
+            params: params.clone(),
+            ret: ret.clone(),
+            span: func.span,
+            can_throw: false,
+            thrown_exceptions: Vec::new(),
+            defaults,
+        };
         if let Some(class_name) = class_name {
             if let Some(class_info) = self.ctx.classes.get_mut(class_name) {
-                class_info.methods.insert(
-                    func.name.clone(),
-                    FunctionSig {
-                        params: params.clone(),
-                        ret: ret.clone(),
-                        span: func.span,
-                        can_throw: false,
-                        thrown_exceptions: Vec::new(),
-                    },
-                );
+                class_info.methods.insert(func.name.clone(), sig.clone());
+                if func.name == "__init__" {
+                    class_info.init = Some(sig);
+                }
             }
         } else {
-            self.ctx.functions.insert(
-                func.name.clone(),
-                FunctionSig {
-                    params,
-                    ret,
-                    span: func.span,
-                    can_throw: false,
-                    thrown_exceptions: Vec::new(),
-                },
-            );
+            self.ctx.functions.insert(func.name.clone(), sig);
         }
 
         self.global_scopes.pop();
         self.scopes.pop();
+        self.function_scopes.pop();
+        self.current_class = prev_class;
         Ok(())
     }
 }

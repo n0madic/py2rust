@@ -8,7 +8,7 @@ use super::*;
 /// - int -> i64 (not i32, to handle large numbers)
 /// - float -> f64 (standard floating point)
 /// - str -> String (owned, not &str, to avoid lifetime complexity)
-/// - list -> Vec<T>
+/// - list -> Arc<Mutex<Vec<T>>>
 /// - dict -> HashMap<K, V>
 /// - set -> HashSet<T>
 /// - None -> () (unit type)
@@ -35,7 +35,7 @@ impl<'a> Codegen<'a> {
             // Bytes are represented as a vector of ints (0-255) for Python semantics.
             Type::Bytes => "Vec<i64>".to_string(),
             Type::None => "()".to_string(),
-            Type::List(inner) => format!("Vec<{}>", self.rust_type(inner)),
+            Type::List(inner) => format!("Arc<Mutex<Vec<{}>>>", self.rust_type(inner)),
             Type::Dict(k, v) => {
                 self.uses.hash_map = true;
                 format!("HashMap<{}, {}>", self.rust_type(k), self.rust_type(v))
@@ -136,9 +136,9 @@ impl<'a> Codegen<'a> {
             // Use a PyRepr-backed list for unknown element types to keep globals concrete.
             Type::List(inner) if matches!(inner.as_ref(), Type::Unknown) => {
                 self.uses.py_repr = true;
-                "Vec<PyRepr>".to_string()
+                "Arc<Mutex<Vec<PyRepr>>>".to_string()
             }
-            Type::List(inner) => format!("Vec<{}>", self.rust_type_for_global(inner)),
+            Type::List(inner) => format!("Arc<Mutex<Vec<{}>>>", self.rust_type_for_global(inner)),
             Type::Bytes => "Vec<i64>".to_string(),
             Type::Set(inner) => {
                 self.uses.hash_set = true;

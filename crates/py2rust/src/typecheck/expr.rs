@@ -77,6 +77,9 @@ impl<'a> TypeChecker<'a> {
                             ret: Box::new(Type::Float),
                         },
                         _ => {
+                            if self.ctx.classes.contains_key(name) {
+                                return Ok(Type::Custom(name.clone()));
+                            }
                             // Unknown name - set to None literal to avoid cascading errors
                             expr.kind = ExprKind::Literal(Literal::None);
                             Type::None
@@ -98,11 +101,44 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 let value_ty = self.check_expr(value, None)?;
+                if matches!(value_ty, Type::Unknown) {
+                    if let ExprKind::Name(name) = &value.kind {
+                        if let Some(class_name) = self.current_class.as_ref() {
+                            let prop_ty = self
+                                .ctx
+                                .classes
+                                .get(class_name)
+                                .and_then(|info| info.properties.get(attr))
+                                .map(|prop| prop.ty.clone());
+                            let field_ty = self
+                                .ctx
+                                .classes
+                                .get(class_name)
+                                .and_then(|info| info.fields.get(attr))
+                                .cloned();
+                            if let Some(ty) = prop_ty.or(field_ty) {
+                                // Infer unknown parameter types inside dunder methods.
+                                self.set_var_type(name, Type::Custom(class_name.clone()));
+                                return Ok(ty);
+                            }
+                        }
+                    }
+                }
+                if let ExprKind::Name(name) = &value.kind {
+                    if let Some(class_info) = self.ctx.classes.get(name) {
+                        if let Some(attr_info) = class_info.class_attrs.get(attr) {
+                            return Ok(attr_info.ty.clone());
+                        }
+                    }
+                }
                 match value_ty {
                     Type::Custom(class_name) => {
                         let class_info = self.ctx.classes.get(&class_name).ok_or_else(|| {
                             self.error(expr.span, format!("Unknown class: {class_name}"))
                         })?;
+                        if let Some(prop) = class_info.properties.get(attr) {
+                            return Ok(prop.ty.clone());
+                        }
                         class_info.fields.get(attr).cloned().ok_or_else(|| {
                             self.error(expr.span, format!("Unknown field {class_name}.{attr}"))
                         })?
@@ -118,8 +154,50 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Call { func, args } => self.check_call(func, args, expected, expr.span)?,
             // Binary operations: +, -, *, /, etc.
             ExprKind::Binary { op, left, right } => {
-                let left_ty = self.check_expr(left, None)?;
-                let right_ty = self.check_expr(right, None)?;
+                let mut left_ty = self.check_expr(left, None)?;
+                let mut right_ty = self.check_expr(right, None)?;
+                let refine_from_other = |op: &BinOp, other: &Type| -> Option<Type> {
+                    match op {
+                        BinOp::Add => {
+                            if matches!(other, Type::Str) {
+                                Some(Type::Str)
+                            } else if other.is_numeric() {
+                                Some(other.clone())
+                            } else {
+                                None
+                            }
+                        }
+                        BinOp::Sub
+                        | BinOp::Mul
+                        | BinOp::Div
+                        | BinOp::Mod
+                        | BinOp::Pow
+                        | BinOp::FloorDiv => {
+                            if other.is_numeric() {
+                                Some(other.clone())
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    }
+                };
+                if matches!(left_ty, Type::Unknown) && !matches!(right_ty, Type::Unknown) {
+                    if let Some(desired) = refine_from_other(op, &right_ty) {
+                        if self.refine_call_return(left, &desired) {
+                            left_ty = desired.clone();
+                            left.ty = Some(desired);
+                        }
+                    }
+                }
+                if matches!(right_ty, Type::Unknown) && !matches!(left_ty, Type::Unknown) {
+                    if let Some(desired) = refine_from_other(op, &left_ty) {
+                        if self.refine_call_return(right, &desired) {
+                            right_ty = desired.clone();
+                            right.ty = Some(desired);
+                        }
+                    }
+                }
                 // Bidirectional type inference: if one side is Unknown, use the other
                 if matches!(left_ty, Type::Unknown) && !matches!(right_ty, Type::Unknown) {
                     self.maybe_update_from_expr(left, &right_ty);
@@ -575,7 +653,7 @@ impl<'a> TypeChecker<'a> {
                             let len_i = items.len() as i64;
                             let mut adj = idx;
                             if adj < 0 {
-                                adj = len_i + adj;
+                                adj += len_i;
                             }
                             if adj < 0 || adj >= len_i {
                                 return Err(self.error(expr.span, "Tuple index out of bounds"));
@@ -785,6 +863,7 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Lambda { params, body } => {
                 self.scopes.push(HashMap::new());
                 self.global_scopes.push(GlobalScope::default());
+                self.function_scopes.push(self.scopes.len() - 1);
                 let expected_params = match expected {
                     Some(Type::Lambda { params, .. }) => Some(params),
                     _ => None,
@@ -867,6 +946,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.global_scopes.pop();
                 self.scopes.pop();
+                self.function_scopes.pop();
                 Type::Lambda {
                     params: param_tys,
                     ret: Box::new(ret_ty),
@@ -908,5 +988,27 @@ impl<'a> TypeChecker<'a> {
 
         expr.ty = Some(ty.clone());
         Ok(ty)
+    }
+
+    /// If expression is a call to a lambda with unknown return type, refine it.
+    fn refine_call_return(&mut self, expr: &Expr, desired: &Type) -> bool {
+        if matches!(desired, Type::Unknown) {
+            return false;
+        }
+        if let ExprKind::Call { func, .. } = &expr.kind {
+            if let ExprKind::Name(name) = &func.kind {
+                if let Some(Type::Lambda { params, ret }) = self.lookup_var(name) {
+                    if matches!(ret.as_ref(), Type::Unknown) {
+                        let updated = Type::Lambda {
+                            params,
+                            ret: Box::new(desired.clone()),
+                        };
+                        self.set_var_type(name, updated);
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 }

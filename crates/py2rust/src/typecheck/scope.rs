@@ -155,4 +155,22 @@ impl<'a> TypeChecker<'a> {
         }
         self.ctx.globals.get(name).cloned()
     }
+
+    /// Look up a variable's type in local scopes only (ignores globals).
+    pub(super) fn lookup_local_var(&self, name: &str) -> Option<Type> {
+        let start = if self.in_function() {
+            self.function_scopes.last().copied().unwrap_or(0)
+        } else {
+            0
+        };
+        for (idx, scope) in self.scopes.iter().enumerate().rev() {
+            if idx < start {
+                break;
+            }
+            if let Some(ty) = scope.get(name) {
+                return Some(ty.clone());
+            }
+        }
+        None
+    }
 }

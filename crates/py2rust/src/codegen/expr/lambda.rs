@@ -29,10 +29,11 @@ impl<'a> Codegen<'a> {
         let mut lambda_param_types: Vec<Type> = Vec::new();
         if let Some(param_tys) = param_types {
             for (name, ty) in params.iter().zip(param_tys.iter()) {
-                lambda_param_types.push(ty.clone());
                 if matches!(ty, Type::Unknown) {
+                    lambda_param_types.push(ty.clone());
                     param_parts.push(name.clone());
                 } else {
+                    lambda_param_types.push(ty.clone());
                     param_parts.push(format!("{}: {}", name, self.rust_type(ty)));
                 }
             }

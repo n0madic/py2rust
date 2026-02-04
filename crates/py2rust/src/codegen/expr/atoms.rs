@@ -40,6 +40,9 @@ impl<'a> Codegen<'a> {
         if name == "__name__" {
             return Ok("__NAME__.to_string()".to_string());
         }
+        if let Some(override_expr) = self.name_override(name) {
+            return Ok(override_expr.to_string());
+        }
         if self.is_global(name) {
             // Global reads go through OnceLock + Mutex with context-rich expects.
             if let Some(override_expr) = self.global_override(name) {
@@ -56,6 +59,36 @@ impl<'a> Codegen<'a> {
         value: &Expr,
         attr: &str,
     ) -> Result<String, CompileError> {
+        if let ExprKind::Name(name) = &value.kind {
+            if let Some(global_name) = self.class_attr_global(name, attr) {
+                if let Some(override_expr) = self.global_override(global_name) {
+                    return Ok(override_expr.to_string());
+                }
+                return Ok(format!("{}.clone()", self.global_lock_expr(global_name)));
+            }
+            if self.is_global(name)
+                && matches!(self.ctx.globals.get(name), Some(Type::Option(_)))
+                    && matches!(value.ty.as_ref(), Some(Type::Custom(_)))
+                {
+                    return Ok(format!(
+                        "{}.as_ref().expect(\"optional global is None\").{}",
+                        self.global_lock_expr(name),
+                        attr
+                    ));
+                }
+        }
+        if let Some(Type::Custom(class_name)) = value.ty.as_ref() {
+            let getter = self.class_property(class_name, attr).and_then(|prop| {
+                if prop.getter.is_empty() {
+                    None
+                } else {
+                    Some(prop.getter.clone())
+                }
+            });
+            if let Some(getter) = getter {
+                return Ok(format!("{}.{}()", self.gen_expr(value)?, getter));
+            }
+        }
         if attr == "__name__" {
             if let ExprKind::Call { func, args } = &value.kind {
                 if let ExprKind::Name(name) = &func.kind {

@@ -2,6 +2,7 @@
 
 use super::super::util::collect_assign_counts;
 use super::super::*;
+use std::collections::HashMap;
 
 impl<'a> Codegen<'a> {
     /// Emit a function or method body.
@@ -79,7 +80,11 @@ impl<'a> Codegen<'a> {
     }
 
     /// Emit the top-level `main` function.
-    pub(crate) fn emit_main(&mut self, body: &[Stmt]) -> Result<(), CompileError> {
+    pub(crate) fn emit_main(
+        &mut self,
+        program: &Program,
+        body: &[Stmt],
+    ) -> Result<(), CompileError> {
         // Check if top-level contains exception handling.
         let top_level_can_throw = self.analyze_top_level_throws(body);
         self.top_level_can_throw = top_level_can_throw;
@@ -91,6 +96,8 @@ impl<'a> Codegen<'a> {
             self.push_line("let _result = (|| -> Result<(), PyError> {");
             self.indent += 1;
 
+            // Initialize defaults and class attributes before running top-level code.
+            self.emit_pre_main_inits(program)?;
             let mut_counts = collect_assign_counts(body);
             for stmt in body {
                 self.emit_stmt(stmt, &mut_counts)?;
@@ -114,6 +121,8 @@ impl<'a> Codegen<'a> {
             // Normal main.
             self.push_line("fn main() {");
             self.indent += 1;
+            // Initialize defaults and class attributes before running top-level code.
+            self.emit_pre_main_inits(program)?;
             let mut_counts = collect_assign_counts(body);
             for stmt in body {
                 self.emit_stmt(stmt, &mut_counts)?;
@@ -130,10 +139,16 @@ impl<'a> Codegen<'a> {
         self.borrowed_params.clear();
 
         let mut params = Vec::new();
+        let mut generics: Vec<String> = Vec::new();
+        let mut param_types: HashMap<String, String> = HashMap::new();
+        let mut generic_idx = 0usize;
         for param in &func.params {
             let ty = self.resolve_type_ref(&param.ann, param.span)?;
             let ty_str = if matches!(ty, Type::Unknown) {
-                "()".to_string()
+                let name = format!("T{}", generic_idx);
+                generic_idx += 1;
+                generics.push(name.clone());
+                name
             } else {
                 // Convert to borrowed type for function parameters.
                 let borrowed = self.to_borrowed_param_type(&ty);
@@ -143,6 +158,7 @@ impl<'a> Codegen<'a> {
                 }
                 self.rust_type(&borrowed)
             };
+            param_types.insert(param.name.clone(), ty_str.clone());
             params.push(format!("{}: {}", param.name, ty_str));
         }
 
@@ -153,12 +169,29 @@ impl<'a> Codegen<'a> {
             self.resolve_type_ref(&func.ret, func.span)?
         };
 
-        let ret_str = if matches!(ret_ty, Type::Unknown) {
+        let mut ret_str = if matches!(ret_ty, Type::Unknown) {
             "()".to_string()
         } else {
             self.rust_type(&ret_ty)
         };
-        Ok(format!("({}) -> {}", params.join(", "), ret_str))
+        if matches!(ret_ty, Type::Unknown) {
+            if let Some(ret_name) = identity_return_param(func) {
+                if let Some(param_ty) = param_types.get(&ret_name) {
+                    ret_str = param_ty.clone();
+                }
+            }
+        }
+        let generics = if generics.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", generics.join(", "))
+        };
+        Ok(format!(
+            "{}({}) -> {}",
+            generics,
+            params.join(", "),
+            ret_str
+        ))
     }
 
     /// Check if a type is a borrowed/reference type.
@@ -167,7 +200,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Convert a type to its borrowed equivalent for function parameters.
-    /// - list[T] -> &[T] (slice)
+    /// - list[T] -> Arc<Mutex<Vec<T>>> (shared list, no borrowing)
     /// - str -> &str
     /// - dict[K,V] -> &HashMap<K,V>
     /// - Primitives (int, float, bool) stay owned (Copy types)
@@ -175,12 +208,12 @@ impl<'a> Codegen<'a> {
         match ty {
             // Copy types stay as-is.
             Type::Int | Type::Float | Type::Bool | Type::None => ty.clone(),
-            // String -> &str.
-            Type::Str => Type::Ref(Box::new(Type::Str)),
-            // Bytes -> &[i64] slice.
-            Type::Bytes => Type::Slice(Box::new(Type::Int)),
-            // Vec<T> -> &[T].
-            Type::List(inner) => Type::Slice(inner.clone()),
+            // String stays owned.
+            Type::Str => Type::Str,
+            // Bytes stay owned.
+            Type::Bytes => Type::Bytes,
+            // Lists are shared (Arc<Mutex<...>>), so keep owned.
+            Type::List(_) => ty.clone(),
             // HashMap/HashSet -> borrowed reference.
             Type::Dict(k, v) => Type::Ref(Box::new(Type::Dict(k.clone(), v.clone()))),
             Type::Set(inner) => Type::Ref(Box::new(Type::Set(inner.clone()))),
@@ -213,17 +246,24 @@ impl<'a> Codegen<'a> {
         self.borrowed_params.clear();
 
         let mut params = Vec::new();
+        let kind = class
+            .method_kinds
+            .get(&func.name)
+            .copied()
+            .unwrap_or(MethodKind::Instance);
         let mut iter = func.params.iter();
-        if let Some(self_param) = iter.next() {
-            let self_ty = self.resolve_type_ref(&self_param.ann, self_param.span)?;
-            let is_mut = self.method_is_mutating(func);
-            let receiver = if is_mut { "&mut self" } else { "&self" };
-            params.push(receiver.to_string());
-            // self is always a borrowed reference in methods.
-            self.borrowed_params.insert(self_param.name.clone());
-            if let Type::Custom(name) = self_ty {
-                if !class.name.is_empty() && name != class.name {
-                    // ignore mismatch
+        if matches!(kind, MethodKind::Instance) {
+            if let Some(self_param) = iter.next() {
+                let self_ty = self.resolve_type_ref(&self_param.ann, self_param.span)?;
+                let is_mut = self.method_is_mutating(func);
+                let receiver = if is_mut { "&mut self" } else { "&self" };
+                params.push(receiver.to_string());
+                // self is always a borrowed reference in methods.
+                self.borrowed_params.insert(self_param.name.clone());
+                if let Type::Custom(name) = self_ty {
+                    if !class.name.is_empty() && name != class.name {
+                        // ignore mismatch
+                    }
                 }
             }
         }
@@ -251,7 +291,7 @@ impl<'a> Codegen<'a> {
         Ok(format!("({}) -> {}", params.join(", "), ret_str))
     }
 
-    fn method_is_mutating(&self, func: &Function) -> bool {
+    pub(crate) fn method_is_mutating(&self, func: &Function) -> bool {
         fn stmt_mutates(stmt: &Stmt) -> bool {
             match &stmt.kind {
                 StmtKind::Assign {
@@ -315,5 +355,20 @@ impl<'a> Codegen<'a> {
             }
         }
         false
+    }
+}
+
+fn identity_return_param(func: &Function) -> Option<String> {
+    if func.body.len() != 1 {
+        return None;
+    }
+    match &func.body[0].kind {
+        StmtKind::Return { value: Some(expr) } => {
+            if let ExprKind::Name(name) = &expr.kind {
+                return Some(name.clone());
+            }
+            None
+        }
+        _ => None,
     }
 }

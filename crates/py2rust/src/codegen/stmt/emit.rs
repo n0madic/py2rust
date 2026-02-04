@@ -4,6 +4,52 @@ use super::super::util::collect_assign_counts;
 use super::super::*;
 
 impl<'a> Codegen<'a> {
+    /// Emit default argument and class attribute initializers at the top of main.
+    pub(crate) fn emit_pre_main_inits(&mut self, program: &Program) -> Result<(), CompileError> {
+        let mut_counts = HashMap::new();
+        for item in &program.items {
+            match item {
+                Item::Function(func) => {
+                    for param in &func.params {
+                        if let Some(default) = &param.default {
+                            let name =
+                                self.default_global_name(None, func.name.as_str(), &param.name);
+                            let target = AssignTarget::Name(name);
+                            self.emit_simple_assign(&target, default, &mut_counts, true)?;
+                        }
+                    }
+                }
+                Item::Class(class_def) => {
+                    for method in &class_def.methods {
+                        for param in &method.params {
+                            if let Some(default) = &param.default {
+                                let name = self.default_global_name(
+                                    Some(class_def.name.as_str()),
+                                    method.name.as_str(),
+                                    &param.name,
+                                );
+                                let target = AssignTarget::Name(name);
+                                self.emit_simple_assign(&target, default, &mut_counts, true)?;
+                            }
+                        }
+                    }
+                    for attr in &class_def.class_attrs {
+                        let target = AssignTarget::Attr {
+                            value: Expr {
+                                kind: ExprKind::Name(class_def.name.clone()),
+                                span: attr.span,
+                                ty: Some(Type::Custom(class_def.name.clone())),
+                            },
+                            attr: attr.name.clone(),
+                        };
+                        self.emit_simple_assign(&target, &attr.value, &mut_counts, true)?;
+                    }
+                }
+                Item::Stmt(_) | Item::Union(_) => {}
+            }
+        }
+        Ok(())
+    }
     /// Wrap global values that need special ownership semantics.
     fn wrap_global_value(&mut self, expr: String, value: &Expr, expected: Option<&Type>) -> String {
         match expected {
@@ -29,7 +75,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Emit a non-destructuring assignment target, optionally allowing new bindings.
-    fn emit_simple_assign(
+    pub(crate) fn emit_simple_assign(
         &mut self,
         target: &AssignTarget,
         value: &Expr,
@@ -46,6 +92,8 @@ impl<'a> Codegen<'a> {
                         && !self.initialized_globals.contains(name)
                     {
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                        let expr =
+                            self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref());
                         let expr = self.wrap_global_value(expr, value, expected.as_ref());
                         let tmp = self.new_tmp();
                         let gname = self.global_name(name);
@@ -62,6 +110,8 @@ impl<'a> Codegen<'a> {
                     let current = self.new_tmp();
                     let expr = self.with_global_override(name, current.clone(), |this| {
                         let expr = this.gen_expr_with_expected(value, expected.as_ref())?;
+                        let expr =
+                            this.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref());
                         Ok(this.wrap_global_value(expr, value, expected.as_ref()))
                     })?;
                     self.push_line("{");
@@ -80,6 +130,7 @@ impl<'a> Codegen<'a> {
 
                 if allow_let && self.local_var_type(name).is_none() {
                     let expr = self.gen_expr(value)?;
+                    let expr = self.maybe_clone_list_expr(expr, value.ty.as_ref(), None);
                     let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
                         "mut "
                     } else {
@@ -92,10 +143,110 @@ impl<'a> Codegen<'a> {
                 } else {
                     let expected = self.local_var_type(name).cloned();
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                    let expr =
+                        self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref());
                     self.push_line(&format!("{} = {};", name, expr));
                 }
             }
             AssignTarget::Attr { value: obj, attr } => {
+                if let Some(Type::Custom(class_name)) = obj.ty.as_ref() {
+                    if let Some(prop) = self.class_property(class_name, attr).cloned() {
+                        if let Some(setter) = prop.setter {
+                            let expected = Some(&prop.ty);
+                            let val_expr = self.gen_expr_with_expected(value, expected)?;
+                            let val_expr =
+                                self.maybe_clone_list_expr(val_expr, value.ty.as_ref(), expected);
+                            if let ExprKind::Name(name) = &obj.kind {
+                                if self.is_global(name) {
+                                    let guard = self.new_tmp();
+                                    self.push_line("{");
+                                    self.indent += 1;
+                                    self.push_line(&format!(
+                                        "let mut {} = {};",
+                                        guard,
+                                        self.global_lock_expr(name)
+                                    ));
+                                    self.push_line(&format!("{}.{}({});", guard, setter, val_expr));
+                                    self.indent -= 1;
+                                    self.push_line("}");
+                                    return Ok(());
+                                }
+                            }
+                            let obj_expr = self.gen_expr(obj)?;
+                            self.push_line(&format!("{}.{}({});", obj_expr, setter, val_expr));
+                            return Ok(());
+                        }
+                    }
+                }
+                if let ExprKind::Name(name) = &obj.kind {
+                    if let Some(global_name) = self
+                        .class_attr_global(name, attr)
+                        .map(|name| name.to_string())
+                    {
+                        let expected = self
+                            .ctx
+                            .classes
+                            .get(name)
+                            .and_then(|info| info.class_attrs.get(attr))
+                            .map(|info| &info.ty);
+                        let expr = self.gen_expr_with_expected(value, expected)?;
+                        let expr = self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected);
+                        if allow_let
+                            && self.current_function.is_none()
+                            && !self.initialized_globals.contains(&global_name)
+                        {
+                            let tmp = self.new_tmp();
+                            let gname = self.global_name(&global_name);
+                            self.push_line(&format!("let {} = {};", tmp, expr));
+                            self.push_line(&format!(
+                                "let _ = {}.get_or_init(|| Mutex::new({}));",
+                                gname, tmp
+                            ));
+                            self.initialized_globals.insert(global_name.clone());
+                            return Ok(());
+                        }
+                        let guard = self.new_tmp();
+                        let current = self.new_tmp();
+                        let expr =
+                            self.with_global_override(&global_name, current.clone(), |this| {
+                                let expr = this.gen_expr_with_expected(value, expected)?;
+                                Ok(this.maybe_clone_list_expr(expr, value.ty.as_ref(), expected))
+                            })?;
+                        self.push_line("{");
+                        self.indent += 1;
+                        self.push_line(&format!(
+                            "let mut {} = {};",
+                            guard,
+                            self.global_lock_expr(&global_name)
+                        ));
+                        self.push_line(&format!("let {} = {}.clone();", current, guard));
+                        self.push_line(&format!("*{} = {};", guard, expr));
+                        self.indent -= 1;
+                        self.push_line("}");
+                        return Ok(());
+                    }
+                    if self.is_global(name) {
+                        let expected = self.ctx.globals.get(name).cloned();
+                        let val_expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                        let val_expr = self.maybe_clone_list_expr(
+                            val_expr,
+                            value.ty.as_ref(),
+                            expected.as_ref(),
+                        );
+                        let guard = self.new_tmp();
+                        self.push_line("{");
+                        self.indent += 1;
+                        self.push_line(&format!(
+                            "let mut {} = {};",
+                            guard,
+                            self.global_lock_expr(name)
+                        ));
+                        self.push_line(&format!("{}.{} = {};", guard, attr, val_expr));
+                        self.indent -= 1;
+                        self.push_line("}");
+                        return Ok(());
+                    }
+                }
                 let obj_expr = self.gen_expr(obj)?;
                 let expected = match obj.ty.as_ref() {
                     Some(Type::Custom(class_name)) => self
@@ -107,6 +258,8 @@ impl<'a> Codegen<'a> {
                     _ => None,
                 };
                 let val_expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                let val_expr =
+                    self.maybe_clone_list_expr(val_expr, value.ty.as_ref(), expected.as_ref());
                 self.push_line(&format!("{}.{} = {};", obj_expr, attr, val_expr));
             }
             AssignTarget::Index {
@@ -133,6 +286,7 @@ impl<'a> Codegen<'a> {
                 if let ExprKind::Name(name) = &container.kind {
                     if self.is_global(name) {
                         let guard = self.new_tmp();
+                        let inner = self.new_tmp();
                         self.push_line("{");
                         self.indent += 1;
                         self.push_line(&format!(
@@ -146,10 +300,23 @@ impl<'a> Codegen<'a> {
                                 "{}.insert({}, {});",
                                 guard, idx_expr, val_expr
                             ));
-                        } else if matches!(
-                            container.ty.as_ref(),
-                            Some(Type::List(_)) | Some(Type::Tuple(_))
-                        ) {
+                        } else if matches!(container.ty.as_ref(), Some(Type::List(_))) {
+                            let idx_raw = self.gen_expr(index)?;
+                            self.uses.py_index = true;
+                            let len_tmp = self.new_tmp();
+                            let idx_tmp = self.new_tmp();
+                            self.push_line(&format!(
+                                "let mut {} = {}.lock().unwrap();",
+                                inner, guard
+                            ));
+                            self.push_line(&format!("let {} = {}.len();", len_tmp, inner));
+                            self.push_line(&format!(
+                                "let {} = {};",
+                                idx_tmp,
+                                self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp))
+                            ));
+                            self.push_line(&format!("{}[{}] = {};", inner, idx_tmp, val_expr));
+                        } else if matches!(container.ty.as_ref(), Some(Type::Tuple(_))) {
                             let idx_raw = self.gen_expr(index)?;
                             self.uses.py_index = true;
                             let len_tmp = self.new_tmp();
@@ -174,10 +341,29 @@ impl<'a> Codegen<'a> {
                         "{}.insert({}, {});",
                         cont_expr, idx_expr, val_expr
                     ));
-                } else if matches!(
-                    container.ty.as_ref(),
-                    Some(Type::List(_)) | Some(Type::Tuple(_))
-                ) {
+                } else if matches!(container.ty.as_ref(), Some(Type::List(_))) {
+                    let idx_raw = self.gen_expr(index)?;
+                    self.uses.py_index = true;
+                    let len_tmp = self.new_tmp();
+                    let idx_tmp = self.new_tmp();
+                    let guard = self.new_tmp();
+                    // Scope the lock so list mutations don't hold the mutex past this statement.
+                    self.push_line("{");
+                    self.indent += 1;
+                    self.push_line(&format!(
+                        "let mut {} = {}.lock().unwrap();",
+                        guard, cont_expr
+                    ));
+                    self.push_line(&format!("let {} = {}.len();", len_tmp, guard));
+                    self.push_line(&format!(
+                        "let {} = {};",
+                        idx_tmp,
+                        self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp))
+                    ));
+                    self.push_line(&format!("{}[{}] = {};", guard, idx_tmp, val_expr));
+                    self.indent -= 1;
+                    self.push_line("}");
+                } else if matches!(container.ty.as_ref(), Some(Type::Tuple(_))) {
                     let idx_raw = self.gen_expr(index)?;
                     self.uses.py_index = true;
                     let len_tmp = self.new_tmp();
@@ -394,6 +580,7 @@ impl<'a> Codegen<'a> {
                         expected.clone()
                     };
                 let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                let expr = self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref());
                 let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
                     "mut "
                 } else {
@@ -530,7 +717,7 @@ impl<'a> Codegen<'a> {
                 let iter_src = if let Some(Type::Dict(_, _)) = iter.ty.as_ref() {
                     format!("{}.into_iter().map(|(k, _)| k)", iter_expr)
                 } else {
-                    format!("{}.into_iter()", iter_expr)
+                    self.gen_iter_source(iter)?
                 };
                 self.push_line(&format!("for {} in {} {{", target, iter_src));
                 self.indent += 1;

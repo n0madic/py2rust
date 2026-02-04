@@ -26,6 +26,7 @@ pub struct FunctionSig {
     pub span: Span,
     pub can_throw: bool,
     pub thrown_exceptions: Vec<String>,
+    pub defaults: usize,
 }
 
 /// Information about a class definition.
@@ -40,12 +41,29 @@ pub struct FunctionSig {
 #[derive(Debug, Clone)]
 pub struct ClassInfo {
     pub name: String,
+    pub base: Option<String>,
     pub fields: IndexMap<String, Type>,
+    pub class_attrs: IndexMap<String, ClassAttrInfo>,
     pub methods: HashMap<String, FunctionSig>,
+    pub method_kinds: HashMap<String, MethodKind>,
+    pub properties: HashMap<String, PropertyInfo>,
     pub init: Option<FunctionSig>,
     pub iter_return: Option<String>,
     pub iter_item: Option<Type>,
     pub next_item: Option<Type>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassAttrInfo {
+    pub ty: Type,
+    pub global_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PropertyInfo {
+    pub getter: String,
+    pub setter: Option<String>,
+    pub ty: Type,
 }
 
 /// Union type information (for pattern matching).

@@ -495,11 +495,37 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Ok(Type::None);
                 }
+                if name == "super" {
+                    if !args.is_empty() {
+                        return Err(self.error(span, "super() takes no arguments"));
+                    }
+                    let class_name = self
+                        .current_class
+                        .as_ref()
+                        .ok_or_else(|| self.error(span, "super() outside of class"))?;
+                    let base = self
+                        .ctx
+                        .classes
+                        .get(class_name)
+                        .and_then(|info| info.base.clone())
+                        .ok_or_else(|| self.error(span, "super() has no base class"))?;
+                    return Ok(Type::Custom(base));
+                }
                 if let Some(class_info) = self.ctx.classes.get(name) {
-                    let init_sig = class_info.init.clone().ok_or_else(|| {
-                        self.error(span, format!("Class {name} is missing __init__"))
-                    })?;
-                    self.check_call_args(&init_sig, args, span, true)?;
+                    if let Some(init_sig) = class_info.init.clone() {
+                        self.check_call_args(&init_sig, args, span, true)?;
+                    } else {
+                        if !class_info.fields.is_empty() {
+                            return Err(
+                                self.error(span, format!("Class {name} is missing __init__"))
+                            );
+                        }
+                        if !args.is_empty() {
+                            return Err(
+                                self.error(span, format!("Class {name} takes no arguments"))
+                            );
+                        }
+                    }
                     if let Some(Type::Union(union_name)) = expected {
                         let variants = self
                             .ctx
@@ -966,16 +992,33 @@ impl<'a> TypeChecker<'a> {
                     return Ok(Type::Str);
                 }
                 if let Type::Custom(class_name) = obj_ty {
-                    let sig = self
-                        .ctx
-                        .classes
-                        .get(&class_name)
-                        .ok_or_else(|| self.error(span, format!("Unknown class: {class_name}")))?
-                        .methods
-                        .get(attr)
-                        .cloned();
+                    let class_info =
+                        self.ctx.classes.get(&class_name).ok_or_else(|| {
+                            self.error(span, format!("Unknown class: {class_name}"))
+                        })?;
+                    let sig = class_info.methods.get(attr).cloned();
                     if let Some(sig) = sig {
-                        self.check_call_args(&sig, args, span, true)?;
+                        let kind = class_info
+                            .method_kinds
+                            .get(attr)
+                            .copied()
+                            .unwrap_or(MethodKind::Instance);
+                        match kind {
+                            MethodKind::Static => {
+                                self.check_call_args(&sig, args, span, false)?;
+                            }
+                            MethodKind::Class => {
+                                self.check_call_args(&sig, args, span, true)?;
+                            }
+                            MethodKind::Instance => {
+                                if matches!(&value.kind, ExprKind::Name(n) if n == &class_name) {
+                                    return Err(
+                                        self.error(span, "Instance methods require an instance")
+                                    );
+                                }
+                                self.check_call_args(&sig, args, span, true)?;
+                            }
+                        }
                         return Ok(sig.ret.clone());
                     }
                 }
@@ -993,11 +1036,17 @@ impl<'a> TypeChecker<'a> {
         allow_self: bool,
     ) -> Result<(), CompileError> {
         let expected_params = sig.params.len();
+        let min_params = expected_params.saturating_sub(sig.defaults);
         let mut arg_offset = 0;
-        if allow_self && expected_params > 0 && args.len() + 1 == expected_params {
+        if allow_self
+            && expected_params > 0
+            && args.len() < expected_params
+            && args.len() + 1 >= min_params
+        {
             arg_offset = 1;
         }
-        if args.len() + arg_offset != expected_params {
+        let provided = args.len() + arg_offset;
+        if provided < min_params || provided > expected_params {
             return Err(self.error(span, "Argument count mismatch"));
         }
         for (arg, param_ty) in args.iter_mut().zip(sig.params.iter().skip(arg_offset)) {

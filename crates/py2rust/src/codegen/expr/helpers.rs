@@ -40,23 +40,12 @@ impl<'a> Codegen<'a> {
         self.gen_expr(expr)
     }
 
-    /// Generate arguments for a user-defined function call, adding & where needed.
-    pub(super) fn gen_call_args(
+    /// Generate arguments for a call using an explicit parameter type list.
+    pub(super) fn gen_call_args_for_sig(
         &mut self,
-        func_name: &str,
+        param_types: &[Type],
         args: &[Expr],
     ) -> Result<String, CompileError> {
-        // Look up the function signature.
-        let param_types: Vec<Type> = if let Some(sig) = self.ctx.functions.get(func_name) {
-            sig.params
-                .iter()
-                .map(|t| self.to_borrowed_param_type(t))
-                .collect()
-        } else {
-            // Fallback: no signature found, use simple args.
-            return self.gen_args(args);
-        };
-
         let mut parts = Vec::new();
         for (idx, arg) in args.iter().enumerate() {
             let rendered = if let Some(param_ty) = param_types.get(idx) {
@@ -64,8 +53,12 @@ impl<'a> Codegen<'a> {
             } else {
                 self.gen_expr(arg)?
             };
-            // Check if this parameter expects a reference.
             if let Some(param_ty) = param_types.get(idx) {
+                // Lists are shared (Arc<Mutex<...>>); clone to avoid moves.
+                if matches!(param_ty, Type::List(_)) {
+                    parts.push(format!("{}.clone()", rendered));
+                    continue;
+                }
                 if self.needs_borrow(arg.ty.as_ref(), param_ty) {
                     parts.push(format!("&{}", rendered));
                 } else {
@@ -123,7 +116,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Build an iterator source expression that matches Python iteration semantics.
-    pub(super) fn gen_iter_source(&mut self, expr: &Expr) -> Result<String, CompileError> {
+    pub(crate) fn gen_iter_source(&mut self, expr: &Expr) -> Result<String, CompileError> {
         let rendered = self.gen_expr(expr)?;
         let use_owned = match &expr.kind {
             ExprKind::Name(name) => self.is_global(name),
@@ -132,8 +125,18 @@ impl<'a> Codegen<'a> {
         match expr.ty.as_ref() {
             // Slice references: just .iter() - items are already references.
             Some(Type::Slice(_)) => Ok(format!("{}.iter().copied()", rendered)),
-            // Owned lists/sets need .iter().cloned() (or .copied() for Copy types).
-            Some(Type::List(inner)) | Some(Type::Set(inner)) => {
+            // Lists are shared (Arc<Mutex<...>>), so iterate via a lock guard.
+            Some(Type::List(inner)) => {
+                if use_owned {
+                    Ok(format!("{}.lock().unwrap().clone().into_iter()", rendered))
+                } else if self.is_copy_type(inner) {
+                    Ok(format!("{}.lock().unwrap().iter().copied()", rendered))
+                } else {
+                    Ok(format!("{}.lock().unwrap().iter().cloned()", rendered))
+                }
+            }
+            // Owned sets need .iter().cloned() (or .copied() for Copy types).
+            Some(Type::Set(inner)) => {
                 if use_owned {
                     Ok(format!("{}.into_iter()", rendered))
                 } else if self.is_copy_type(inner) {
@@ -233,14 +236,21 @@ impl<'a> Codegen<'a> {
     }
 
     /// Compute the truthiness test for a given type.
-    pub(super) fn truthy_expr_for_type(&self, expr_str: &str, ty: &Type) -> String {
+    pub(super) fn truthy_expr_for_type(&mut self, expr_str: &str, ty: &Type) -> String {
         let expr = match ty {
             Type::Bool => expr_str.to_string(),
             Type::Int => format!("{} != 0", expr_str),
             Type::Float => format!("{} != 0.0", expr_str),
             Type::Str => format!("!{}.is_empty()", expr_str),
-            Type::Bytes | Type::List(_) | Type::Set(_) | Type::Dict(_, _) => {
-                format!("!{}.is_empty()", expr_str)
+            Type::Bytes | Type::Set(_) | Type::Dict(_, _) => format!("!{}.is_empty()", expr_str),
+            Type::List(_) => {
+                // Bind the expression to a temporary so we don't borrow from a short-lived value.
+                let tmp = self.new_tmp();
+                format!(
+                    "{{ let {tmp} = {expr}; let _guard = {tmp}.lock().unwrap(); !_guard.is_empty() }}",
+                    tmp = tmp,
+                    expr = expr_str
+                )
             }
             Type::Tuple(items) => {
                 if items.is_empty() {
@@ -374,5 +384,14 @@ impl<'a> Codegen<'a> {
             Some(_) => true,
             None => true,
         }
+    }
+
+    /// Build an expression suitable for Debug formatting of a value.
+    pub(super) fn debug_arg_expr(&mut self, expr: &Expr) -> Result<String, CompileError> {
+        let rendered = self.gen_expr(expr)?;
+        if matches!(expr.ty.as_ref(), Some(Type::List(_))) {
+            return Ok(format!("{}.lock().unwrap()", rendered));
+        }
+        Ok(rendered)
     }
 }

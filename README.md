@@ -16,7 +16,9 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`
 - Dict methods: `get`, `pop`, `update`, `clear`, `copy`
 - Set methods: `add`, `remove`, `discard`, `clear`, `copy`
-- Simple classes (plain data) with methods
+- Classes with fields, methods, and class attributes
+- Single inheritance with method overrides and `super().__init__` calls
+- Decorators: `@property` (getter/setter), `@staticmethod`, `@classmethod`, and simple top-level function decorators
 - Enum-like `Union` aliases via `A | B` type aliases
 - `match/case` on union variants
 - Custom iterators via `__iter__` and `next`
@@ -70,6 +72,8 @@ The generated Rust injects tiny helper functions only when needed:
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
 - Keyword arguments are supported only for `dict()`; other keyword args are rejected.
 - `__init__` is treated as a constructor; it must only assign `self` fields.
+- Class decorators and decorator calls are rejected (e.g. `@decorator()` or `@dataclass`).
+- Function decorators are limited to simple names on top-level functions.
 - `dict` indexing raises `KeyError` (propagated as `PyError`).
 - Tuple slicing requires literal integer bounds (including negative literals).
 - String slicing is character-based (Unicode scalar values).

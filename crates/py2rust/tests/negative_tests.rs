@@ -45,12 +45,15 @@ async def bad() -> None:
 }
 
 #[test]
-fn rejects_class_inheritance() {
+fn rejects_multiple_inheritance() {
     let source = r#"
-class Base:
+class Base1:
     pass
 
-class Child(Base):
+class Base2:
+    pass
+
+class Child(Base1, Base2):
     pass
 "#;
     let error = expect_error(source);
@@ -69,15 +72,14 @@ class MyClass:
 }
 
 #[test]
-fn rejects_multiple_decorators() {
+fn rejects_decorator_calls() {
     let source = r#"
-@decorator1
-@decorator2
+@decorator()
 def bad() -> None:
     pass
 "#;
     let error = expect_error(source);
-    assert!(error.contains("single decorator"), "Error: {}", error);
+    assert!(error.contains("decorator"), "Error: {}", error);
 }
 
 #[test]
@@ -88,16 +90,6 @@ def bad[T](x: T) -> T:
 "#;
     let error = expect_error(source);
     assert!(error.contains("Type parameters"), "Error: {}", error);
-}
-
-#[test]
-fn rejects_default_arguments() {
-    let source = r#"
-def bad(x: int = 5) -> int:
-    return x
-"#;
-    let error = expect_error(source);
-    assert!(error.contains("Default arguments"), "Error: {}", error);
 }
 
 #[test]

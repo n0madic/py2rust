@@ -52,9 +52,6 @@ impl<'a> Lowerer<'a> {
                 let mut params = Vec::new();
                 let mut param_types = Vec::new();
                 for arg in &def.args.args {
-                    if arg.default.is_some() {
-                        return Err(self.error(def.range(), "Default arguments are not supported"));
-                    }
                     params.push(arg.def.arg.to_string());
                     let ann = match &arg.def.annotation {
                         Some(expr) => self.lower_type_ref(expr)?,

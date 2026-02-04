@@ -1,10 +1,11 @@
 use super::*;
+use std::collections::HashMap;
 
 impl<'a> Lowerer<'a> {
     /// Lower a decorated function into multiple HIR items.
     ///
     /// Python decorators are syntactic sugar: `@dec def f(x): ...` means `f = dec(f)`.
-    /// We support only simple single-name decorators on top-level functions.
+    /// We support simple name decorators on top-level functions, including stacking.
     ///
     /// Lowering strategy:
     /// 1. Create `f_impl(x)` with the original function body
@@ -14,25 +15,31 @@ impl<'a> Lowerer<'a> {
     /// expand the syntactic sugar and let type checking handle the rest.
     ///
     /// Limitations:
-    /// - Only one decorator allowed (no stacking like @dec1 @dec2)
     /// - Decorator must be a simple name (not @module.decorator or @decorator())
     /// - Only supported on top-level functions (not methods or nested functions)
     pub(super) fn lower_decorated_function(
         &self,
         func: &ast::StmtFunctionDef,
     ) -> Result<Vec<Item>, CompileError> {
-        if func.decorator_list.len() != 1 {
-            return Err(self.error(func.range(), "Only a single decorator is supported"));
+        if func.decorator_list.is_empty() {
+            return Err(self.error(func.range(), "Decorator list is empty"));
         }
         if !func.type_params.is_empty() {
             return Err(self.error(func.range(), "Type parameters are not supported"));
         }
 
-        // Extract decorator name
-        let decorator = match &func.decorator_list[0] {
-            ast::Expr::Name(name) => name.id.to_string(),
-            _ => return Err(self.error(func.range(), "Only simple name decorators are supported")),
-        };
+        // Extract decorator names (top to bottom)
+        let mut decorators = Vec::new();
+        for dec in &func.decorator_list {
+            match dec {
+                ast::Expr::Name(name) => decorators.push(name.id.to_string()),
+                _ => {
+                    return Err(
+                        self.error(func.range(), "Only simple name decorators are supported")
+                    )
+                }
+            }
+        }
 
         // Create implementation function with renamed name
         let mut impl_func = self.lower_function(func)?;
@@ -40,26 +47,29 @@ impl<'a> Lowerer<'a> {
         let impl_name = format!("{orig_name}_impl");
         impl_func.name = impl_name.clone();
 
-        // Build wrapper function that calls decorator
+        // Build wrapper function that calls decorator(s)
         let tmp_name = format!("_decorated_{orig_name}");
 
-        // let _decorated_f = decorator(f_impl);
-        let call_decorator = Expr {
-            kind: ExprKind::Call {
-                func: Box::new(Expr {
-                    kind: ExprKind::Name(decorator),
-                    span: Span::from(func.range()),
-                    ty: None,
-                }),
-                args: vec![Expr {
-                    kind: ExprKind::Name(impl_name),
-                    span: Span::from(func.range()),
-                    ty: None,
-                }],
-            },
+        // let _decorated_f = dec1(dec2(...(f_impl)));
+        let mut call_decorator = Expr {
+            kind: ExprKind::Name(impl_name),
             span: Span::from(func.range()),
             ty: None,
         };
+        for decorator in decorators.iter().rev() {
+            call_decorator = Expr {
+                kind: ExprKind::Call {
+                    func: Box::new(Expr {
+                        kind: ExprKind::Name(decorator.clone()),
+                        span: Span::from(func.range()),
+                        ty: None,
+                    }),
+                    args: vec![call_decorator],
+                },
+                span: Span::from(func.range()),
+                ty: None,
+            };
+        }
         let let_stmt = Stmt {
             kind: StmtKind::Let {
                 name: tmp_name.clone(),
@@ -196,7 +206,6 @@ impl<'a> Lowerer<'a> {
     ///
     /// Unsupported features that will error:
     /// - Type parameters (generics)
-    /// - Default argument values
     /// - Positional-only parameters (/)
     /// - Keyword-only parameters (*)
     /// - *args and **kwargs
@@ -217,10 +226,11 @@ impl<'a> Lowerer<'a> {
         let mut params = Vec::new();
         for (idx, arg) in func.args.args.iter().enumerate() {
             let def = &arg.def;
-            if arg.default.is_some() {
-                return Err(self.error(def.range, "Default arguments are not supported"));
-            }
             let name_str = def.arg.to_string();
+            let default = match &arg.default {
+                Some(expr) => Some(self.lower_expr(expr)?),
+                None => None,
+            };
 
             // Special handling for `self` parameter in methods
             if idx == 0 && name_str == "self" {
@@ -234,6 +244,7 @@ impl<'a> Lowerer<'a> {
                     params.push(Param {
                         name: name_str,
                         ann,
+                        default: None,
                         span: Span::from(def.range),
                     });
                     continue;
@@ -248,6 +259,7 @@ impl<'a> Lowerer<'a> {
             params.push(Param {
                 name: name_str,
                 ann,
+                default,
                 span: Span::from(def.range),
             });
         }
@@ -285,8 +297,11 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn lower_class(&self, class: &ast::StmtClassDef) -> Result<ClassDef, CompileError> {
-        if !class.bases.is_empty() || !class.keywords.is_empty() {
-            return Err(self.error(class.range(), "Class inheritance is not supported"));
+        if !class.keywords.is_empty() {
+            return Err(self.error(
+                class.range(),
+                "Class inheritance keywords are not supported",
+            ));
         }
         if !class.decorator_list.is_empty() {
             return Err(self.error(class.range(), "Class decorators are not supported"));
@@ -294,14 +309,111 @@ impl<'a> Lowerer<'a> {
         if !class.type_params.is_empty() {
             return Err(self.error(class.range(), "Class type parameters are not supported"));
         }
+        let base = if class.bases.is_empty() {
+            None
+        } else if class.bases.len() == 1 {
+            match &class.bases[0] {
+                ast::Expr::Name(name) => Some(name.id.to_string()),
+                _ => {
+                    return Err(
+                        self.error(class.range(), "Only simple base class names are supported")
+                    )
+                }
+            }
+        } else {
+            return Err(self.error(class.range(), "Multiple inheritance is not supported"));
+        };
         let mut fields: Vec<FieldDef> = Vec::new();
+        let mut class_attrs: Vec<ClassAttrDef> = Vec::new();
         let mut methods = Vec::new();
+        let mut method_kinds: HashMap<String, MethodKind> = HashMap::new();
+        let mut properties: Vec<PropertyDef> = Vec::new();
         for item in &class.body {
             match item {
                 ast::Stmt::FunctionDef(def) => {
+                    let mut kind = MethodKind::Instance;
+                    let mut is_property = false;
+                    let mut property_name: Option<String> = None;
+                    let mut is_property_setter = false;
+                    if !def.decorator_list.is_empty() {
+                        if def.decorator_list.len() != 1 {
+                            return Err(self.error(
+                                def.range(),
+                                "Only a single decorator is supported on methods",
+                            ));
+                        }
+                        match &def.decorator_list[0] {
+                            ast::Expr::Name(name) => match name.id.as_str() {
+                                "property" => {
+                                    is_property = true;
+                                    property_name = Some(def.name.to_string());
+                                }
+                                "staticmethod" => {
+                                    kind = MethodKind::Static;
+                                }
+                                "classmethod" => {
+                                    kind = MethodKind::Class;
+                                }
+                                _ => {
+                                    return Err(
+                                        self.error(def.range(), "Unsupported method decorator")
+                                    )
+                                }
+                            },
+                            ast::Expr::Attribute(attr) => {
+                                if let ast::Expr::Name(base_name) = &*attr.value {
+                                    if attr.attr.as_str() == "setter" {
+                                        is_property_setter = true;
+                                        property_name = Some(base_name.id.to_string());
+                                    } else {
+                                        return Err(
+                                            self.error(def.range(), "Unsupported method decorator")
+                                        );
+                                    }
+                                } else {
+                                    return Err(
+                                        self.error(def.range(), "Unsupported method decorator")
+                                    );
+                                }
+                            }
+                            _ => {
+                                return Err(self.error(def.range(), "Unsupported method decorator"))
+                            }
+                        }
+                    }
                     let func = self.lower_method(def, class.name.as_ref())?;
+                    if is_property_setter {
+                        let prop_name = property_name
+                            .clone()
+                            .expect("setter must include property name");
+                        let setter_name = format!("__set_{}", prop_name);
+                        let mut setter_func = func;
+                        setter_func.name = setter_name.clone();
+                        method_kinds.insert(setter_name.clone(), MethodKind::Instance);
+                        properties.push(PropertyDef {
+                            name: prop_name,
+                            getter: String::new(),
+                            setter: Some(setter_name),
+                            span: Span::from(def.range()),
+                        });
+                        methods.push(setter_func);
+                        continue;
+                    }
+                    if is_property {
+                        let prop_name = property_name.clone().expect("property must have a name");
+                        properties.push(PropertyDef {
+                            name: prop_name,
+                            getter: func.name.clone(),
+                            setter: None,
+                            span: Span::from(def.range()),
+                        });
+                    }
+                    method_kinds.insert(func.name.clone(), kind);
                     if func.name == "__init__" {
-                        let init_fields = self.extract_init_fields_from_ast(&def.body)?;
+                        let known_fields: std::collections::HashSet<String> =
+                            fields.iter().map(|f| f.name.clone()).collect();
+                        let init_fields =
+                            self.extract_init_fields_from_ast(&def.body, &known_fields)?;
                         for field in init_fields {
                             if !fields.iter().any(|f| f.name == field.name) {
                                 fields.push(field);
@@ -309,6 +421,51 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     methods.push(func);
+                }
+                ast::Stmt::AnnAssign(def) => {
+                    if let ast::Expr::Name(name) = &*def.target {
+                        let ann = self.lower_type_ref(&def.annotation)?;
+                        if let Some(value) = &def.value {
+                            class_attrs.push(ClassAttrDef {
+                                name: name.id.to_string(),
+                                ann: Some(ann),
+                                value: self.lower_expr(value)?,
+                                span: Span::from(def.range()),
+                            });
+                        } else if !fields.iter().any(|f| f.name == name.id.as_str()) {
+                            fields.push(FieldDef {
+                                name: name.id.to_string(),
+                                ty: ann,
+                                span: Span::from(def.range()),
+                            });
+                        }
+                    } else {
+                        return Err(self.error(
+                            def.range(),
+                            "Only simple name annotations are supported in class bodies",
+                        ));
+                    }
+                }
+                ast::Stmt::Assign(def) => {
+                    if def.targets.len() != 1 {
+                        return Err(self.error(
+                            def.range(),
+                            "Only single-target assignments are supported in class bodies",
+                        ));
+                    }
+                    if let ast::Expr::Name(name) = &def.targets[0] {
+                        class_attrs.push(ClassAttrDef {
+                            name: name.id.to_string(),
+                            ann: None,
+                            value: self.lower_expr(&def.value)?,
+                            span: Span::from(def.range()),
+                        });
+                    } else {
+                        return Err(self.error(
+                            def.range(),
+                            "Only simple name assignments are supported in class bodies",
+                        ));
+                    }
                 }
                 ast::Stmt::Pass(_) => {}
                 _ => {
@@ -321,8 +478,12 @@ impl<'a> Lowerer<'a> {
         }
         Ok(ClassDef {
             name: class.name.to_string(),
+            base,
             fields,
+            class_attrs,
             methods,
+            method_kinds,
+            properties,
             span: Span::from(class.range()),
         })
     }
@@ -330,6 +491,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn extract_init_fields_from_ast(
         &self,
         body: &[ast::Stmt],
+        known_fields: &std::collections::HashSet<String>,
     ) -> Result<Vec<FieldDef>, CompileError> {
         let mut fields = Vec::new();
         for stmt in body {
@@ -347,11 +509,24 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 ast::Stmt::Assign(def) => {
-                    if def.targets.iter().any(|t| matches!(t, ast::Expr::Attribute(attr) if matches!(&*attr.value, ast::Expr::Name(name) if name.id.as_str() == "self"))) {
-                        return Err(self.error(
-                            def.range(),
-                            "Field assignments in __init__ must use type annotations",
-                        ));
+                    if def.targets.iter().any(|t| {
+                        matches!(
+                            t,
+                            ast::Expr::Attribute(attr)
+                                if matches!(&*attr.value, ast::Expr::Name(name) if name.id.as_str() == "self")
+                        )
+                    }) {
+                        for target in &def.targets {
+                            if let ast::Expr::Attribute(attr) = target {
+                                if matches!(&*attr.value, ast::Expr::Name(name) if name.id.as_str() == "self")
+                                    && !known_fields.contains(attr.attr.as_str()) {
+                                        return Err(self.error(
+                                            def.range(),
+                                            "Field assignments in __init__ must use type annotations",
+                                        ));
+                                    }
+                            }
+                        }
                     }
                 }
                 _ => {}

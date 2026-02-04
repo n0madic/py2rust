@@ -40,6 +40,23 @@ impl<'a> Codegen<'a> {
         )
     }
 
+    /// Look up a class attribute global name if it exists.
+    pub(crate) fn class_attr_global(&self, class_name: &str, attr: &str) -> Option<&str> {
+        self.ctx
+            .classes
+            .get(class_name)
+            .and_then(|info| info.class_attrs.get(attr))
+            .map(|info| info.global_name.as_str())
+    }
+
+    /// Look up a class property getter/setter info.
+    pub(crate) fn class_property(&self, class_name: &str, attr: &str) -> Option<&PropertyInfo> {
+        self.ctx
+            .classes
+            .get(class_name)
+            .and_then(|info| info.properties.get(attr))
+    }
+
     /// Look up the most recent override expression for a global name.
     pub(crate) fn global_override(&self, name: &str) -> Option<&str> {
         self.global_overrides
@@ -60,6 +77,66 @@ impl<'a> Codegen<'a> {
         let result = f(self);
         self.global_overrides.pop();
         result
+    }
+
+    /// Look up the most recent override expression for a local name.
+    pub(crate) fn name_override(&self, name: &str) -> Option<&str> {
+        self.name_overrides
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, expr)| expr.as_str())
+    }
+
+    /// Clone list values to preserve Python reference semantics.
+    pub(crate) fn maybe_clone_list_expr(
+        &self,
+        expr: String,
+        value_ty: Option<&Type>,
+        expected_ty: Option<&Type>,
+    ) -> String {
+        let ty = expected_ty.or(value_ty);
+        if matches!(ty, Some(Type::List(_))) {
+            return format!("{}.clone()", expr);
+        }
+        expr
+    }
+
+    /// Compute the global name used for default argument storage.
+    pub(crate) fn default_global_name(
+        &self,
+        class_name: Option<&str>,
+        func_name: &str,
+        param_name: &str,
+    ) -> String {
+        if let Some(class_name) = class_name {
+            format!("__default_{}_{}_{}", class_name, func_name, param_name)
+        } else {
+            format!("__default_{}_{}", func_name, param_name)
+        }
+    }
+
+    /// Locate a method definition on a class by name.
+    pub(crate) fn method_def(&self, class_name: &str, method_name: &str) -> Option<&Function> {
+        self.class_defs
+            .get(class_name)
+            .and_then(|def| def.methods.iter().find(|m| m.name == method_name))
+    }
+
+    /// Check if a class is the same as or a subclass of another class.
+    pub(crate) fn is_subclass_of(&self, class_name: &str, target: &str) -> bool {
+        let mut current = Some(class_name);
+        while let Some(name) = current {
+            if name == target {
+                return true;
+            }
+            current = self
+                .ctx
+                .classes
+                .get(name)
+                .and_then(|info| info.base.as_deref());
+        }
+        false
     }
 
     pub(crate) fn new_tmp(&mut self) -> String {

@@ -48,6 +48,12 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         if let Some(init) = class_def.methods.iter().find(|m| m.name == "__init__") {
             self.emit_constructor(class_def, init)?;
+        } else if class_info.fields.is_empty() {
+            self.push_line(&format!("pub fn new() -> {} {{", class_def.name));
+            self.indent += 1;
+            self.push_line(&format!("{} {{}}", class_def.name));
+            self.indent -= 1;
+            self.push_line("}");
         } else {
             self.push_line("// no __init__ defined");
         }
@@ -102,6 +108,11 @@ impl<'a> Codegen<'a> {
         class_def: &ClassDef,
         init: &Function,
     ) -> Result<(), CompileError> {
+        let class_info = self
+            .ctx
+            .classes
+            .get(&class_def.name)
+            .ok_or_else(|| self.error(class_def.span, "Unknown class"))?;
         let mut params = Vec::new();
         for param in init.params.iter().skip(1) {
             let ty = self.resolve_type_ref(&param.ann, param.span)?;
@@ -112,13 +123,18 @@ impl<'a> Codegen<'a> {
         self.push_line(&format!("pub fn new{} {{", sig));
         self.indent += 1;
         let mut field_inits: HashMap<String, String> = HashMap::new();
+        let mut_counts: HashMap<String, usize> = HashMap::new();
         for stmt in &init.body {
             match &stmt.kind {
                 StmtKind::Assign { target, value } => {
                     if let AssignTarget::Attr { value: obj, attr } = target {
                         if matches!(&obj.kind, ExprKind::Name(n) if n == "self") {
-                            let expr = self.gen_expr(value)?;
-                            field_inits.insert(attr.clone(), expr);
+                            self.record_field_init(&mut field_inits, class_info, attr, value)?;
+                        } else if let ExprKind::Name(name) = &obj.kind {
+                            if self.class_attr_global(name, attr).is_some() {
+                                self.emit_simple_assign(target, value, &mut_counts, false)?;
+                                continue;
+                            }
                         } else {
                             return Err(
                                 self.error(stmt.span, "__init__ may only assign to self fields")
@@ -134,6 +150,137 @@ impl<'a> Codegen<'a> {
                     if matches!(expr.kind, ExprKind::Literal(Literal::None)) {
                         continue;
                     }
+                    let super_args = match &expr.kind {
+                        ExprKind::Call { func, args } => {
+                            if let ExprKind::Attr { value, attr } = &func.kind {
+                                if attr == "__init__" {
+                                    if let ExprKind::Call { func, args: s_args } = &value.kind {
+                                        if matches!(&func.kind, ExprKind::Name(n) if n == "super")
+                                            && s_args.is_empty()
+                                        {
+                                            Some(args.as_slice())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(args) = super_args {
+                        let base = class_def.base.as_ref().ok_or_else(|| {
+                            self.error(stmt.span, "super().__init__ used without base class")
+                        })?;
+                        let (base_init, param_types) = {
+                            let base_def = self.class_defs.get(base).ok_or_else(|| {
+                                self.error(stmt.span, format!("Unknown base class: {base}"))
+                            })?;
+                            let base_init = base_def
+                                .methods
+                                .iter()
+                                .find(|m| m.name == "__init__")
+                                .cloned()
+                                .ok_or_else(|| {
+                                    self.error(stmt.span, "Base class missing __init__")
+                                })?;
+                            let base_sig = self
+                                .ctx
+                                .classes
+                                .get(base)
+                                .and_then(|info| info.init.clone())
+                                .ok_or_else(|| {
+                                    self.error(stmt.span, "Base class missing __init__ signature")
+                                })?;
+                            let param_types: Vec<Type> =
+                                base_sig.params.into_iter().skip(1).collect();
+                            (base_init, param_types)
+                        };
+                        let full_args = self.fill_trailing_defaults(
+                            args,
+                            &base_init.params[1..],
+                            &param_types,
+                            Some(base),
+                            "__init__",
+                        )?;
+                        let mut bindings = Vec::new();
+                        for (idx, arg) in full_args.iter().enumerate() {
+                            let tmp = self.new_tmp();
+                            let expected = param_types.get(idx);
+                            let expr = if let Some(expected) = expected {
+                                self.gen_expr_with_expected(arg, Some(expected))?
+                            } else {
+                                self.gen_expr(arg)?
+                            };
+                            let expr = self.maybe_clone_list_expr(expr, arg.ty.as_ref(), expected);
+                            self.push_line(&format!("let {} = {};", tmp, expr));
+                            bindings.push((base_init.params[idx + 1].name.clone(), tmp));
+                        }
+                        for (name, tmp) in &bindings {
+                            self.name_overrides.push((name.clone(), tmp.clone()));
+                        }
+                        for stmt in &base_init.body {
+                            match &stmt.kind {
+                                StmtKind::Assign { target, value } => {
+                                    if let AssignTarget::Attr { value: obj, attr } = target {
+                                        if matches!(&obj.kind, ExprKind::Name(n) if n == "self") {
+                                            self.record_field_init(
+                                                &mut field_inits,
+                                                class_info,
+                                                attr,
+                                                value,
+                                            )?;
+                                        } else if let ExprKind::Name(name) = &obj.kind {
+                                            if self.class_attr_global(name, attr).is_some() {
+                                                self.emit_simple_assign(
+                                                    target,
+                                                    value,
+                                                    &mut_counts,
+                                                    false,
+                                                )?;
+                                                continue;
+                                            }
+                                        } else {
+                                            return Err(self.error(
+                                                stmt.span,
+                                                "__init__ may only assign to self fields",
+                                            ));
+                                        }
+                                    } else {
+                                        return Err(self.error(
+                                            stmt.span,
+                                            "__init__ may only assign to self fields",
+                                        ));
+                                    }
+                                }
+                                StmtKind::Expr(expr) => {
+                                    if matches!(expr.kind, ExprKind::Literal(Literal::None)) {
+                                        continue;
+                                    }
+                                    return Err(self.error(
+                                        stmt.span,
+                                        "__init__ may only contain field assignments",
+                                    ));
+                                }
+                                _ => {
+                                    return Err(self.error(
+                                        stmt.span,
+                                        "__init__ may only contain field assignments",
+                                    ))
+                                }
+                            }
+                        }
+                        for _ in &bindings {
+                            self.name_overrides.pop();
+                        }
+                        continue;
+                    }
                     return Err(
                         self.error(stmt.span, "__init__ may only contain field assignments")
                     );
@@ -143,11 +290,6 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
-        let class_info = self
-            .ctx
-            .classes
-            .get(&class_def.name)
-            .ok_or_else(|| self.error(class_def.span, "Unknown class"))?;
         for field in class_info.fields.keys() {
             if !field_inits.contains_key(field) {
                 return Err(self.error(
@@ -169,6 +311,21 @@ impl<'a> Codegen<'a> {
         self.push_line("}");
         self.indent -= 1;
         self.push_line("}");
+        Ok(())
+    }
+
+    /// Record a field initializer expression, applying expected typing and list cloning.
+    fn record_field_init(
+        &mut self,
+        field_inits: &mut HashMap<String, String>,
+        class_info: &ClassInfo,
+        attr: &str,
+        value: &Expr,
+    ) -> Result<(), CompileError> {
+        let expected = class_info.fields.get(attr);
+        let expr = self.gen_expr_with_expected(value, expected)?;
+        let expr = self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected);
+        field_inits.insert(attr.to_string(), expr);
         Ok(())
     }
 

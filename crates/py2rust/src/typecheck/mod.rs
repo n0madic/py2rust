@@ -18,7 +18,7 @@ mod stmt;
 mod throws;
 mod type_ops;
 
-pub use context::{ClassInfo, FunctionSig, TypeContext, UnionInfo};
+pub use context::{ClassAttrInfo, ClassInfo, FunctionSig, PropertyInfo, TypeContext, UnionInfo};
 
 /// Global scope tracking for top-level statements.
 ///
@@ -68,6 +68,10 @@ pub struct TypeChecker<'a> {
     except_handler_depth: usize,
     /// Lambda expression bodies (stored for deferred type inference)
     lambda_defs: HashMap<String, Expr>,
+    /// Current class name when type checking methods, used for inference.
+    current_class: Option<String>,
+    /// Stack of scope indices marking the start of each function scope.
+    function_scopes: Vec<usize>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -111,8 +115,12 @@ impl<'a> TypeChecker<'a> {
                     class_def.name.clone(),
                     ClassInfo {
                         name: class_def.name.clone(),
+                        base: class_def.base.clone(),
                         fields: IndexMap::new(),
+                        class_attrs: IndexMap::new(),
                         methods: HashMap::new(),
+                        method_kinds: HashMap::new(),
+                        properties: HashMap::new(),
                         init: None,
                         iter_return: None,
                         iter_item: None,
@@ -136,6 +144,8 @@ impl<'a> TypeChecker<'a> {
             warnings: Vec::new(),
             except_handler_depth: 0,
             lambda_defs: HashMap::new(),
+            current_class: None,
+            function_scopes: Vec::new(),
         };
 
         // Third pass: collect function and class signatures (methods, fields)
@@ -170,17 +180,18 @@ impl<'a> TypeChecker<'a> {
 
         // Save global variable types (excluding __name__ which is a constant)
         if let Some(scope) = self.scopes.last() {
-            self.ctx.globals = scope
-                .iter()
-                .filter(|(name, _)| name.as_str() != "__name__")
-                .map(|(name, ty)| (name.clone(), ty.clone()))
-                .collect();
+            for (name, ty) in scope.iter() {
+                if name.as_str() == "__name__" {
+                    continue;
+                }
+                self.ctx.globals.insert(name.clone(), ty.clone());
+            }
         }
 
         // Type check all functions and classes
         for item in &mut program.items {
             match item {
-                Item::Function(func) => self.check_function(func, None)?,
+                Item::Function(func) => self.check_function(func, None, false)?,
                 Item::Class(class) => self.check_class(class)?,
                 Item::Stmt(_) => {}
                 Item::Union(_) => {}

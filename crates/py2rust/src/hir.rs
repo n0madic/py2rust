@@ -1,5 +1,6 @@
 use crate::span::Span;
 use crate::types::{Type, TypeRef};
+use std::collections::HashMap;
 
 /// The High-level Intermediate Representation (HIR) for the program.
 ///
@@ -57,6 +58,7 @@ pub struct Function {
 pub struct Param {
     pub name: String,
     pub ann: TypeRef,
+    pub default: Option<Expr>,
     pub span: Span,
 }
 
@@ -70,8 +72,12 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct ClassDef {
     pub name: String,
+    pub base: Option<String>,
     pub fields: Vec<FieldDef>,
+    pub class_attrs: Vec<ClassAttrDef>,
     pub methods: Vec<Function>,
+    pub method_kinds: HashMap<String, MethodKind>,
+    pub properties: Vec<PropertyDef>,
     pub span: Span,
 }
 
@@ -79,6 +85,29 @@ pub struct ClassDef {
 pub struct FieldDef {
     pub name: String,
     pub ty: TypeRef,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassAttrDef {
+    pub name: String,
+    pub ann: Option<TypeRef>,
+    pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodKind {
+    Instance,
+    Static,
+    Class,
+}
+
+#[derive(Debug, Clone)]
+pub struct PropertyDef {
+    pub name: String,
+    pub getter: String,
+    pub setter: Option<String>,
     pub span: Span,
 }
 

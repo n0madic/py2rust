@@ -16,10 +16,13 @@ impl<'a> Codegen<'a> {
         if items.is_empty() {
             if let Some(Type::List(inner)) = expr.ty.as_ref() {
                 if !matches!(inner.as_ref(), Type::Unknown) {
-                    return Ok(format!("Vec::<{}>::new()", self.rust_type(inner)));
+                    return Ok(format!(
+                        "Arc::new(Mutex::new(Vec::<{}>::new()))",
+                        self.rust_type(inner)
+                    ));
                 }
                 // Let Rust infer the element type for empty lists with unknown type.
-                return Ok("Vec::new()".to_string());
+                return Ok("Arc::new(Mutex::new(Vec::new()))".to_string());
             }
         }
         // If element types don't unify, coerce to a String-based list for Debug printing.
@@ -32,17 +35,23 @@ impl<'a> Codegen<'a> {
                 .iter()
                 .map(|e| self.gen_unknown_list_elem(e))
                 .collect();
-            return Ok(format!("vec![{}]", elems?.join(", ")));
+            return Ok(format!("Arc::new(Mutex::new(vec![{}]))", elems?.join(", ")));
         }
         let elems: Result<Vec<String>, CompileError> = items
             .iter()
             .map(|e| self.gen_expr_with_expected(e, expected))
             .collect();
-        Ok(format!("vec![{}]", elems?.join(", ")))
+        Ok(format!("Arc::new(Mutex::new(vec![{}]))", elems?.join(", ")))
     }
 
     /// Coerce heterogeneous list elements into PyRepr for a uniform Vec<PyRepr>.
     fn gen_unknown_list_elem(&mut self, expr: &Expr) -> Result<String, CompileError> {
+        if matches!(expr.ty.as_ref(), Some(Type::List(_))) {
+            // Nested list reprs already include brackets; avoid Debug-quoting the string.
+            self.uses.py_list_str = true;
+            let elem_expr = format!("py_list_str(&{})", self.gen_expr(expr)?);
+            return Ok(format!("PyRepr({})", elem_expr));
+        }
         let elem_expr = self.gen_expr(expr)?;
         Ok(format!("PyRepr(format!(\"{{:?}}\", {}))", elem_expr))
     }
@@ -141,7 +150,7 @@ impl<'a> Codegen<'a> {
                 let len_i = items.len() as i64;
                 let mut adj = idx;
                 if adj < 0 {
-                    adj = len_i + adj;
+                    adj += len_i;
                 }
                 if adj >= 0 && adj < len_i {
                     return Ok(format!("({}).{}", base, adj));
@@ -159,6 +168,12 @@ impl<'a> Codegen<'a> {
         if matches!(value.ty.as_ref(), Some(Type::List(_)) | Some(Type::Bytes)) {
             let idx_expr = self.gen_expr(index)?;
             self.uses.py_list_get = true;
+            if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+                return Ok(self.wrap_result(format!(
+                    "py_list_get(&{}.lock().unwrap(), {})",
+                    base, idx_expr
+                )));
+            }
             return Ok(self.wrap_result(format!("py_list_get(&{}, {})", base, idx_expr)));
         }
         let idx = self.gen_expr(index)?;
@@ -306,17 +321,39 @@ impl<'a> Codegen<'a> {
             if let Some(step) = step {
                 self.uses.py_list_slice_step = true;
                 let step_arg = self.gen_expr(step)?;
-                return Ok(self.wrap_result(format!(
-                    "py_list_slice_step(&{}, {}, {}, {})",
-                    base, start_arg, end_arg, step_arg
-                )));
+                let call = if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+                    self.wrap_result(format!(
+                        "py_list_slice_step(&{}.lock().unwrap(), {}, {}, {})",
+                        base, start_arg, end_arg, step_arg
+                    ))
+                } else {
+                    self.wrap_result(format!(
+                        "py_list_slice_step(&{}, {}, {}, {})",
+                        base, start_arg, end_arg, step_arg
+                    ))
+                };
+                if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+                    return Ok(format!("Arc::new(Mutex::new({}))", call));
+                }
+                return Ok(call);
             }
             // Use the step helper with step=1 to handle negative bounds consistently.
             self.uses.py_list_slice_step = true;
-            return Ok(self.wrap_result(format!(
-                "py_list_slice_step(&{}, {}, {}, 1i64)",
-                base, start_arg, end_arg
-            )));
+            let call = if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+                self.wrap_result(format!(
+                    "py_list_slice_step(&{}.lock().unwrap(), {}, {}, 1i64)",
+                    base, start_arg, end_arg
+                ))
+            } else {
+                self.wrap_result(format!(
+                    "py_list_slice_step(&{}, {}, {}, 1i64)",
+                    base, start_arg, end_arg
+                ))
+            };
+            if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+                return Ok(format!("Arc::new(Mutex::new({}))", call));
+            }
+            return Ok(call);
         }
         Err(self.error(expr.span, "Slicing requires list or str"))
     }
@@ -342,7 +379,7 @@ impl<'a> Codegen<'a> {
         ifs: &[Expr],
     ) -> Result<String, CompileError> {
         let tmp = self.new_tmp();
-        let iter_expr = self.gen_expr(iter)?;
+        let iter_expr = self.gen_iter_source(iter)?;
         // Ensure the comprehension target is treated as a local binding while
         // generating the element and filter expressions.
         let saved_locals = self.local_vars.clone();
@@ -361,7 +398,7 @@ impl<'a> Codegen<'a> {
         let mut out = String::new();
         out.push('{');
         out.push_str(&format!(" let mut {} = Vec::new();", tmp));
-        out.push_str(&format!(" for {} in {}.into_iter() {{", target, iter_expr));
+        out.push_str(&format!(" for {} in {} {{", target, iter_expr));
         if ifs.is_empty() {
             out.push_str(&format!(" {}.push({});", tmp, elt_expr));
         } else {
@@ -373,7 +410,7 @@ impl<'a> Codegen<'a> {
             ));
         }
         out.push_str(" }");
-        out.push_str(&format!(" {} }}", tmp));
+        out.push_str(&format!(" Arc::new(Mutex::new({})) }}", tmp));
         Ok(out)
     }
 
@@ -387,7 +424,7 @@ impl<'a> Codegen<'a> {
     ) -> Result<String, CompileError> {
         self.uses.hash_set = true;
         let tmp = self.new_tmp();
-        let iter_expr = self.gen_expr(iter)?;
+        let iter_expr = self.gen_iter_source(iter)?;
         // Treat comprehension target as a local binding for element/filter generation.
         let saved_locals = self.local_vars.clone();
         let mut scoped_locals = saved_locals.clone().unwrap_or_default();
@@ -405,7 +442,7 @@ impl<'a> Codegen<'a> {
         let mut out = String::new();
         out.push('{');
         out.push_str(&format!(" let mut {} = HashSet::new();", tmp));
-        out.push_str(&format!(" for {} in {}.into_iter() {{", target, iter_expr));
+        out.push_str(&format!(" for {} in {} {{", target, iter_expr));
         if ifs.is_empty() {
             out.push_str(&format!(" {}.insert({});", tmp, elt_expr));
         } else {

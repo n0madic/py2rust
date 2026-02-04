@@ -8,7 +8,7 @@ mod util;
 use crate::diagnostic::CompileError;
 use crate::hir::*;
 use crate::span::Span;
-use crate::typecheck::{ClassInfo, TypeContext};
+use crate::typecheck::{ClassInfo, PropertyInfo, TypeContext};
 use crate::types::{Type, TypeRef};
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -48,6 +48,7 @@ pub(crate) struct Uses {
     pub(crate) py_ord: bool,
     pub(crate) py_next: bool,
     pub(crate) py_insert_index: bool,
+    pub(crate) py_list_str: bool,
     pub(crate) py_str_slice: bool,
     pub(crate) py_str_slice_step: bool,
     pub(crate) py_list_slice_step: bool,
@@ -118,6 +119,12 @@ pub struct Codegen<'a> {
     pub(crate) global_overrides: Vec<(String, String)>,
     /// Track nested lambda emission to disable Result propagation inside closures.
     pub(crate) lambda_depth: usize,
+    /// Map of class definitions for codegen lookups (defaults, super).
+    pub(crate) class_defs: HashMap<String, ClassDef>,
+    /// Map of top-level function definitions for default arguments.
+    pub(crate) function_defs: HashMap<String, Function>,
+    /// Stack of temporary name overrides for expression generation.
+    pub(crate) name_overrides: Vec<(String, String)>,
 }
 
 impl<'a> Codegen<'a> {
@@ -140,6 +147,9 @@ impl<'a> Codegen<'a> {
             initialized_globals: HashSet::new(),
             global_overrides: Vec::new(),
             lambda_depth: 0,
+            class_defs: HashMap::new(),
+            function_defs: HashMap::new(),
+            name_overrides: Vec::new(),
         }
     }
 
@@ -176,6 +186,15 @@ impl<'a> Codegen<'a> {
     /// - We don't know which imports/helpers are needed until we scan the code
     /// - String building is easier when we can append, then prepend headers
     pub fn emit_program(mut self, program: &Program) -> Result<String, CompileError> {
+        // Cache class and function definitions for codegen lookups.
+        for item in &program.items {
+            if let Item::Class(def) = item {
+                self.class_defs.insert(def.name.clone(), def.clone());
+            }
+            if let Item::Function(func) = item {
+                self.function_defs.insert(func.name.clone(), func.clone());
+            }
+        }
         // Phase 1: Scan to determine which helpers are needed
         self.collect_uses(program)?;
 
@@ -211,7 +230,7 @@ impl<'a> Codegen<'a> {
                 top_level.push(stmt.as_ref().clone());
             }
         }
-        self.emit_main(&top_level)?;
+        self.emit_main(program, &top_level)?;
 
         // Phase 4: Inject header and helpers before the generated code
         let generated_code = mem::take(&mut self.out);
