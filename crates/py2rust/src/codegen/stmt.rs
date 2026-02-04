@@ -45,6 +45,26 @@ impl<'a> Codegen<'a> {
                 }
                 if let ExprKind::Lambda { params, body } = &value.kind {
                     if let ExprKind::Block { stmts } = &body.kind {
+                        // Nested def: inside a function, emit a closure to allow captures.
+                        if self.current_function.is_some() {
+                            let expected = if let Some(ann) = ann {
+                                Some(self.resolve_type_ref(ann, stmt.span)?)
+                            } else {
+                                None
+                            };
+                            let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                            let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
+                                "mut "
+                            } else {
+                                ""
+                            };
+                            self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                            if let Some(ty) = expected.or_else(|| value.ty.clone()) {
+                                self.set_local_var_type(name, ty);
+                            }
+                            return Ok(());
+                        }
+
                         let mut param_parts = Vec::new();
                         let mut ret_ty = Type::Unknown;
                         if let Some(Type::Lambda {

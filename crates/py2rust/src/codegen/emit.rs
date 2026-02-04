@@ -793,7 +793,10 @@ impl<'a> Codegen<'a> {
     }
 
     fn needs_py_error(&self) -> bool {
-        self.top_level_can_throw || self.ctx.functions.values().any(|sig| sig.can_throw)
+        self.top_level_can_throw
+            || self.ctx.functions.values().any(|sig| sig.can_throw)
+            || self.uses.py_parse_int
+            || self.uses.py_parse_float
     }
 
     fn emit_py_error_enum(&mut self) {
