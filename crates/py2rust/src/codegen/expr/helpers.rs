@@ -1,0 +1,378 @@
+// Shared helpers for expression generation and typing behavior.
+
+use super::super::util::collect_assign_counts;
+use super::super::*;
+use std::mem;
+
+impl<'a> Codegen<'a> {
+    /// Render a list of expression arguments as a comma-separated string.
+    pub(super) fn gen_args(&mut self, args: &[Expr]) -> Result<String, CompileError> {
+        let parts: Result<Vec<String>, CompileError> =
+            args.iter().map(|a| self.gen_expr(a)).collect();
+        Ok(parts?.join(", "))
+    }
+
+    /// Generate an expression while applying an expected type when needed.
+    pub(crate) fn gen_expr_with_expected(
+        &mut self,
+        expr: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<String, CompileError> {
+        if let Some(Type::Lambda { params, .. }) = expected {
+            if let ExprKind::Lambda {
+                params: names,
+                body,
+            } = &expr.kind
+            {
+                return self.gen_lambda_with_param_types(names, body, Some(params.as_slice()));
+            }
+        }
+        if let Some(Type::Option(_)) = expected {
+            if matches!(expr.ty.as_ref(), Some(Type::Option(_))) {
+                return self.gen_expr(expr);
+            }
+            if matches!(expr.kind, ExprKind::Literal(Literal::None)) {
+                return Ok("None".to_string());
+            }
+            let inner = self.gen_expr(expr)?;
+            return Ok(format!("Some({})", inner));
+        }
+        self.gen_expr(expr)
+    }
+
+    /// Generate arguments for a user-defined function call, adding & where needed.
+    pub(super) fn gen_call_args(
+        &mut self,
+        func_name: &str,
+        args: &[Expr],
+    ) -> Result<String, CompileError> {
+        // Look up the function signature.
+        let param_types: Vec<Type> = if let Some(sig) = self.ctx.functions.get(func_name) {
+            sig.params
+                .iter()
+                .map(|t| self.to_borrowed_param_type(t))
+                .collect()
+        } else {
+            // Fallback: no signature found, use simple args.
+            return self.gen_args(args);
+        };
+
+        let mut parts = Vec::new();
+        for (idx, arg) in args.iter().enumerate() {
+            let rendered = if let Some(param_ty) = param_types.get(idx) {
+                self.gen_expr_with_expected(arg, Some(param_ty))?
+            } else {
+                self.gen_expr(arg)?
+            };
+            // Check if this parameter expects a reference.
+            if let Some(param_ty) = param_types.get(idx) {
+                if self.needs_borrow(arg.ty.as_ref(), param_ty) {
+                    parts.push(format!("&{}", rendered));
+                } else {
+                    parts.push(rendered);
+                }
+            } else {
+                parts.push(rendered);
+            }
+        }
+        Ok(parts.join(", "))
+    }
+
+    /// Check if we need to add & when passing an argument.
+    fn needs_borrow(&self, arg_ty: Option<&Type>, param_ty: &Type) -> bool {
+        match param_ty {
+            // Parameter expects a slice, argument is a list.
+            Type::Slice(_) => {
+                matches!(arg_ty, Some(Type::List(_)))
+            }
+            // Parameter expects &str, argument is String.
+            Type::Ref(inner) if matches!(inner.as_ref(), Type::Str) => {
+                matches!(arg_ty, Some(Type::Str))
+            }
+            // Parameter expects &HashMap, argument is HashMap.
+            Type::Ref(inner) if matches!(inner.as_ref(), Type::Dict(_, _)) => {
+                matches!(arg_ty, Some(Type::Dict(_, _)))
+            }
+            // Parameter expects &HashSet, argument is HashSet.
+            Type::Ref(inner) if matches!(inner.as_ref(), Type::Set(_)) => {
+                matches!(arg_ty, Some(Type::Set(_)))
+            }
+            // Parameter expects &Custom, argument is Custom.
+            Type::Ref(inner) if matches!(inner.as_ref(), Type::Custom(_)) => {
+                matches!(arg_ty, Some(Type::Custom(_)))
+            }
+            // Parameter expects &Union, argument is Union.
+            Type::Ref(inner) if matches!(inner.as_ref(), Type::Union(_)) => {
+                matches!(arg_ty, Some(Type::Union(_)))
+            }
+            _ => false,
+        }
+    }
+
+    /// Generate a numeric operand, casting ints to floats when required.
+    pub(super) fn gen_numeric_operand(
+        &mut self,
+        expr: &Expr,
+        target_float: bool,
+    ) -> Result<String, CompileError> {
+        let rendered = self.gen_expr(expr)?;
+        if target_float && matches!(expr.ty.as_ref(), Some(Type::Int)) {
+            return Ok(format!("({} as f64)", rendered));
+        }
+        Ok(rendered)
+    }
+
+    /// Build an iterator source expression that matches Python iteration semantics.
+    pub(super) fn gen_iter_source(&mut self, expr: &Expr) -> Result<String, CompileError> {
+        let rendered = self.gen_expr(expr)?;
+        let use_owned = match &expr.kind {
+            ExprKind::Name(name) => self.is_global(name),
+            _ => true,
+        };
+        match expr.ty.as_ref() {
+            // Slice references: just .iter() - items are already references.
+            Some(Type::Slice(_)) => Ok(format!("{}.iter().copied()", rendered)),
+            // Owned lists/sets need .iter().cloned() (or .copied() for Copy types).
+            Some(Type::List(inner)) | Some(Type::Set(inner)) => {
+                if use_owned {
+                    Ok(format!("{}.into_iter()", rendered))
+                } else if self.is_copy_type(inner) {
+                    Ok(format!("{}.iter().copied()", rendered))
+                } else {
+                    Ok(format!("{}.iter().cloned()", rendered))
+                }
+            }
+            Some(Type::Str) => {
+                if use_owned {
+                    Ok(format!(
+                        "{}.chars().map(|c| c.to_string()).collect::<Vec<_>>().into_iter()",
+                        rendered
+                    ))
+                } else {
+                    Ok(format!("{}.chars().map(|c| c.to_string())", rendered))
+                }
+            }
+            Some(Type::Tuple(items)) => {
+                if items.is_empty() {
+                    return Ok("std::iter::empty::<()>()".to_string());
+                }
+                let tmp = self.new_tmp();
+                let mut elems = Vec::new();
+                for (idx, ty) in items.iter().enumerate() {
+                    if self.is_copy_type(ty) {
+                        elems.push(format!("{}.{}", tmp, idx));
+                    } else {
+                        elems.push(format!("{}.{}.clone()", tmp, idx));
+                    }
+                }
+                if use_owned {
+                    Ok(format!(
+                        "{{ let {} = {}; vec![{}].into_iter() }}",
+                        tmp,
+                        rendered,
+                        elems.join(", ")
+                    ))
+                } else {
+                    Ok(format!(
+                        "{{ let {} = &{}; vec![{}].into_iter() }}",
+                        tmp,
+                        rendered,
+                        elems.join(", ")
+                    ))
+                }
+            }
+            // References to collections.
+            Some(Type::Ref(inner)) => match inner.as_ref() {
+                Type::Set(elem) => {
+                    if self.is_copy_type(elem) {
+                        Ok(format!("{}.iter().copied()", rendered))
+                    } else {
+                        Ok(format!("{}.iter().cloned()", rendered))
+                    }
+                }
+                _ => Ok(format!("{}.iter()", rendered)),
+            },
+            _ => Ok(format!("{}.into_iter()", rendered)),
+        }
+    }
+
+    /// Check if a type implements Copy (primitives).
+    pub(super) fn is_copy_type(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Int | Type::Float | Type::Bool)
+    }
+
+    /// Provide a best-effort element type hint for iterable types.
+    pub(crate) fn iter_item_type_hint(&self, ty: &Type) -> Option<Type> {
+        match ty {
+            Type::List(inner) | Type::Set(inner) => Some(*inner.clone()),
+            Type::Dict(key, _) => Some(*key.clone()),
+            Type::Tuple(items) => {
+                if items.is_empty() {
+                    None
+                } else if items.iter().all(|t| t == &items[0]) {
+                    Some(items[0].clone())
+                } else {
+                    None
+                }
+            }
+            Type::Str => Some(Type::Str),
+            Type::Iterator(inner) => Some(*inner.clone()),
+            Type::Ref(inner) | Type::MutRef(inner) | Type::Slice(inner) => {
+                self.iter_item_type_hint(inner)
+            }
+            _ => None,
+        }
+    }
+
+    /// Compute the truthiness test for a given type.
+    pub(super) fn truthy_expr_for_type(&self, expr_str: &str, ty: &Type) -> String {
+        let expr = match ty {
+            Type::Bool => expr_str.to_string(),
+            Type::Int => format!("{} != 0", expr_str),
+            Type::Float => format!("{} != 0.0", expr_str),
+            Type::Str => format!("!{}.is_empty()", expr_str),
+            Type::List(_) | Type::Set(_) | Type::Dict(_, _) => format!("!{}.is_empty()", expr_str),
+            Type::Tuple(items) => {
+                if items.is_empty() {
+                    "false".to_string()
+                } else {
+                    "true".to_string()
+                }
+            }
+            Type::None => "false".to_string(),
+            Type::Option(inner) => {
+                let inner_expr = self.truthy_expr_for_type("v", inner);
+                format!(
+                    "match {} {{ Some(v) => {}, None => false }}",
+                    expr_str, inner_expr
+                )
+            }
+            Type::Ref(inner) | Type::MutRef(inner) | Type::Slice(inner) => {
+                self.truthy_expr_for_type(expr_str, inner)
+            }
+            _ => "true".to_string(),
+        };
+        format!("({})", expr)
+    }
+
+    /// Decide whether we are in a context that expects Result propagation.
+    fn in_throwing_context(&self) -> bool {
+        if self.try_block_return_type.is_some() {
+            return true;
+        }
+        if let Some(Type::Result(_, _)) = self.current_function_ret.as_ref() {
+            return true;
+        }
+        self.current_function.is_none() && self.top_level_can_throw
+    }
+
+    /// Wrap a Result-returning expression with ? or unwrap depending on context.
+    pub(crate) fn wrap_result(&self, expr: String) -> String {
+        if self.in_throwing_context() {
+            format!("({}?)", expr)
+        } else {
+            format!("{}.unwrap()", expr)
+        }
+    }
+
+    /// Wrap parse helper results using the current throwing context.
+    pub(super) fn wrap_parse_result(&self, expr: String) -> String {
+        self.wrap_result(expr)
+    }
+
+    /// Map a type to its Python name string when available.
+    pub(super) fn python_type_name(&self, ty: &Type) -> Option<String> {
+        let name = match ty {
+            Type::Int => "int",
+            Type::Float => "float",
+            Type::Bool => "bool",
+            Type::Str => "str",
+            Type::None => "NoneType",
+            Type::List(_) => "list",
+            Type::Tuple(_) => "tuple",
+            Type::Dict(_, _) => "dict",
+            Type::Set(_) => "set",
+            Type::Custom(name) | Type::Union(name) => return Some(name.clone()),
+            _ => return None,
+        };
+        Some(name.to_string())
+    }
+
+    /// Map a type to its Python class string (e.g., "<class 'int'>").
+    pub(super) fn python_type_class(&self, ty: &Type) -> Option<String> {
+        self.python_type_name(ty)
+            .map(|name| format!("<class '{}'>", name))
+    }
+
+    /// Check if a type is already a reference type.
+    pub(super) fn is_reference_type(&self, ty: Option<&Type>) -> bool {
+        matches!(
+            ty,
+            Some(Type::Ref(_)) | Some(Type::MutRef(_)) | Some(Type::Slice(_))
+        )
+    }
+
+    /// Check if a name refers to a borrowed parameter.
+    pub(super) fn is_borrowed_param(&self, name: &str) -> bool {
+        self.borrowed_params.contains(name)
+    }
+
+    /// Emit a block expression into a temporary output buffer.
+    pub(super) fn gen_block_expr(&mut self, stmts: &[Stmt]) -> Result<String, CompileError> {
+        let mut_counts = collect_assign_counts(stmts);
+        let saved_out = mem::take(&mut self.out);
+        let saved_indent = self.indent;
+        let saved_tmp = self.tmp_counter;
+        self.out = String::new();
+        self.indent = 0;
+        self.push_line("{");
+        self.indent += 1;
+        for stmt in stmts {
+            self.emit_stmt(stmt, &mut_counts)?;
+        }
+        self.indent -= 1;
+        self.push_line("}");
+        let block = self.out.trim_end().to_string();
+        self.out = saved_out;
+        self.indent = saved_indent;
+        self.tmp_counter = saved_tmp;
+        Ok(block)
+    }
+
+    /// Build a Rust range expression for slicing with start/end.
+    pub(super) fn slice_range(
+        &mut self,
+        start: Option<&Expr>,
+        end: Option<&Expr>,
+    ) -> Result<String, CompileError> {
+        // For slicing, we can't easily use py_index without knowing the length at this point.
+        let start_str = match start {
+            Some(expr) => format!("{} as usize", self.gen_expr(expr)?),
+            None => String::new(),
+        };
+        let end_str = match end {
+            Some(expr) => format!("{} as usize", self.gen_expr(expr)?),
+            None => String::new(),
+        };
+        Ok(format!("{}..{}", start_str, end_str))
+    }
+
+    /// Decide whether to use Debug formatting when printing an expression.
+    pub(super) fn print_needs_debug(&self, expr: &Expr) -> bool {
+        let ty = match expr.ty.as_ref() {
+            Some(Type::Unknown) | None => {
+                if let ExprKind::Name(name) = &expr.kind {
+                    self.local_var_type(name)
+                } else {
+                    None
+                }
+            }
+            Some(other) => Some(other),
+        };
+        match ty {
+            Some(Type::Int | Type::Float | Type::Bool | Type::Str | Type::None) => false,
+            Some(_) => true,
+            None => true,
+        }
+    }
+}
