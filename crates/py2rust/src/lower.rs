@@ -193,18 +193,20 @@ impl<'a> Lowerer<'a> {
                 return Err(self.error(def.range, "Default arguments are not supported"));
             }
             let name_str = def.arg.to_string();
-            if idx == 0 && name_str == "self" && self_type.is_some() {
-                let ann = if let Some(ann_expr) = &def.annotation {
-                    self.lower_type_ref(ann_expr)?
-                } else {
-                    TypeRef::Name(self_type.unwrap().to_string())
-                };
-                params.push(Param {
-                    name: name_str,
-                    ann,
-                    span: Span::from(def.range),
-                });
-                continue;
+            if idx == 0 && name_str == "self" {
+                if let Some(self_name) = self_type {
+                    let ann = if let Some(ann_expr) = &def.annotation {
+                        self.lower_type_ref(ann_expr)?
+                    } else {
+                        TypeRef::Name(self_name.to_string())
+                    };
+                    params.push(Param {
+                        name: name_str,
+                        ann,
+                        span: Span::from(def.range),
+                    });
+                    continue;
+                }
             }
             let ann = match &def.annotation {
                 Some(expr) => self.lower_type_ref(expr)?,

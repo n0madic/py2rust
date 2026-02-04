@@ -145,12 +145,10 @@ impl<'a> Codegen<'a> {
                             } else {
                                 self.push_line("return None;");
                             }
+                        } else if wrap_in_ok {
+                            self.push_line("return Ok(());");
                         } else {
-                            if wrap_in_ok {
-                                self.push_line("return Ok(());");
-                            } else {
-                                self.push_line("return;");
-                            }
+                            self.push_line("return;");
                         }
                     } else {
                         let expr_str = self.gen_expr(expr)?;
@@ -160,12 +158,10 @@ impl<'a> Codegen<'a> {
                             self.push_line(&format!("return {};", expr_str));
                         }
                     }
+                } else if wrap_in_ok {
+                    self.push_line("return Ok(());");
                 } else {
-                    if wrap_in_ok {
-                        self.push_line("return Ok(());");
-                    } else {
-                        self.push_line("return;");
-                    }
+                    self.push_line("return;");
                 }
             }
             StmtKind::If { test, body, orelse } => {
@@ -756,6 +752,6 @@ impl<'a> Codegen<'a> {
         self.current_function
             .as_ref()
             .and_then(|name| self.ctx.functions.get(name))
-            .map_or(false, |sig| sig.can_throw)
+            .is_some_and(|sig| sig.can_throw)
     }
 }

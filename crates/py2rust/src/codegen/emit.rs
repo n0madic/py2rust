@@ -393,7 +393,7 @@ impl<'a> Codegen<'a> {
             .ctx
             .functions
             .get(&func.name)
-            .map_or(false, |s| s.can_throw);
+            .is_some_and(|s| s.can_throw);
         if can_throw && !self.ends_with_return(&func.body) {
             self.push_line("Ok(())");
         }
@@ -724,7 +724,7 @@ impl<'a> Codegen<'a> {
             StmtKind::Let { value, .. } | StmtKind::Assign { value, .. } => {
                 self.expr_can_throw(value)
             }
-            StmtKind::Return { value } => value.as_ref().map_or(false, |e| self.expr_can_throw(e)),
+            StmtKind::Return { value } => value.as_ref().is_some_and(|e| self.expr_can_throw(e)),
             StmtKind::If { test, body, orelse } => {
                 self.expr_can_throw(test)
                     || body.iter().any(|s| self.stmt_can_throw(s))
@@ -753,7 +753,7 @@ impl<'a> Codegen<'a> {
                     self.ctx
                         .functions
                         .get(name)
-                        .map_or(false, |sig| sig.can_throw)
+                        .is_some_and(|sig| sig.can_throw)
                 } else {
                     false
                 }
@@ -777,8 +777,8 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::Slice { value, start, end } => {
                 self.expr_can_throw(value)
-                    || start.as_ref().map_or(false, |s| self.expr_can_throw(s))
-                    || end.as_ref().map_or(false, |e| self.expr_can_throw(e))
+                    || start.as_ref().is_some_and(|s| self.expr_can_throw(s))
+                    || end.as_ref().is_some_and(|e| self.expr_can_throw(e))
             }
             ExprKind::ListComp { elt, iter, ifs, .. } => {
                 self.expr_can_throw(elt)

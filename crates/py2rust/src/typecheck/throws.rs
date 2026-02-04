@@ -29,12 +29,11 @@ impl ThrowAnalyzer {
             let mut changed = false;
             for item in &program.items {
                 if let Item::Function(func) = item {
-                    if !self.throwing_functions.contains(&func.name) {
-                        if self.has_uncaught_throwing_call(&func.body) {
+                    if !self.throwing_functions.contains(&func.name)
+                        && self.has_uncaught_throwing_call(&func.body) {
                             self.throwing_functions.insert(func.name.clone());
                             changed = true;
                         }
-                    }
                 }
             }
             if !changed {
@@ -273,10 +272,10 @@ impl ThrowAnalyzer {
                 self.expr_calls_throwing_function(value)
                     || start
                         .as_ref()
-                        .map_or(false, |s| self.expr_calls_throwing_function(s))
+                        .is_some_and(|s| self.expr_calls_throwing_function(s))
                     || end
                         .as_ref()
-                        .map_or(false, |e| self.expr_calls_throwing_function(e))
+                        .is_some_and(|e| self.expr_calls_throwing_function(e))
             }
 
             ExprKind::ListComp { elt, iter, ifs, .. } => {

@@ -481,9 +481,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn validate_exception_name(&self, name: &str, span: Span) -> Result<(), CompileError> {
-        if self.is_builtin_exception(name) {
-            Ok(())
-        } else if self.ctx.classes.contains_key(name) {
+        if self.is_builtin_exception(name) || self.ctx.classes.contains_key(name) {
             Ok(())
         } else {
             Err(self.error(span, format!("Unknown exception type: {}", name)))
