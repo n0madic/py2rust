@@ -9,6 +9,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Functions with required type annotations
 - Basic types: `int`, `float`, `bool`, `str`, `None`
 - Collections: `list[T]`, `dict[K, V]`, `tuple[...]`
+- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`
 - Control flow: `if/elif/else`, `while`, `for`, `return`, `break`, `continue`
 - Simple classes (plain data) with methods
 - Enum-like `Union` aliases via `A | B` type aliases

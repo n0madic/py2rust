@@ -512,6 +512,67 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
+                if matches!(op, CmpOp::In | CmpOp::NotIn) {
+                    let left_expr = self.gen_expr(left)?;
+                    let right_expr = self.gen_expr(right)?;
+                    let mut expr = match right.ty.as_ref() {
+                        Some(Type::List(_)) | Some(Type::Set(_)) | Some(Type::Slice(_)) => {
+                            format!("{}.contains(&{})", right_expr, left_expr)
+                        }
+                        Some(Type::Dict(_, _)) => {
+                            format!("{}.contains_key(&{})", right_expr, left_expr)
+                        }
+                        Some(Type::Str) => format!("{}.contains(&{})", right_expr, left_expr),
+                        Some(Type::Ref(inner)) => match inner.as_ref() {
+                            Type::Dict(_, _) => {
+                                format!("{}.contains_key(&{})", right_expr, left_expr)
+                            }
+                            Type::Set(_) | Type::List(_) | Type::Slice(_) => {
+                                format!("{}.contains(&{})", right_expr, left_expr)
+                            }
+                            Type::Str => format!("{}.contains(&{})", right_expr, left_expr),
+                            _ => {
+                                return Err(self.error(
+                                    expr.span,
+                                    "Membership requires list, tuple, set, dict, or str",
+                                ))
+                            }
+                        },
+                        Some(Type::Tuple(items)) => {
+                            if items.is_empty() {
+                                "false".to_string()
+                            } else {
+                                let left_tmp = self.new_tmp();
+                                let right_tmp = self.new_tmp();
+                                let mut comps = Vec::new();
+                                for idx in 0..items.len() {
+                                    comps.push(format!(
+                                        "{} == &{}.{}",
+                                        left_tmp, right_tmp, idx
+                                    ));
+                                }
+                                format!(
+                                    "{{ let {} = &{}; let {} = &{}; {} }}",
+                                    left_tmp,
+                                    left_expr,
+                                    right_tmp,
+                                    right_expr,
+                                    comps.join(" || ")
+                                )
+                            }
+                        }
+                        _ => {
+                            return Err(self.error(
+                                expr.span,
+                                "Membership requires list, tuple, set, dict, or str",
+                            ))
+                        }
+                    };
+                    if matches!(op, CmpOp::NotIn) {
+                        expr = format!("!({})", expr);
+                    }
+                    return Ok(expr);
+                }
                 if matches!(op, CmpOp::Is | CmpOp::IsNot)
                     && matches!(&right.kind, ExprKind::Literal(Literal::None))
                 {
@@ -536,6 +597,7 @@ impl<'a> Codegen<'a> {
                     CmpOp::GtEq => ">=",
                     CmpOp::Is => "==",
                     CmpOp::IsNot => "!=",
+                    CmpOp::In | CmpOp::NotIn => unreachable!(),
                 };
                 Ok(format!(
                     "({} {} {})",

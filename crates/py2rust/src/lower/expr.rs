@@ -94,7 +94,8 @@ impl<'a> Lowerer<'a> {
                     ast::CmpOp::GtE => CmpOp::GtEq,
                     ast::CmpOp::Is => CmpOp::Is,
                     ast::CmpOp::IsNot => CmpOp::IsNot,
-                    _ => return Err(self.error(expr.range(), "Unsupported comparison")),
+                    ast::CmpOp::In => CmpOp::In,
+                    ast::CmpOp::NotIn => CmpOp::NotIn,
                 };
                 ExprKind::Compare {
                     op,

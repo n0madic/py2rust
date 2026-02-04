@@ -249,6 +249,8 @@ pub enum CmpOp {
     GtEq,
     Is,
     IsNot,
+    In,
+    NotIn,
 }
 
 #[derive(Debug, Clone, Copy)]

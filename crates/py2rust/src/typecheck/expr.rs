@@ -215,16 +215,59 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Compare { op, left, right } => {
                 let left_ty = self.check_expr(left, None)?;
                 let right_ty = self.check_expr(right, None)?;
-                if matches!(left_ty, Type::Unknown) && !matches!(right_ty, Type::Unknown) {
-                    self.maybe_update_from_expr(left, &right_ty);
-                }
-                if matches!(right_ty, Type::Unknown) && !matches!(left_ty, Type::Unknown) {
-                    self.maybe_update_from_expr(right, &left_ty);
-                }
-                if matches!(left_ty, Type::Unknown) || matches!(right_ty, Type::Unknown) {
-                    return Ok(Type::Bool);
-                }
                 match op {
+                    CmpOp::In | CmpOp::NotIn => {
+                        if matches!(right_ty, Type::Unknown) {
+                            return Ok(Type::Bool);
+                        }
+                        let elem_ty = match &right_ty {
+                            Type::List(inner) | Type::Set(inner) => (*inner.as_ref()).clone(),
+                            Type::Dict(key, _) => (*key.as_ref()).clone(),
+                            Type::Str => Type::Str,
+                            Type::Tuple(items) => {
+                                let mut candidate: Option<&Type> = None;
+                                for item in items {
+                                    if matches!(item, Type::Unknown) {
+                                        continue;
+                                    }
+                                    if let Some(existing) = candidate {
+                                        if item != existing {
+                                            return Err(self.error(
+                                                expr.span,
+                                                "Tuple membership requires homogeneous element types",
+                                            ));
+                                        }
+                                    } else {
+                                        candidate = Some(item);
+                                    }
+                                }
+                                candidate.cloned().unwrap_or(Type::Unknown)
+                            }
+                            _ => {
+                                return Err(self.error(
+                                    expr.span,
+                                    "Membership requires list, tuple, set, dict, or str",
+                                ))
+                            }
+                        };
+
+                        if matches!(left_ty, Type::Unknown) {
+                            if !matches!(elem_ty, Type::Unknown) {
+                                self.maybe_update_from_expr(left, &elem_ty);
+                            }
+                            return Ok(Type::Bool);
+                        }
+                        if matches!(elem_ty, Type::Unknown) {
+                            return Ok(Type::Bool);
+                        }
+                        if left_ty != elem_ty {
+                            return Err(self.error(
+                                expr.span,
+                                "Membership requires matching element type",
+                            ));
+                        }
+                        Type::Bool
+                    }
                     CmpOp::Is | CmpOp::IsNot => {
                         if matches!(right_ty, Type::None)
                             && !left_ty.is_optional()
@@ -232,14 +275,24 @@ impl<'a> TypeChecker<'a> {
                         {
                             return Err(self.error(expr.span, "is None requires Optional type"));
                         }
+                        Type::Bool
                     }
                     _ => {
+                        if matches!(left_ty, Type::Unknown) && !matches!(right_ty, Type::Unknown) {
+                            self.maybe_update_from_expr(left, &right_ty);
+                        }
+                        if matches!(right_ty, Type::Unknown) && !matches!(left_ty, Type::Unknown) {
+                            self.maybe_update_from_expr(right, &left_ty);
+                        }
+                        if matches!(left_ty, Type::Unknown) || matches!(right_ty, Type::Unknown) {
+                            return Ok(Type::Bool);
+                        }
                         if left_ty != right_ty {
                             return Err(self.error(expr.span, "Comparison requires matching types"));
                         }
+                        Type::Bool
                     }
                 }
-                Type::Bool
             }
             ExprKind::BoolOp { op: _, values } => {
                 for v in values {

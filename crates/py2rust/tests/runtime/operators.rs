@@ -67,6 +67,23 @@ def test_comparison() -> None:
     assert 5 != 6
     assert not (5 != 5)
 
+    # Membership
+    vals: list[int] = [1, 2, 3]
+    assert 2 in vals
+    assert 4 not in vals
+
+    text: str = "abc"
+    assert "a" in text
+    assert "d" not in text
+
+    d: dict[str, int] = {"a": 1}
+    assert "a" in d
+    assert "b" not in d
+
+    s: set[int] = {1, 2}
+    assert 2 in s
+    assert 3 not in s
+
 # Boolean logic
 def test_boolean() -> None:
     # Basic boolean values
