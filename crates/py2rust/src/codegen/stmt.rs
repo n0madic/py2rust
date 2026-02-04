@@ -477,9 +477,15 @@ impl<'a> Codegen<'a> {
                             ) {
                                 let idx_raw = self.gen_expr(index)?;
                                 self.uses.py_index = true;
-                                let idx_expr = self
-                                    .wrap_result(format!("py_index({}, {}.len())", idx_raw, guard));
-                                self.push_line(&format!("{}[{}] = {};", guard, idx_expr, val_expr));
+                                let len_tmp = self.new_tmp();
+                                let idx_tmp = self.new_tmp();
+                                self.push_line(&format!("let {} = {}.len();", len_tmp, guard));
+                                self.push_line(&format!(
+                                    "let {} = {};",
+                                    idx_tmp,
+                                    self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp))
+                                ));
+                                self.push_line(&format!("{}[{}] = {};", guard, idx_tmp, val_expr));
                             }
                             self.indent -= 1;
                             self.push_line("}");
@@ -499,9 +505,15 @@ impl<'a> Codegen<'a> {
                     ) {
                         let idx_raw = self.gen_expr(index)?;
                         self.uses.py_index = true;
-                        let idx_expr =
-                            self.wrap_result(format!("py_index({}, {}.len())", idx_raw, cont_expr));
-                        self.push_line(&format!("{}[{}] = {};", cont_expr, idx_expr, val_expr));
+                        let len_tmp = self.new_tmp();
+                        let idx_tmp = self.new_tmp();
+                        self.push_line(&format!("let {} = {}.len();", len_tmp, cont_expr));
+                        self.push_line(&format!(
+                            "let {} = {};",
+                            idx_tmp,
+                            self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp))
+                        ));
+                        self.push_line(&format!("{}[{}] = {};", cont_expr, idx_tmp, val_expr));
                     } else {
                         let idx_expr = self.gen_expr(index)?;
                         self.push_line(&format!("{}[{}] = {};", cont_expr, idx_expr, val_expr));
