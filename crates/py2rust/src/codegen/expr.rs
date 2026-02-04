@@ -55,6 +55,9 @@ impl<'a> Codegen<'a> {
                             return Ok("py_print(\"\")".to_string());
                         }
                         if args.len() == 1 {
+                            if matches!(args[0].ty.as_ref(), Some(Type::None)) {
+                                return Ok("py_print(String::from(\"None\"))".to_string());
+                            }
                             let arg_expr = self.gen_expr(&args[0])?;
                             if self.print_needs_debug(&args[0]) {
                                 return Ok(format!("py_print(format!(\"{{:?}}\", {}))", arg_expr));
@@ -67,13 +70,18 @@ impl<'a> Codegen<'a> {
                             if idx > 0 {
                                 fmt.push(' ');
                             }
-                            let spec = if self.print_needs_debug(arg) {
-                                "{:?}"
+                            if matches!(arg.ty.as_ref(), Some(Type::None)) {
+                                fmt.push_str("{}");
+                                vals.push("String::from(\"None\")".to_string());
                             } else {
-                                "{}"
-                            };
-                            fmt.push_str(spec);
-                            vals.push(self.gen_expr(arg)?);
+                                let spec = if self.print_needs_debug(arg) {
+                                    "{:?}"
+                                } else {
+                                    "{}"
+                                };
+                                fmt.push_str(spec);
+                                vals.push(self.gen_expr(arg)?);
+                            }
                         }
                         return Ok(format!(
                             "py_print(format!(\"{}\", {}))",
