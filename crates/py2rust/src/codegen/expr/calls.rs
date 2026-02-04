@@ -716,6 +716,296 @@ impl<'a> Codegen<'a> {
                 return Ok(format!("{}.extend({}.iter().cloned())", target, arg_expr));
             }
         }
+        if attr == "pop" {
+            if let Some(Type::List(_)) = value.ty.as_ref() {
+                if args.len() > 1 {
+                    return Err(self.error(value.span, "list.pop() expects zero or one argument"));
+                }
+                let idx_arg = args.get(0);
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        if let Some(arg) = idx_arg {
+                            let idx_raw = self.gen_expr(arg)?;
+                            self.uses.py_index = true;
+                            let len_tmp = self.new_tmp();
+                            let idx_tmp = self.new_tmp();
+                            return Ok(format!(
+                                "{{ let mut {guard} = {lock}; let {len_tmp} = {guard}.len(); let {idx_tmp} = {idx_expr}; {guard}.remove({idx_tmp}) }}",
+                                guard = guard,
+                                lock = self.global_lock_expr(name),
+                                len_tmp = len_tmp,
+                                idx_tmp = idx_tmp,
+                                idx_expr = self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp)),
+                            ));
+                        }
+                        let pop_expr = format!(
+                            "{}.pop().ok_or_else(|| PyError::IndexError(String::from(\"IndexError\")))",
+                            guard
+                        );
+                        return Ok(format!(
+                            "{{ let mut {guard} = {lock}; {pop} }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name),
+                            pop = self.wrap_result(pop_expr),
+                        ));
+                    }
+                }
+
+                let target_expr = self.gen_expr(value)?;
+                // For non-name targets, evaluate once into a mutable temporary.
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    if let Some(arg) = idx_arg {
+                        let idx_raw = self.gen_expr(arg)?;
+                        self.uses.py_index = true;
+                        let len_tmp = self.new_tmp();
+                        let idx_tmp = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let mut {tmp} = {target}; let {len_tmp} = {tmp}.len(); let {idx_tmp} = {idx_expr}; {tmp}.remove({idx_tmp}) }}",
+                            tmp = tmp,
+                            target = target_expr,
+                            len_tmp = len_tmp,
+                            idx_tmp = idx_tmp,
+                            idx_expr = self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp)),
+                        ));
+                    }
+                    let pop_expr = format!(
+                        "{}.pop().ok_or_else(|| PyError::IndexError(String::from(\"IndexError\")))",
+                        tmp
+                    );
+                    return Ok(format!(
+                        "{{ let mut {tmp} = {target}; {pop} }}",
+                        tmp = tmp,
+                        target = target_expr,
+                        pop = self.wrap_result(pop_expr),
+                    ));
+                }
+
+                // Simple local name: emit direct mutation.
+                if let Some(arg) = idx_arg {
+                    let idx_raw = self.gen_expr(arg)?;
+                    self.uses.py_index = true;
+                    let len_tmp = self.new_tmp();
+                    let idx_tmp = self.new_tmp();
+                    return Ok(format!(
+                        "{{ let {len_tmp} = {target}.len(); let {idx_tmp} = {idx_expr}; {target}.remove({idx_tmp}) }}",
+                        len_tmp = len_tmp,
+                        target = target_expr,
+                        idx_tmp = idx_tmp,
+                        idx_expr = self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp)),
+                    ));
+                }
+                let pop_expr = format!(
+                    "{}.pop().ok_or_else(|| PyError::IndexError(String::from(\"IndexError\")))",
+                    target_expr
+                );
+                return Ok(self.wrap_result(pop_expr));
+            }
+        }
+        if attr == "insert" {
+            if let Some(Type::List(inner)) = value.ty.as_ref() {
+                if args.len() != 2 {
+                    return Err(self.error(value.span, "list.insert() expects two arguments"));
+                }
+                let idx_raw = self.gen_expr(&args[0])?;
+                let val_expr = self.gen_expr_with_expected(&args[1], Some(inner.as_ref()))?;
+                self.uses.py_insert_index = true;
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        let len_tmp = self.new_tmp();
+                        let idx_tmp = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let mut {guard} = {lock}; let {len_tmp} = {guard}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {guard}.insert({idx_tmp}, {val}); }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name),
+                            len_tmp = len_tmp,
+                            idx_tmp = idx_tmp,
+                            idx_raw = idx_raw,
+                            val = val_expr
+                        ));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    let len_tmp = self.new_tmp();
+                    let idx_tmp = self.new_tmp();
+                    return Ok(format!(
+                        "{{ let mut {tmp} = {target}; let {len_tmp} = {tmp}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {tmp}.insert({idx_tmp}, {val}); }}",
+                        tmp = tmp,
+                        target = target_expr,
+                        len_tmp = len_tmp,
+                        idx_tmp = idx_tmp,
+                        idx_raw = idx_raw,
+                        val = val_expr
+                    ));
+                }
+                let len_tmp = self.new_tmp();
+                let idx_tmp = self.new_tmp();
+                return Ok(format!(
+                    "{{ let {len_tmp} = {target}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {target}.insert({idx_tmp}, {val}); }}",
+                    len_tmp = len_tmp,
+                    idx_tmp = idx_tmp,
+                    idx_raw = idx_raw,
+                    target = target_expr,
+                    val = val_expr
+                ));
+            }
+        }
+        if attr == "clear" {
+            if let Some(Type::List(_)) = value.ty.as_ref() {
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "list.clear() expects no arguments"));
+                }
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let mut {guard} = {lock}; {guard}.clear(); }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name)
+                        ));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    return Ok(format!(
+                        "{{ let mut {tmp} = {target}; {tmp}.clear(); }}",
+                        tmp = tmp,
+                        target = target_expr
+                    ));
+                }
+                return Ok(format!("{}.clear()", target_expr));
+            }
+        }
+        if attr == "copy" {
+            if let Some(Type::List(_)) = value.ty.as_ref() {
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "list.copy() expects no arguments"));
+                }
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        return Ok(format!("{}.clone()", self.global_lock_expr(name)));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                return Ok(format!("{}.clone()", target_expr));
+            }
+        }
+        if attr == "reverse" {
+            if let Some(Type::List(_)) = value.ty.as_ref() {
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "list.reverse() expects no arguments"));
+                }
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let mut {guard} = {lock}; {guard}.reverse(); }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name)
+                        ));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    return Ok(format!(
+                        "{{ let mut {tmp} = {target}; {tmp}.reverse(); }}",
+                        tmp = tmp,
+                        target = target_expr
+                    ));
+                }
+                return Ok(format!("{}.reverse()", target_expr));
+            }
+        }
+        if attr == "index" {
+            if let Some(Type::List(_)) = value.ty.as_ref() {
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "list.index() expects one argument"));
+                }
+                self.uses.py_list_index = true;
+                let needle_expr = self.gen_expr(&args[0])?;
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        let call = format!(
+                            "py_list_index(&{guard}, &{needle})",
+                            guard = guard,
+                            needle = needle_expr
+                        );
+                        return Ok(format!(
+                            "{{ let {guard} = {lock}; {result} }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name),
+                            result = self.wrap_result(call)
+                        ));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                let call = format!("py_list_index(&{}, &{})", target_expr, needle_expr);
+                return Ok(self.wrap_result(call));
+            }
+        }
+        if attr == "sort" {
+            if let Some(Type::List(inner)) = value.ty.as_ref() {
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "list.sort() expects no arguments"));
+                }
+                let sort_call = if matches!(inner.as_ref(), Type::Float) {
+                    "sort_by(|a, b| a.partial_cmp(b).unwrap())"
+                } else {
+                    "sort()"
+                };
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let mut {guard} = {lock}; {guard}.{sort_call}; }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name),
+                            sort_call = sort_call
+                        ));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    return Ok(format!(
+                        "{{ let mut {tmp} = {target}; {tmp}.{sort_call}; }}",
+                        tmp = tmp,
+                        target = target_expr,
+                        sort_call = sort_call
+                    ));
+                }
+                return Ok(format!("{}.{}", target_expr, sort_call));
+            }
+        }
+        if attr == "count" {
+            if let Some(Type::List(_)) = value.ty.as_ref() {
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "list.count() expects one argument"));
+                }
+                self.uses.py_list_count = true;
+                let needle_expr = self.gen_expr(&args[0])?;
+                if let ExprKind::Name(name) = &value.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let {guard} = {lock}; py_list_count(&{guard}, &{needle}) }}",
+                            guard = guard,
+                            lock = self.global_lock_expr(name),
+                            needle = needle_expr
+                        ));
+                    }
+                }
+                let target_expr = self.gen_expr(value)?;
+                return Ok(format!("py_list_count(&{}, &{})", target_expr, needle_expr));
+            }
+        }
         if attr == "add" {
             if let Some(Type::Set(_)) = value.ty.as_ref() {
                 self.uses.hash_set = true;

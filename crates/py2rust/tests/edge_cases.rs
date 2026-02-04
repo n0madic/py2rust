@@ -190,7 +190,7 @@ def test() -> int:
         compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should contain the py_max helper definition
     assert!(
-        out.rust.contains("fn py_max<T: Ord"),
+        out.rust.contains("fn py_max<T: PartialOrd"),
         "Should emit py_max helper"
     );
     assert!(
@@ -209,7 +209,7 @@ def test() -> int:
         compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     // Should contain the py_min helper definition
     assert!(
-        out.rust.contains("fn py_min<T: Ord"),
+        out.rust.contains("fn py_min<T: PartialOrd"),
         "Should emit py_min helper"
     );
     assert!(

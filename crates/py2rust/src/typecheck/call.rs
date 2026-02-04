@@ -583,6 +583,104 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                    if attr == "pop" {
+                        if args.len() > 1 {
+                            return Err(self.error(span, "list.pop() expects zero or one argument"));
+                        }
+                        if args.len() == 1 {
+                            let arg_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                            self.ensure_assignable(&arg_ty, &Type::Int, span)?;
+                        }
+                        return Ok((*inner.as_ref()).clone());
+                    }
+                    if attr == "insert" {
+                        if args.len() != 2 {
+                            return Err(self.error(span, "list.insert() expects two arguments"));
+                        }
+                        let idx_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                        self.ensure_assignable(&idx_ty, &Type::Int, span)?;
+                        let val_ty = self.check_expr(&mut args[1], Some(inner))?;
+                        if !matches!(val_ty, Type::Unknown)
+                            && !matches!(inner.as_ref(), Type::Unknown)
+                        {
+                            self.ensure_assignable(&val_ty, inner, span)?;
+                        }
+                        if matches!(inner.as_ref(), Type::Unknown)
+                            && !matches!(val_ty, Type::Unknown)
+                        {
+                            if let ExprKind::Name(name) = &value.kind {
+                                self.set_var_type(name, Type::List(Box::new(val_ty.clone())));
+                            }
+                        }
+                        return Ok(Type::None);
+                    }
+                    if attr == "clear" {
+                        if !args.is_empty() {
+                            return Err(self.error(span, "list.clear() expects no arguments"));
+                        }
+                        return Ok(Type::None);
+                    }
+                    if attr == "copy" {
+                        if !args.is_empty() {
+                            return Err(self.error(span, "list.copy() expects no arguments"));
+                        }
+                        return Ok(Type::List(Box::new((*inner.as_ref()).clone())));
+                    }
+                    if attr == "reverse" {
+                        if !args.is_empty() {
+                            return Err(self.error(span, "list.reverse() expects no arguments"));
+                        }
+                        return Ok(Type::None);
+                    }
+                    if attr == "index" {
+                        if args.len() != 1 {
+                            return Err(self.error(span, "list.index() expects one argument"));
+                        }
+                        let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
+                        if !matches!(arg_ty, Type::Unknown)
+                            && !matches!(inner.as_ref(), Type::Unknown)
+                        {
+                            self.ensure_assignable(&arg_ty, inner, span)?;
+                        }
+                        if matches!(inner.as_ref(), Type::Unknown)
+                            && !matches!(arg_ty, Type::Unknown)
+                        {
+                            if let ExprKind::Name(name) = &value.kind {
+                                self.set_var_type(name, Type::List(Box::new(arg_ty.clone())));
+                            }
+                        }
+                        return Ok(Type::Int);
+                    }
+                    if attr == "count" {
+                        if args.len() != 1 {
+                            return Err(self.error(span, "list.count() expects one argument"));
+                        }
+                        let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
+                        if !matches!(arg_ty, Type::Unknown)
+                            && !matches!(inner.as_ref(), Type::Unknown)
+                        {
+                            self.ensure_assignable(&arg_ty, inner, span)?;
+                        }
+                        if matches!(inner.as_ref(), Type::Unknown)
+                            && !matches!(arg_ty, Type::Unknown)
+                        {
+                            if let ExprKind::Name(name) = &value.kind {
+                                self.set_var_type(name, Type::List(Box::new(arg_ty.clone())));
+                            }
+                        }
+                        return Ok(Type::Int);
+                    }
+                    if attr == "sort" {
+                        if !args.is_empty() {
+                            return Err(self.error(span, "list.sort() expects no arguments"));
+                        }
+                        match inner.as_ref() {
+                            Type::Int | Type::Float | Type::Str | Type::Unknown => Ok(Type::None),
+                            _ => Err(self
+                                .error(span, "list.sort() requires int, float, or str elements")),
+                        }?;
+                        return Ok(Type::None);
+                    }
                 }
                 if let Type::Set(inner) = &obj_ty {
                     if attr == "add" {
@@ -615,6 +713,82 @@ impl<'a> TypeChecker<'a> {
                             self.ensure_assignable(&arg_ty, inner, span)?;
                         }
                         return Ok(Type::None);
+                    }
+                    if attr == "extend" {
+                        if args.len() != 1 {
+                            return Err(self.error(span, "list.extend() expects one argument"));
+                        }
+                        let arg_ty = self.check_expr(&mut args[0], None)?;
+                        match arg_ty {
+                            Type::List(arg_inner) => {
+                                if !matches!(inner.as_ref(), Type::Unknown)
+                                    && !matches!(arg_inner.as_ref(), Type::Unknown)
+                                {
+                                    self.ensure_assignable(&arg_inner, inner, span)?;
+                                }
+                                if matches!(inner.as_ref(), Type::Unknown)
+                                    && !matches!(arg_inner.as_ref(), Type::Unknown)
+                                {
+                                    if let ExprKind::Name(name) = &value.kind {
+                                        self.set_var_type(
+                                            name,
+                                            Type::List(Box::new((*arg_inner).clone())),
+                                        );
+                                    }
+                                }
+                                return Ok(Type::None);
+                            }
+                            Type::Tuple(items) => {
+                                let mut candidate: Option<Type> = None;
+                                for item in items.iter() {
+                                    if matches!(item, Type::Unknown) {
+                                        continue;
+                                    }
+                                    if let Some(existing) = candidate.as_ref() {
+                                        if existing.is_numeric() && item.is_numeric() {
+                                            if matches!(existing, Type::Float)
+                                                || matches!(item, Type::Float)
+                                            {
+                                                candidate = Some(Type::Float);
+                                            }
+                                        } else if existing != item {
+                                            return Err(self.error(
+                                                span,
+                                                "list.extend() requires homogeneous tuple elements",
+                                            ));
+                                        }
+                                    } else {
+                                        candidate = Some(item.clone());
+                                    }
+                                }
+                                if let Some(elem_ty) = candidate.as_ref() {
+                                    if !matches!(inner.as_ref(), Type::Unknown) {
+                                        self.ensure_assignable(elem_ty, inner, span)?;
+                                    } else if let ExprKind::Name(name) = &value.kind {
+                                        self.set_var_type(
+                                            name,
+                                            Type::List(Box::new(elem_ty.clone())),
+                                        );
+                                    }
+                                }
+                                return Ok(Type::None);
+                            }
+                            Type::Unknown => return Ok(Type::None),
+                            _ => {
+                                return Err(self
+                                    .error(span, "list.extend() expects a list or tuple argument"))
+                            }
+                        }
+                    }
+                    if attr == "pop" {
+                        if args.len() > 1 {
+                            return Err(self.error(span, "list.pop() expects zero or one argument"));
+                        }
+                        if args.len() == 1 {
+                            let arg_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                            self.ensure_assignable(&arg_ty, &Type::Int, span)?;
+                        }
+                        return Ok((*inner.as_ref()).clone());
                     }
                 }
                 if attr == "format" {

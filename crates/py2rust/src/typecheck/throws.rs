@@ -318,6 +318,13 @@ impl ThrowAnalyzer {
                         return true;
                     }
                 }
+                if let ExprKind::Attr { value, attr } = &func.kind {
+                    if matches!(value.ty.as_ref(), Some(Type::List(_)))
+                        && matches!(attr.as_str(), "pop" | "index")
+                    {
+                        return true;
+                    }
+                }
 
                 if self.expr_calls_throwing_function(func) {
                     return true;

@@ -12,6 +12,8 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`
 - Control flow: `if/elif/else`, `while`, `for`, `return`, `break`, `continue`
 - Tuple/list unpacking assignments (including nested)
+- Negative indexing and slicing for lists/tuples (including step)
+- List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`
 - Simple classes (plain data) with methods
 - Enum-like `Union` aliases via `A | B` type aliases
 - `match/case` on union variants
@@ -63,8 +65,9 @@ The generated Rust injects tiny helper functions only when needed:
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
 - Keyword arguments are supported only for `dict()`; other keyword args are rejected.
 - `__init__` is treated as a constructor; it must only assign `self` fields.
-- `dict` indexing uses `HashMap` indexing and will panic on missing keys.
-- String slicing uses byte offsets (Rust rules apply).
+- `dict` indexing raises `KeyError` (propagated as `PyError`).
+- Tuple slicing requires literal integer bounds (including negative literals).
+- String slicing is character-based (Unicode scalar values).
 - f-strings support literal-only format specs (limited subset).
 
 ## Example

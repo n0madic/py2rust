@@ -18,13 +18,34 @@ impl<'a> Codegen<'a> {
                 if !matches!(inner.as_ref(), Type::Unknown) {
                     return Ok(format!("Vec::<{}>::new()", self.rust_type(inner)));
                 }
+                // Default unknown empty lists to Vec<PyRepr> for consistent Debug output.
+                self.uses.py_repr = true;
+                return Ok("Vec::<PyRepr>::new()".to_string());
             }
+        }
+        // If element types don't unify, coerce to a String-based list for Debug printing.
+        if matches!(
+            expr.ty.as_ref(),
+            Some(Type::List(inner)) if matches!(inner.as_ref(), Type::Unknown)
+        ) {
+            self.uses.py_repr = true;
+            let elems: Result<Vec<String>, CompileError> = items
+                .iter()
+                .map(|e| self.gen_unknown_list_elem(e))
+                .collect();
+            return Ok(format!("vec![{}]", elems?.join(", ")));
         }
         let elems: Result<Vec<String>, CompileError> = items
             .iter()
             .map(|e| self.gen_expr_with_expected(e, expected))
             .collect();
         Ok(format!("vec![{}]", elems?.join(", ")))
+    }
+
+    /// Coerce heterogeneous list elements into PyRepr for a uniform Vec<PyRepr>.
+    fn gen_unknown_list_elem(&mut self, expr: &Expr) -> Result<String, CompileError> {
+        let elem_expr = self.gen_expr(expr)?;
+        Ok(format!("PyRepr(format!(\"{{:?}}\", {}))", elem_expr))
     }
 
     /// Lower a tuple literal expression.
@@ -97,14 +118,36 @@ impl<'a> Codegen<'a> {
     /// Lower indexing expressions, including tuple, dict, and list special cases.
     pub(super) fn gen_index_expr(
         &mut self,
-        _expr: &Expr,
+        expr: &Expr,
         value: &Expr,
         index: &Expr,
     ) -> Result<String, CompileError> {
         let base = self.gen_expr(value)?;
-        if let Some(Type::Tuple(_)) = value.ty.as_ref() {
-            if let ExprKind::Literal(Literal::Int(idx)) = &index.kind {
-                return Ok(format!("({}).{}", base, idx));
+        if let Some(Type::Tuple(items)) = value.ty.as_ref() {
+            let idx_opt = match &index.kind {
+                ExprKind::Literal(Literal::Int(idx)) => Some(*idx),
+                ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr: inner,
+                } => {
+                    if let ExprKind::Literal(Literal::Int(idx)) = &inner.as_ref().kind {
+                        Some(-idx)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(idx) = idx_opt {
+                let len_i = items.len() as i64;
+                let mut adj = idx;
+                if adj < 0 {
+                    adj = len_i + adj;
+                }
+                if adj >= 0 && adj < len_i {
+                    return Ok(format!("({}).{}", base, adj));
+                }
+                return Err(self.error(expr.span, "Tuple index out of bounds"));
             }
         }
         if let Some(Type::Dict(_, _)) = value.ty.as_ref() {
@@ -133,6 +176,109 @@ impl<'a> Codegen<'a> {
         step: Option<&Expr>,
     ) -> Result<String, CompileError> {
         let base = self.gen_expr(value)?;
+        if let Some(Type::Tuple(items)) = value.ty.as_ref() {
+            // Tuple slicing is only supported for literal bounds.
+            let lit_int = |expr: &Expr| -> Option<i64> {
+                match &expr.kind {
+                    ExprKind::Literal(Literal::Int(idx)) => Some(*idx),
+                    ExprKind::Unary {
+                        op: UnaryOp::Neg,
+                        expr,
+                    } => {
+                        if let ExprKind::Literal(Literal::Int(idx)) = &expr.as_ref().kind {
+                            Some(-idx)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            };
+            let start_lit = start.and_then(lit_int);
+            let end_lit = end.and_then(lit_int);
+            let step_lit = match step {
+                Some(st) => lit_int(st).ok_or_else(|| {
+                    self.error(expr.span, "Tuple slicing requires literal bounds")
+                })?,
+                None => 1,
+            };
+            if step_lit == 0 {
+                return Err(self.error(expr.span, "Slice step cannot be zero"));
+            }
+            if (start.is_some() && start_lit.is_none()) || (end.is_some() && end_lit.is_none()) {
+                return Err(self.error(expr.span, "Tuple slicing requires literal bounds"));
+            }
+
+            let len = items.len() as i64;
+            let mut indices = Vec::new();
+            if step_lit > 0 {
+                let mut i = match start_lit {
+                    Some(s) => {
+                        let s = if s < 0 { len + s } else { s };
+                        s.max(0).min(len)
+                    }
+                    None => 0,
+                };
+                let end_i = match end_lit {
+                    Some(e) => {
+                        let e = if e < 0 { len + e } else { e };
+                        e.max(0).min(len)
+                    }
+                    None => len,
+                };
+                while i < end_i {
+                    if i >= 0 && i < len {
+                        indices.push(i as usize);
+                    }
+                    i += step_lit;
+                }
+            } else {
+                let mut i = match start_lit {
+                    Some(s) => {
+                        let s = if s < 0 { len + s } else { s };
+                        if s < 0 {
+                            -1
+                        } else if s >= len {
+                            len - 1
+                        } else {
+                            s
+                        }
+                    }
+                    None => len - 1,
+                };
+                let end_i = match end_lit {
+                    Some(e) => {
+                        let e = if e < 0 { len + e } else { e };
+                        if e < 0 {
+                            -1
+                        } else if e >= len {
+                            len - 1
+                        } else {
+                            e
+                        }
+                    }
+                    None => -1,
+                };
+                while i > end_i {
+                    if i >= 0 && i < len {
+                        indices.push(i as usize);
+                    }
+                    i += step_lit;
+                }
+            }
+
+            let needs_tmp = match &value.kind {
+                ExprKind::Name(name) => self.is_global(name),
+                _ => true,
+            };
+            // Global tuple reads must be cached to avoid multiple mutex locks in one statement.
+            if needs_tmp {
+                let tmp = self.new_tmp();
+                let tuple = self.build_tuple_from_indices(&tmp, &indices);
+                return Ok(format!("{{ let {} = {}; {} }}", tmp, base, tuple));
+            }
+            return Ok(self.build_tuple_from_indices(&base, &indices));
+        }
         let start_arg = match start {
             Some(s) => format!("Some({})", self.gen_expr(s)?),
             None => "None".to_string(),
@@ -166,10 +312,26 @@ impl<'a> Codegen<'a> {
                     base, start_arg, end_arg, step_arg
                 )));
             }
-            let range = self.slice_range(start, end)?;
-            return Ok(format!("{}[{}].to_vec()", base, range));
+            // Use the step helper with step=1 to handle negative bounds consistently.
+            self.uses.py_list_slice_step = true;
+            return Ok(self.wrap_result(format!(
+                "py_list_slice_step(&{}, {}, {}, 1i64)",
+                base, start_arg, end_arg
+            )));
         }
         Err(self.error(expr.span, "Slicing requires list or str"))
+    }
+
+    /// Build a tuple literal from selected indices of a tuple expression.
+    fn build_tuple_from_indices(&self, base: &str, indices: &[usize]) -> String {
+        if indices.is_empty() {
+            return "()".to_string();
+        }
+        if indices.len() == 1 {
+            return format!("({}.{},)", base, indices[0]);
+        }
+        let parts: Vec<String> = indices.iter().map(|i| format!("{}.{}", base, i)).collect();
+        format!("({})", parts.join(", "))
     }
 
     /// Lower list comprehension expressions.

@@ -392,6 +392,23 @@ impl<'a> TypeChecker<'a> {
                                         || matches!(rk.as_ref(), Type::Unknown)
                                         || matches!(rv.as_ref(), Type::Unknown)
                                 }
+                                (Type::Tuple(l), Type::Tuple(r)) => {
+                                    if l.is_empty() || r.is_empty() {
+                                        true
+                                    } else {
+                                        let hom_l = l
+                                            .first()
+                                            .is_some_and(|first| l.iter().all(|t| t == first));
+                                        let hom_r = r
+                                            .first()
+                                            .is_some_and(|first| r.iter().all(|t| t == first));
+                                        if hom_l && hom_r {
+                                            l.first() == r.first()
+                                        } else {
+                                            false
+                                        }
+                                    }
+                                }
                                 _ => false,
                             };
                             if !opt_matches && !container_unknown_matches {
@@ -426,10 +443,11 @@ impl<'a> TypeChecker<'a> {
                         Type::List(Box::new(Type::Unknown))
                     }
                 } else {
-                    let mut elem_ty = match expected {
+                    let expected_inner = match expected {
                         Some(Type::List(inner)) => Some((*inner.as_ref()).clone()),
                         _ => None,
                     };
+                    let mut elem_ty = expected_inner.clone();
                     if elem_ty.is_none() {
                         for item in items.iter_mut() {
                             let ty = self.check_expr(item, None)?;
@@ -440,11 +458,25 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     if let Some(elem_ty) = elem_ty {
+                        let mut all_ok = true;
                         for item in items.iter_mut() {
                             let ty = self.check_expr(item, Some(&elem_ty))?;
-                            self.ensure_assignable(&ty, &elem_ty, expr.span)?;
+                            if !matches!(ty, Type::Unknown)
+                                && !matches!(elem_ty, Type::Unknown)
+                                && self.ensure_assignable(&ty, &elem_ty, expr.span).is_err()
+                            {
+                                all_ok = false;
+                                if expected_inner.is_some() {
+                                    return Err(self.error(expr.span, "List element type mismatch"));
+                                }
+                                break;
+                            }
                         }
-                        Type::List(Box::new(elem_ty))
+                        if all_ok {
+                            Type::List(Box::new(elem_ty))
+                        } else {
+                            Type::List(Box::new(Type::Unknown))
+                        }
                     } else {
                         Type::List(Box::new(Type::Unknown))
                     }
@@ -519,12 +551,30 @@ impl<'a> TypeChecker<'a> {
                     }
                     Type::Tuple(items) => {
                         // Tuple indexing: if literal index, check bounds and return specific type
-                        if let ExprKind::Literal(Literal::Int(idx)) = &index.as_ref().kind {
-                            let idx = *idx as usize;
-                            if idx >= items.len() {
+                        let idx_opt = match &index.as_ref().kind {
+                            ExprKind::Literal(Literal::Int(idx)) => Some(*idx),
+                            ExprKind::Unary {
+                                op: UnaryOp::Neg,
+                                expr,
+                            } => {
+                                if let ExprKind::Literal(Literal::Int(idx)) = &expr.as_ref().kind {
+                                    Some(-idx)
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some(idx) = idx_opt {
+                            let len_i = items.len() as i64;
+                            let mut adj = idx;
+                            if adj < 0 {
+                                adj = len_i + adj;
+                            }
+                            if adj < 0 || adj >= len_i {
                                 return Err(self.error(expr.span, "Tuple index out of bounds"));
                             }
-                            items[idx].clone()
+                            items[adj as usize].clone()
                         } else {
                             return Err(self.error(expr.span, "Tuple indices must be literals"));
                         }
@@ -559,6 +609,111 @@ impl<'a> TypeChecker<'a> {
                 match value_ty {
                     Type::List(inner) => Type::List(inner),
                     Type::Str => Type::Str,
+                    Type::Tuple(items) => {
+                        // Tuple slicing requires literal bounds so we can compute the resulting type.
+                        let lit_int = |expr: &Expr| -> Option<i64> {
+                            match &expr.kind {
+                                ExprKind::Literal(Literal::Int(idx)) => Some(*idx),
+                                ExprKind::Unary {
+                                    op: UnaryOp::Neg,
+                                    expr,
+                                } => {
+                                    if let ExprKind::Literal(Literal::Int(idx)) =
+                                        &expr.as_ref().kind
+                                    {
+                                        Some(-idx)
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            }
+                        };
+
+                        let start_lit = start.as_deref().and_then(lit_int);
+                        let end_lit = end.as_deref().and_then(lit_int);
+                        let step_lit = step.as_deref().and_then(lit_int).unwrap_or(1);
+                        if step.is_some() && step_lit == 0 {
+                            return Err(self.error(expr.span, "Slice step cannot be zero"));
+                        }
+                        if (start.is_some() && start_lit.is_none())
+                            || (end.is_some() && end_lit.is_none())
+                            || (step.is_some() && step_lit == 0)
+                            || (step.is_some()
+                                && step_lit != 0
+                                && step.as_deref().and_then(lit_int).is_none())
+                        {
+                            return Err(
+                                self.error(expr.span, "Tuple slicing requires literal bounds")
+                            );
+                        }
+
+                        let len = items.len() as i64;
+                        let mut indices = Vec::new();
+                        if step_lit > 0 {
+                            let mut i = match start_lit {
+                                Some(s) => {
+                                    let s = if s < 0 { len + s } else { s };
+                                    s.max(0).min(len)
+                                }
+                                None => 0,
+                            };
+                            let end_i = match end_lit {
+                                Some(e) => {
+                                    let e = if e < 0 { len + e } else { e };
+                                    e.max(0).min(len)
+                                }
+                                None => len,
+                            };
+                            while i < end_i {
+                                if i >= 0 && i < len {
+                                    indices.push(i as usize);
+                                }
+                                i += step_lit;
+                            }
+                        } else {
+                            let mut i = match start_lit {
+                                Some(s) => {
+                                    let s = if s < 0 { len + s } else { s };
+                                    if s < 0 {
+                                        -1
+                                    } else if s >= len {
+                                        len - 1
+                                    } else {
+                                        s
+                                    }
+                                }
+                                None => len - 1,
+                            };
+                            let end_i = match end_lit {
+                                Some(e) => {
+                                    let e = if e < 0 { len + e } else { e };
+                                    if e < 0 {
+                                        -1
+                                    } else if e >= len {
+                                        len - 1
+                                    } else {
+                                        e
+                                    }
+                                }
+                                None => -1,
+                            };
+                            while i > end_i {
+                                if i >= 0 && i < len {
+                                    indices.push(i as usize);
+                                }
+                                i += step_lit;
+                            }
+                        }
+
+                        let mut out = Vec::new();
+                        for idx in indices {
+                            if let Some(item) = items.get(idx) {
+                                out.push(item.clone());
+                            }
+                        }
+                        Type::Tuple(out)
+                    }
                     _ => return Err(self.error(expr.span, "Slicing requires list or str")),
                 }
             }

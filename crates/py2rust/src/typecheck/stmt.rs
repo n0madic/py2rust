@@ -108,7 +108,24 @@ impl<'a> TypeChecker<'a> {
                 let ty = self.check_expr(value, expected.as_ref())?;
                 if let Some(expected) = expected {
                     self.ensure_assignable(&ty, &expected, stmt.span)?;
-                    self.insert_var(name, expected, stmt.span)?;
+                    // Tuple annotations with homogeneous element types accept any length.
+                    // Store the actual tuple length to avoid codegen length mismatches.
+                    let declared = if let (Type::Tuple(exp_items), Type::Tuple(actual_items)) =
+                        (&expected, &ty)
+                    {
+                        if exp_items.len() != actual_items.len()
+                            && exp_items
+                                .first()
+                                .is_some_and(|first| exp_items.iter().all(|t| t == first))
+                        {
+                            Type::Tuple(actual_items.clone())
+                        } else {
+                            expected.clone()
+                        }
+                    } else {
+                        expected.clone()
+                    };
+                    self.insert_var(name, declared, stmt.span)?;
                 } else {
                     if matches!(ty, Type::Unknown) {
                         return Err(self.error(stmt.span, "Unable to infer type; add annotation"));

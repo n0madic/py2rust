@@ -201,6 +201,26 @@ impl<'a> TypeChecker<'a> {
             }
             // Auto-wrap in Optional: T is assignable to Optional[T]
             (Type::Option(inner), actual) => self.ensure_assignable(actual, inner, span),
+            // Tuple types: allow length mismatch if expected is homogeneous.
+            (Type::Tuple(expected_items), Type::Tuple(actual_items)) => {
+                if expected_items.len() == actual_items.len() {
+                    for (e, a) in expected_items.iter().zip(actual_items.iter()) {
+                        self.ensure_assignable(a, e, span)?;
+                    }
+                    Ok(())
+                } else if expected_items
+                    .first()
+                    .is_some_and(|first| expected_items.iter().all(|t| t == first))
+                {
+                    let elem = expected_items.first().expect("checked above").clone();
+                    for a in actual_items.iter() {
+                        self.ensure_assignable(a, &elem, span)?;
+                    }
+                    Ok(())
+                } else {
+                    Err(self.error(span, "Tuple length mismatch"))
+                }
+            }
             // Callable types: check parameter and return type compatibility
             (
                 Type::Lambda {

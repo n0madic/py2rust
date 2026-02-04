@@ -41,14 +41,18 @@ pub(crate) struct Uses {
     pub(crate) py_parse_float: bool,
     pub(crate) py_index: bool,
     pub(crate) py_list_get: bool,
+    pub(crate) py_list_index: bool,
+    pub(crate) py_list_count: bool,
     pub(crate) py_dict_get: bool,
     pub(crate) py_chr: bool,
     pub(crate) py_ord: bool,
     pub(crate) py_next: bool,
+    pub(crate) py_insert_index: bool,
     pub(crate) py_str_slice: bool,
     pub(crate) py_str_slice_step: bool,
     pub(crate) py_list_slice_step: bool,
     pub(crate) py_iter: bool,
+    pub(crate) py_repr: bool,
 }
 
 /// The code generator transforms typed HIR into Rust source code.

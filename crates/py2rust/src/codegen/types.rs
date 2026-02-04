@@ -131,6 +131,11 @@ impl<'a> Codegen<'a> {
                     ret_ty
                 )
             }
+            // Use a PyRepr-backed list for unknown element types to keep globals concrete.
+            Type::List(inner) if matches!(inner.as_ref(), Type::Unknown) => {
+                self.uses.py_repr = true;
+                "Vec<PyRepr>".to_string()
+            }
             Type::List(inner) => format!("Vec<{}>", self.rust_type_for_global(inner)),
             Type::Set(inner) => {
                 self.uses.hash_set = true;

@@ -283,6 +283,27 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
+        if let (Some(Type::Tuple(left_items)), Some(Type::Tuple(right_items))) =
+            (left.ty.as_ref(), right.ty.as_ref())
+        {
+            if left_items.len() != right_items.len() {
+                if matches!(op, CmpOp::Eq) {
+                    return Ok("false".to_string());
+                }
+                if matches!(op, CmpOp::NotEq) {
+                    return Ok("true".to_string());
+                }
+                if matches!(op, CmpOp::Lt | CmpOp::LtEq | CmpOp::Gt | CmpOp::GtEq) {
+                    return self.gen_tuple_compare_mismatch(
+                        op,
+                        left,
+                        right,
+                        left_items.len(),
+                        right_items.len(),
+                    );
+                }
+            }
+        }
         let op_str = match op {
             CmpOp::Eq => "==",
             CmpOp::NotEq => "!=",
@@ -299,6 +320,52 @@ impl<'a> Codegen<'a> {
             self.gen_expr(left)?,
             op_str,
             self.gen_expr(right)?
+        ))
+    }
+
+    /// Emit lexicographic comparison for tuples with different lengths.
+    fn gen_tuple_compare_mismatch(
+        &mut self,
+        op: &CmpOp,
+        left: &Expr,
+        right: &Expr,
+        left_len: usize,
+        right_len: usize,
+    ) -> Result<String, CompileError> {
+        let left_expr = self.gen_expr(left)?;
+        let right_expr = self.gen_expr(right)?;
+        let left_tmp = self.new_tmp();
+        let right_tmp = self.new_tmp();
+        let min_len = left_len.min(right_len);
+        let elem_op = match op {
+            CmpOp::Lt | CmpOp::LtEq => "<",
+            CmpOp::Gt | CmpOp::GtEq => ">",
+            _ => unreachable!("tuple mismatch handled only for ordering ops"),
+        };
+        let len_cmp = match op {
+            CmpOp::Lt => format!("{left_len} < {right_len}"),
+            CmpOp::LtEq => format!("{left_len} <= {right_len}"),
+            CmpOp::Gt => format!("{left_len} > {right_len}"),
+            CmpOp::GtEq => format!("{left_len} >= {right_len}"),
+            _ => unreachable!("tuple mismatch handled only for ordering ops"),
+        };
+        let mut chain = String::new();
+        if min_len == 0 {
+            chain.push_str(&len_cmp);
+        } else {
+            for idx in 0..min_len {
+                let diff = format!("{left_tmp}.{idx} != {right_tmp}.{idx}");
+                let cmp = format!("{left_tmp}.{idx} {elem_op} {right_tmp}.{idx}");
+                if idx == 0 {
+                    chain.push_str(&format!("if {diff} {{ {cmp} }}"));
+                } else {
+                    chain.push_str(&format!(" else if {diff} {{ {cmp} }}"));
+                }
+            }
+            chain.push_str(&format!(" else {{ {len_cmp} }}"));
+        }
+        Ok(format!(
+            "{{ let {left_tmp} = &{left_expr}; let {right_tmp} = &{right_expr}; {chain} }}"
         ))
     }
 

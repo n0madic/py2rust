@@ -364,6 +364,18 @@ impl<'a> Codegen<'a> {
                 } else {
                     None
                 };
+                let declared =
+                    if let (Some(Type::Tuple(exp_items)), Some(Type::Tuple(actual_items))) =
+                        (expected.as_ref(), value.ty.as_ref())
+                    {
+                        if exp_items.len() != actual_items.len() {
+                            Some(Type::Tuple(actual_items.clone()))
+                        } else {
+                            expected.clone()
+                        }
+                    } else {
+                        expected.clone()
+                    };
                 let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                 let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
                     "mut "
@@ -371,7 +383,7 @@ impl<'a> Codegen<'a> {
                     ""
                 };
                 if ann.is_some() {
-                    let ty = expected.expect("resolved above");
+                    let ty = declared.expect("resolved above");
                     let ty_str = self.rust_type(&ty);
                     self.push_line(&format!("let {}{}: {} = {};", mut_kw, name, ty_str, expr));
                     self.set_local_var_type(name, ty);

@@ -81,6 +81,25 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
     fn visit_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
         match &expr.kind {
             ExprKind::Call { func, args } => {
+                if let ExprKind::Attr { value, attr } = &func.kind {
+                    // Mutating collection methods require the receiver to be `mut`.
+                    if matches!(
+                        attr.as_str(),
+                        "append"
+                            | "extend"
+                            | "pop"
+                            | "insert"
+                            | "clear"
+                            | "reverse"
+                            | "sort"
+                            | "add"
+                            | "remove"
+                    ) {
+                        if let ExprKind::Name(name) = &value.kind {
+                            *counts.entry(name.clone()).or_insert(0) += 1;
+                        }
+                    }
+                }
                 if let ExprKind::Name(name) = &func.kind {
                     if name == "next" {
                         if let Some(ExprKind::Name(arg_name)) = args.first().map(|arg| &arg.kind) {
@@ -189,11 +208,13 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
         }
 
         match &stmt.kind {
-            StmtKind::Let { name, .. } => {
+            StmtKind::Let { name, value, .. } => {
                 *counts.entry(name.clone()).or_insert(0) += 1;
+                visit_expr(value, counts);
             }
-            StmtKind::Assign { target, .. } => {
+            StmtKind::Assign { target, value } => {
                 record_target(target, counts);
+                visit_expr(value, counts);
             }
             StmtKind::If { test, body, orelse } => {
                 visit_expr(test, counts);
@@ -246,16 +267,6 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                 }
             }
             StmtKind::Expr(expr) => {
-                if let ExprKind::Call { func, .. } = &expr.kind {
-                    if let ExprKind::Attr { value, attr } = &func.kind {
-                        // Mutating collection methods require the receiver to be `mut`.
-                        if matches!(attr.as_str(), "append" | "extend" | "add" | "remove") {
-                            if let ExprKind::Name(name) = &value.kind {
-                                *counts.entry(name.clone()).or_insert(0) += 1;
-                            }
-                        }
-                    }
-                }
                 visit_expr(expr, counts);
             }
             StmtKind::Assert { test, msg } => {

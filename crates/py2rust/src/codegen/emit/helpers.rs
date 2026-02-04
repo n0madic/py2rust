@@ -73,12 +73,27 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.push_line("}");
         }
+        if self.uses.py_repr {
+            // PyRepr wraps preformatted strings so list Debug output matches Python repr style.
+            self.push_line("#[derive(Clone, PartialEq, PartialOrd)]");
+            self.push_line("struct PyRepr(String);");
+            self.push_line("impl std::fmt::Debug for PyRepr {");
+            self.indent += 1;
+            self.push_line("fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {");
+            self.indent += 1;
+            self.push_line("write!(f, \"{}\", self.0)");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+        }
         if self.uses.len {
             self.push_line("trait PyLen {");
             self.indent += 1;
             self.push_line("fn py_len(&self) -> i64;");
             self.indent -= 1;
             self.push_line("}");
+            // Tuples have fixed arity, so provide PyLen impls for common tuple sizes.
             self.push_line("impl<T> PyLen for Vec<T> {");
             self.indent += 1;
             self.push_line("fn py_len(&self) -> i64 { self.len() as i64 }");
@@ -102,6 +117,55 @@ impl<'a> Codegen<'a> {
             self.push_line("impl<T> PyLen for std::collections::HashSet<T> {");
             self.indent += 1;
             self.push_line("fn py_len(&self) -> i64 { self.len() as i64 }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl PyLen for () {");
+            self.indent += 1;
+            self.push_line("fn py_len(&self) -> i64 { 0 }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl<T1> PyLen for (T1,) {");
+            self.indent += 1;
+            self.push_line("fn py_len(&self) -> i64 { 1 }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl<T1, T2> PyLen for (T1, T2) {");
+            self.indent += 1;
+            self.push_line("fn py_len(&self) -> i64 { 2 }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl<T1, T2, T3> PyLen for (T1, T2, T3) {");
+            self.indent += 1;
+            self.push_line("fn py_len(&self) -> i64 { 3 }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl<T1, T2, T3, T4> PyLen for (T1, T2, T3, T4) {");
+            self.indent += 1;
+            self.push_line("fn py_len(&self) -> i64 { 4 }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl<T1, T2, T3, T4, T5> PyLen for (T1, T2, T3, T4, T5) {");
+            self.indent += 1;
+            self.push_line("fn py_len(&self) -> i64 { 5 }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl<T1, T2, T3, T4, T5, T6> PyLen for (T1, T2, T3, T4, T5, T6) {");
+            self.indent += 1;
+            self.push_line("fn py_len(&self) -> i64 { 6 }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line(
+                "impl<T1, T2, T3, T4, T5, T6, T7> PyLen for (T1, T2, T3, T4, T5, T6, T7) {",
+            );
+            self.indent += 1;
+            self.push_line("fn py_len(&self) -> i64 { 7 }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line(
+                "impl<T1, T2, T3, T4, T5, T6, T7, T8> PyLen for (T1, T2, T3, T4, T5, T6, T7, T8) {",
+            );
+            self.indent += 1;
+            self.push_line("fn py_len(&self) -> i64 { 8 }");
             self.indent -= 1;
             self.push_line("}");
             self.push_line("fn py_len<T: PyLen>(v: &T) -> i64 { v.py_len() }");
@@ -185,24 +249,52 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
         }
         if self.uses.py_max {
+            // Use PartialOrd to support floats and fall back to equality on NaN comparisons.
             self.push_line(
-                "fn py_max<T: Ord, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {",
+                "fn py_max<T: PartialOrd, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {",
             );
             self.indent += 1;
+            self.push_line("let mut iter = iter.into_iter();");
             self.push_line(
-                "iter.into_iter().max().ok_or_else(|| PyError::ValueError(String::from(\"max() arg is an empty sequence\")))",
+                "let mut best = iter.next().ok_or_else(|| PyError::ValueError(String::from(\"max() arg is an empty sequence\")))?;",
             );
+            self.push_line("for item in iter {");
+            self.indent += 1;
+            self.push_line(
+                "if item.partial_cmp(&best).unwrap_or(std::cmp::Ordering::Equal) == std::cmp::Ordering::Greater {",
+            );
+            self.indent += 1;
+            self.push_line("best = item;");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("Ok(best)");
             self.indent -= 1;
             self.push_line("}");
         }
         if self.uses.py_min {
+            // Use PartialOrd to support floats and fall back to equality on NaN comparisons.
             self.push_line(
-                "fn py_min<T: Ord, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {",
+                "fn py_min<T: PartialOrd, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {",
             );
             self.indent += 1;
+            self.push_line("let mut iter = iter.into_iter();");
             self.push_line(
-                "iter.into_iter().min().ok_or_else(|| PyError::ValueError(String::from(\"min() arg is an empty sequence\")))",
+                "let mut best = iter.next().ok_or_else(|| PyError::ValueError(String::from(\"min() arg is an empty sequence\")))?;",
             );
+            self.push_line("for item in iter {");
+            self.indent += 1;
+            self.push_line(
+                "if item.partial_cmp(&best).unwrap_or(std::cmp::Ordering::Equal) == std::cmp::Ordering::Less {",
+            );
+            self.indent += 1;
+            self.push_line("best = item;");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("Ok(best)");
             self.indent -= 1;
             self.push_line("}");
         }
@@ -299,6 +391,33 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.push_line("}");
         }
+        if self.uses.py_list_index {
+            self.push_line(
+                "fn py_list_index<T: PartialEq>(items: &[T], needle: &T) -> Result<i64, PyError> {",
+            );
+            self.indent += 1;
+            self.push_line("for (idx, item) in items.iter().enumerate() {");
+            self.indent += 1;
+            self.push_line("if item == needle { return Ok(idx as i64); }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("Err(PyError::ValueError(String::from(\"ValueError\")))");
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_list_count {
+            self.push_line("fn py_list_count<T: PartialEq>(items: &[T], needle: &T) -> i64 {");
+            self.indent += 1;
+            self.push_line("let mut count = 0i64;");
+            self.push_line("for item in items.iter() {");
+            self.indent += 1;
+            self.push_line("if item == needle { count += 1; }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("count");
+            self.indent -= 1;
+            self.push_line("}");
+        }
         if self.uses.py_index {
             // Python supports negative indices: list[-1] is the last element.
             // Formula: negative index i becomes len + i.
@@ -316,6 +435,18 @@ impl<'a> Codegen<'a> {
             self.push_line("Ok(adj as usize)");
             self.indent -= 1;
             self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_insert_index {
+            // Python list.insert clamps indices: <0 inserts at start, >len inserts at end.
+            self.push_line("fn py_insert_index(idx: i64, len: usize) -> usize {");
+            self.indent += 1;
+            self.push_line("let len_i = len as i64;");
+            self.push_line("let mut adj = if idx < 0 { len_i + idx } else { idx };");
+            self.push_line("if adj < 0 { adj = 0; }");
+            self.push_line("if adj > len_i { adj = len_i; }");
+            self.push_line("adj as usize");
             self.indent -= 1;
             self.push_line("}");
         }

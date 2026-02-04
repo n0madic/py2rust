@@ -343,24 +343,6 @@ impl<'a> Codegen<'a> {
         Ok(block)
     }
 
-    /// Build a Rust range expression for slicing with start/end.
-    pub(super) fn slice_range(
-        &mut self,
-        start: Option<&Expr>,
-        end: Option<&Expr>,
-    ) -> Result<String, CompileError> {
-        // For slicing, we can't easily use py_index without knowing the length at this point.
-        let start_str = match start {
-            Some(expr) => format!("{} as usize", self.gen_expr(expr)?),
-            None => String::new(),
-        };
-        let end_str = match end {
-            Some(expr) => format!("{} as usize", self.gen_expr(expr)?),
-            None => String::new(),
-        };
-        Ok(format!("{}..{}", start_str, end_str))
-    }
-
     /// Decide whether to use Debug formatting when printing an expression.
     pub(super) fn print_needs_debug(&self, expr: &Expr) -> bool {
         let ty = match expr.ty.as_ref() {
