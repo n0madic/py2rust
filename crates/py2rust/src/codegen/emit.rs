@@ -116,12 +116,12 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
             self.push_line("impl PyLen for String {");
             self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { self.len() as i64 }");
+            self.push_line("fn py_len(&self) -> i64 { self.chars().count() as i64 }");
             self.indent -= 1;
             self.push_line("}");
             self.push_line("impl PyLen for &str {");
             self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { self.len() as i64 }");
+            self.push_line("fn py_len(&self) -> i64 { self.chars().count() as i64 }");
             self.indent -= 1;
             self.push_line("}");
             self.push_line("impl<K, V> PyLen for std::collections::HashMap<K, V> {");
@@ -150,24 +150,26 @@ impl<'a> Codegen<'a> {
             // Negative step: count down from start to end
             // Step of 0 is an error (would create infinite loop)
             self.push_line(
-                "fn py_range3(start: i64, end: i64, step: i64) -> Box<dyn Iterator<Item = i64>> {",
+                "fn py_range3(start: i64, end: i64, step: i64) -> Result<Box<dyn Iterator<Item = i64>>, PyError> {",
             );
             self.indent += 1;
-            self.push_line("if step == 0 { panic!(\"range() arg 3 must not be zero\"); }");
+            self.push_line(
+                "if step == 0 { return Err(PyError::ValueError(String::from(\"range() arg 3 must not be zero\"))); }",
+            );
             self.push_line("if step > 0 {");
             self.indent += 1;
-            self.push_line("Box::new((start..end).step_by(step as usize))");
+            self.push_line("Ok(Box::new((start..end).step_by(step as usize)))");
             self.indent -= 1;
             self.push_line("} else {");
             self.indent += 1;
             self.push_line("let step = (-step) as usize;");
             self.push_line("if start <= end {");
             self.indent += 1;
-            self.push_line("Box::new(std::iter::empty::<i64>())");
+            self.push_line("Ok(Box::new(std::iter::empty::<i64>()))");
             self.indent -= 1;
             self.push_line("} else {");
             self.indent += 1;
-            self.push_line("Box::new(((end + 1)..=start).rev().step_by(step))");
+            self.push_line("Ok(Box::new(((end + 1)..=start).rev().step_by(step)))");
             self.indent -= 1;
             self.push_line("}");
             self.indent -= 1;
@@ -213,16 +215,24 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
         }
         if self.uses.py_max {
-            self.push_line("fn py_max<T: Ord, I: IntoIterator<Item = T>>(iter: I) -> T {");
+            self.push_line(
+                "fn py_max<T: Ord, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {",
+            );
             self.indent += 1;
-            self.push_line("iter.into_iter().max().expect(\"max() arg is an empty sequence\")");
+            self.push_line(
+                "iter.into_iter().max().ok_or_else(|| PyError::ValueError(String::from(\"max() arg is an empty sequence\")))",
+            );
             self.indent -= 1;
             self.push_line("}");
         }
         if self.uses.py_min {
-            self.push_line("fn py_min<T: Ord, I: IntoIterator<Item = T>>(iter: I) -> T {");
+            self.push_line(
+                "fn py_min<T: Ord, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {",
+            );
             self.indent += 1;
-            self.push_line("iter.into_iter().min().expect(\"min() arg is an empty sequence\")");
+            self.push_line(
+                "iter.into_iter().min().ok_or_else(|| PyError::ValueError(String::from(\"min() arg is an empty sequence\")))",
+            );
             self.indent -= 1;
             self.push_line("}");
         }
@@ -246,13 +256,96 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.push_line("}");
         }
+        if self.uses.py_chr {
+            self.push_line("fn py_chr(value: i64) -> Result<String, PyError> {");
+            self.indent += 1;
+            self.push_line("if value < 0 || value > 0x10FFFF {");
+            self.indent += 1;
+            self.push_line(
+                "return Err(PyError::ValueError(String::from(\"chr() arg not in range(0x110000)\")));",
+            );
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("match std::char::from_u32(value as u32) {");
+            self.indent += 1;
+            self.push_line("Some(c) => Ok(c.to_string()),");
+            self.push_line(
+                "None => Err(PyError::ValueError(String::from(\"chr() arg not in range(0x110000)\"))),",
+            );
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_ord {
+            self.push_line("fn py_ord(s: &str) -> Result<i64, PyError> {");
+            self.indent += 1;
+            self.push_line("let mut chars = s.chars();");
+            self.push_line("match (chars.next(), chars.next()) {");
+            self.indent += 1;
+            self.push_line("(Some(c), None) => Ok(c as i64),");
+            self.push_line(
+                "_ => Err(PyError::TypeError(String::from(\"ord() expects a character\"))),",
+            );
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_next {
+            self.push_line("fn py_next<T>(value: Option<T>) -> Result<T, PyError> {");
+            self.indent += 1;
+            self.push_line("value.ok_or_else(|| PyError::StopIteration(String::new()))");
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_dict_get {
+            self.push_line(
+                "fn py_dict_get<K: Eq + std::hash::Hash, V: Clone>(map: &HashMap<K, V>, key: &K) -> Result<V, PyError> {",
+            );
+            self.indent += 1;
+            self.push_line(
+                "map.get(key).cloned().ok_or_else(|| PyError::KeyError(String::from(\"KeyError\")))",
+            );
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_list_get {
+            self.push_line(
+                "fn py_list_get<T: Clone>(items: &[T], idx: i64) -> Result<T, PyError> {",
+            );
+            self.indent += 1;
+            self.push_line("let len = items.len() as i64;");
+            self.push_line("let adj = if idx < 0 { len + idx } else { idx };");
+            self.push_line("if adj < 0 || adj >= len {");
+            self.indent += 1;
+            self.push_line("Err(PyError::IndexError(String::from(\"IndexError\")))");
+            self.indent -= 1;
+            self.push_line("} else {");
+            self.indent += 1;
+            self.push_line("Ok(items[adj as usize].clone())");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+        }
         if self.uses.py_index {
             // Python supports negative indices: list[-1] is the last element
             // Formula: negative index i becomes len + i
             // Example: for list of length 5, index -1 becomes 5 + (-1) = 4
-            self.push_line("fn py_index(idx: i64, len: usize) -> usize {");
+            self.push_line("fn py_index(idx: i64, len: usize) -> Result<usize, PyError> {");
             self.indent += 1;
-            self.push_line("if idx >= 0 { idx as usize } else { (len as i64 + idx) as usize }");
+            self.push_line("let len_i = len as i64;");
+            self.push_line("let adj = if idx < 0 { len_i + idx } else { idx };");
+            self.push_line("if adj < 0 || adj >= len_i {");
+            self.indent += 1;
+            self.push_line("Err(PyError::IndexError(String::from(\"IndexError\")))");
+            self.indent -= 1;
+            self.push_line("} else {");
+            self.indent += 1;
+            self.push_line("Ok(adj as usize)");
+            self.indent -= 1;
+            self.push_line("}");
             self.indent -= 1;
             self.push_line("}");
         }
@@ -271,10 +364,12 @@ impl<'a> Codegen<'a> {
         }
         if self.uses.py_list_slice_step {
             self.push_line(
-                "fn py_list_slice_step<T: Clone>(items: &[T], start: Option<i64>, end: Option<i64>, step: i64) -> Vec<T> {",
+                "fn py_list_slice_step<T: Clone>(items: &[T], start: Option<i64>, end: Option<i64>, step: i64) -> Result<Vec<T>, PyError> {",
             );
             self.indent += 1;
-            self.push_line("if step == 0 { panic!(\"slice step cannot be zero\"); }");
+            self.push_line(
+                "if step == 0 { return Err(PyError::ValueError(String::from(\"slice step cannot be zero\"))); }",
+            );
             self.push_line("let len = items.len() as i64;");
             self.push_line("let mut out = Vec::new();");
             self.push_line("if step > 0 {");
@@ -324,18 +419,18 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
             self.indent -= 1;
             self.push_line("}");
-            self.push_line("out");
+            self.push_line("Ok(out)");
             self.indent -= 1;
             self.push_line("}");
         }
         if self.uses.py_str_slice_step {
             self.push_line(
-                "fn py_str_slice_step(s: &str, start: Option<i64>, end: Option<i64>, step: i64) -> String {",
+                "fn py_str_slice_step(s: &str, start: Option<i64>, end: Option<i64>, step: i64) -> Result<String, PyError> {",
             );
             self.indent += 1;
             self.push_line("let chars: Vec<char> = s.chars().collect();");
-            self.push_line("let sliced = py_list_slice_step(&chars, start, end, step);");
-            self.push_line("sliced.into_iter().collect()");
+            self.push_line("let sliced = py_list_slice_step(&chars, start, end, step)?;");
+            self.push_line("Ok(sliced.into_iter().collect())");
             self.indent -= 1;
             self.push_line("}");
         }
@@ -343,12 +438,18 @@ impl<'a> Codegen<'a> {
             || self.uses.len
             || self.uses.range
             || self.uses.range2
+            || self.uses.range3
             || self.uses.round
             || self.uses.type_name
             || self.uses.py_max
             || self.uses.py_min
             || self.uses.py_parse_int
             || self.uses.py_parse_float
+            || self.uses.py_chr
+            || self.uses.py_ord
+            || self.uses.py_next
+            || self.uses.py_dict_get
+            || self.uses.py_list_get
             || self.uses.py_index
             || self.uses.py_str_slice
             || self.uses.py_list_slice_step
@@ -869,6 +970,17 @@ impl<'a> Codegen<'a> {
             || self.ctx.functions.values().any(|sig| sig.can_throw)
             || self.uses.py_parse_int
             || self.uses.py_parse_float
+            || self.uses.py_index
+            || self.uses.py_list_get
+            || self.uses.py_dict_get
+            || self.uses.py_chr
+            || self.uses.py_ord
+            || self.uses.py_next
+            || self.uses.py_max
+            || self.uses.py_min
+            || self.uses.py_list_slice_step
+            || self.uses.py_str_slice_step
+            || self.uses.range3
     }
 
     fn emit_py_error_enum(&mut self) {
@@ -990,8 +1102,21 @@ impl<'a> Codegen<'a> {
             StmtKind::Raise { .. } => true,
             StmtKind::Try { .. } => true, // Has exception handling
             StmtKind::Expr(expr) => self.expr_can_throw(expr),
-            StmtKind::Let { value, .. } | StmtKind::Assign { value, .. } => {
-                self.expr_can_throw(value)
+            StmtKind::Let { value, .. } => self.expr_can_throw(value),
+            StmtKind::Assign { target, value } => {
+                if self.expr_can_throw(value) {
+                    return true;
+                }
+                match target {
+                    AssignTarget::Index { value, index } => {
+                        if self.expr_can_throw(value) || self.expr_can_throw(index) {
+                            return true;
+                        }
+                        matches!(value.ty.as_ref(), Some(Type::List(_)))
+                    }
+                    AssignTarget::Attr { value, .. } => self.expr_can_throw(value),
+                    AssignTarget::Name(_) => false,
+                }
             }
             StmtKind::Return { value } => value.as_ref().is_some_and(|e| self.expr_can_throw(e)),
             StmtKind::If { test, body, orelse } => {
@@ -1017,15 +1142,24 @@ impl<'a> Codegen<'a> {
 
     fn expr_can_throw(&self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Call { func, .. } => {
+            ExprKind::Call { func, args } => {
                 if let ExprKind::Name(name) = &func.kind {
-                    self.ctx
+                    if self.builtin_call_can_throw(name, args) {
+                        return true;
+                    }
+                    if self
+                        .ctx
                         .functions
                         .get(name)
                         .is_some_and(|sig| sig.can_throw)
-                } else {
-                    false
+                    {
+                        return true;
+                    }
                 }
+                if self.expr_can_throw(func) {
+                    return true;
+                }
+                args.iter().any(|arg| self.expr_can_throw(arg))
             }
             ExprKind::Binary { left, right, .. } => {
                 self.expr_can_throw(left) || self.expr_can_throw(right)
@@ -1042,7 +1176,13 @@ impl<'a> Codegen<'a> {
                 .iter()
                 .any(|(k, v)| self.expr_can_throw(k) || self.expr_can_throw(v)),
             ExprKind::Index { value, index } => {
-                self.expr_can_throw(value) || self.expr_can_throw(index)
+                if self.expr_can_throw(value) || self.expr_can_throw(index) {
+                    return true;
+                }
+                matches!(
+                    value.ty.as_ref(),
+                    Some(Type::List(_)) | Some(Type::Dict(_, _))
+                )
             }
             ExprKind::Slice {
                 value,
@@ -1050,10 +1190,14 @@ impl<'a> Codegen<'a> {
                 end,
                 step,
             } => {
-                self.expr_can_throw(value)
+                if self.expr_can_throw(value)
                     || start.as_ref().is_some_and(|s| self.expr_can_throw(s))
                     || end.as_ref().is_some_and(|e| self.expr_can_throw(e))
-                    || step.as_ref().is_some_and(|st| self.expr_can_throw(st))
+                {
+                    return true;
+                }
+                step.as_ref()
+                    .is_some_and(|st| self.expr_can_throw(st) || self.step_value_can_throw(st))
             }
             ExprKind::ListComp { elt, iter, ifs, .. } => {
                 self.expr_can_throw(elt)
@@ -1069,6 +1213,40 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::Attr { value, .. } => self.expr_can_throw(value),
             _ => false,
+        }
+    }
+
+    fn builtin_call_can_throw(&self, name: &str, args: &[Expr]) -> bool {
+        match name {
+            "chr" | "ord" | "next" => true,
+            "max" | "min" => args.len() == 1,
+            "int" | "float" => {
+                if args.is_empty() {
+                    return false;
+                }
+                !matches!(
+                    args[0].ty.as_ref(),
+                    Some(Type::Int | Type::Float | Type::Bool)
+                )
+            }
+            "range" => {
+                if args.len() == 3 {
+                    match &args[2].kind {
+                        ExprKind::Literal(Literal::Int(n)) => *n == 0,
+                        _ => true,
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn step_value_can_throw(&self, step: &Expr) -> bool {
+        match &step.kind {
+            ExprKind::Literal(Literal::Int(n)) => *n == 0,
+            _ => true,
         }
     }
 }

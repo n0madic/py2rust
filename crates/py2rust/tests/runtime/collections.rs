@@ -48,6 +48,12 @@ def test_strings() -> None:
     s2: str = "world"
     assert len(s2) == 5
 
+    # Unicode length counts codepoints, not bytes
+    uni: str = "\u00e9"
+    assert len(uni) == 1
+    uni2: str = "\u00e9\u00e9"
+    assert len(uni2) == 2
+
     # String concatenation
     combined: str = s + " " + s2
     assert len(combined) == 11

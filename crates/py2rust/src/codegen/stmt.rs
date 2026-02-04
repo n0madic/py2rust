@@ -306,9 +306,11 @@ impl<'a> Codegen<'a> {
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                     let expr = self.wrap_global_value(expr, value, expected.as_ref());
                     let gname = self.global_name(name);
+                    let tmp = self.new_tmp();
+                    self.push_line(&format!("let {} = {};", tmp, expr));
                     self.push_line(&format!(
                         "let _ = {}.get_or_init(|| Mutex::new({}));",
-                        gname, expr
+                        gname, tmp
                     ));
                     return Ok(());
                 }
@@ -474,18 +476,10 @@ impl<'a> Codegen<'a> {
                                 Some(Type::List(_)) | Some(Type::Tuple(_))
                             ) {
                                 let idx_raw = self.gen_expr(index)?;
-                                if self.may_be_negative(index) {
-                                    self.uses.py_index = true;
-                                    self.push_line(&format!(
-                                        "{}[py_index({}, {}.len())] = {};",
-                                        guard, idx_raw, guard, val_expr
-                                    ));
-                                } else {
-                                    self.push_line(&format!(
-                                        "{}[{} as usize] = {};",
-                                        guard, idx_raw, val_expr
-                                    ));
-                                }
+                                self.uses.py_index = true;
+                                let idx_expr = self
+                                    .wrap_result(format!("py_index({}, {}.len())", idx_raw, guard));
+                                self.push_line(&format!("{}[{}] = {};", guard, idx_expr, val_expr));
                             }
                             self.indent -= 1;
                             self.push_line("}");
@@ -504,18 +498,10 @@ impl<'a> Codegen<'a> {
                         Some(Type::List(_)) | Some(Type::Tuple(_))
                     ) {
                         let idx_raw = self.gen_expr(index)?;
-                        if self.may_be_negative(index) {
-                            self.uses.py_index = true;
-                            self.push_line(&format!(
-                                "{}[py_index({}, {}.len())] = {};",
-                                cont_expr, idx_raw, cont_expr, val_expr
-                            ));
-                        } else {
-                            self.push_line(&format!(
-                                "{}[{} as usize] = {};",
-                                cont_expr, idx_raw, val_expr
-                            ));
-                        }
+                        self.uses.py_index = true;
+                        let idx_expr =
+                            self.wrap_result(format!("py_index({}, {}.len())", idx_raw, cont_expr));
+                        self.push_line(&format!("{}[{}] = {};", cont_expr, idx_expr, val_expr));
                     } else {
                         let idx_expr = self.gen_expr(index)?;
                         self.push_line(&format!("{}[{}] = {};", cont_expr, idx_expr, val_expr));

@@ -136,12 +136,13 @@ impl<'a> Codegen<'a> {
                         }
                         if args.len() == 3 {
                             self.uses.range3 = true;
-                            return Ok(format!(
+                            let start_expr = self.gen_expr(&args[0])?;
+                            let end_expr = self.gen_expr(&args[1])?;
+                            let step_expr = self.gen_expr(&args[2])?;
+                            return Ok(self.wrap_result(format!(
                                 "py_range3({}, {}, {})",
-                                self.gen_expr(&args[0])?,
-                                self.gen_expr(&args[1])?,
-                                self.gen_expr(&args[2])?
-                            ));
+                                start_expr, end_expr, step_expr
+                            )));
                         }
                     }
                     if name == "round" {
@@ -340,7 +341,7 @@ impl<'a> Codegen<'a> {
                         if args.len() == 1 {
                             self.uses.py_max = true;
                             let iter_expr = self.gen_iter_source(&args[0])?;
-                            return Ok(format!("py_max({})", iter_expr));
+                            return Ok(self.wrap_result(format!("py_max({})", iter_expr)));
                         }
                         let use_float = args
                             .iter()
@@ -364,7 +365,7 @@ impl<'a> Codegen<'a> {
                         if args.len() == 1 {
                             self.uses.py_min = true;
                             let iter_expr = self.gen_iter_source(&args[0])?;
-                            return Ok(format!("py_min({})", iter_expr));
+                            return Ok(self.wrap_result(format!("py_min({})", iter_expr)));
                         }
                         let use_float = args
                             .iter()
@@ -506,18 +507,17 @@ impl<'a> Codegen<'a> {
                         if args.len() != 1 {
                             return Err(self.error(expr.span, "chr() expects one argument"));
                         }
+                        self.uses.py_chr = true;
                         let arg_expr = self.gen_expr(&args[0])?;
-                        return Ok(format!(
-                            "std::char::from_u32({} as u32).unwrap().to_string()",
-                            arg_expr
-                        ));
+                        return Ok(self.wrap_result(format!("py_chr({})", arg_expr)));
                     }
                     if name == "ord" {
                         if args.len() != 1 {
                             return Err(self.error(expr.span, "ord() expects one argument"));
                         }
+                        self.uses.py_ord = true;
                         let arg_expr = self.gen_expr(&args[0])?;
-                        return Ok(format!("{}.chars().next().unwrap() as i64", arg_expr));
+                        return Ok(self.wrap_result(format!("py_ord(&{})", arg_expr)));
                     }
                     if name == "hash" {
                         if args.len() != 1 {
@@ -585,8 +585,9 @@ impl<'a> Codegen<'a> {
                         if args.len() != 1 {
                             return Err(self.error(expr.span, "next() expects one argument"));
                         }
+                        self.uses.py_next = true;
                         let arg_expr = self.gen_expr(&args[0])?;
-                        return Ok(format!("{}.next().unwrap()", arg_expr));
+                        return Ok(self.wrap_result(format!("py_next({}.next())", arg_expr)));
                     }
                     if name == "bin" {
                         if args.len() != 1 {
@@ -1163,22 +1164,15 @@ impl<'a> Codegen<'a> {
                 }
                 if let Some(Type::Dict(_, _)) = value.ty.as_ref() {
                     let idx = self.gen_expr(index)?;
-                    return Ok(format!(
-                        "{}.get(&{}).cloned().expect(\"KeyError\")",
-                        base, idx
-                    ));
+                    self.uses.py_dict_get = true;
+                    self.uses.hash_map = true;
+                    return Ok(self.wrap_result(format!("py_dict_get(&{}, &{})", base, idx)));
                 }
                 // Handle list/tuple indexing with negative index support
-                if matches!(
-                    value.ty.as_ref(),
-                    Some(Type::List(_)) | Some(Type::Tuple(_))
-                ) {
+                if matches!(value.ty.as_ref(), Some(Type::List(_))) {
                     let idx_expr = self.gen_expr(index)?;
-                    if self.may_be_negative(index) {
-                        self.uses.py_index = true;
-                        return Ok(format!("{}[py_index({}, {}.len())]", base, idx_expr, base));
-                    }
-                    return Ok(format!("{}[{} as usize]", base, idx_expr));
+                    self.uses.py_list_get = true;
+                    return Ok(self.wrap_result(format!("py_list_get(&{}, {})", base, idx_expr)));
                 }
                 let idx = self.gen_expr(index)?;
                 Ok(format!("{}[{}]", base, idx))
@@ -1203,10 +1197,10 @@ impl<'a> Codegen<'a> {
                     if let Some(step) = step.as_deref() {
                         self.uses.py_str_slice_step = true;
                         let step_arg = self.gen_expr(step)?;
-                        return Ok(format!(
+                        return Ok(self.wrap_result(format!(
                             "py_str_slice_step(&{}, {}, {}, {})",
                             base, start_arg, end_arg, step_arg
-                        ));
+                        )));
                     }
                     self.uses.py_str_slice = true;
                     return Ok(format!(
@@ -1218,10 +1212,10 @@ impl<'a> Codegen<'a> {
                     if let Some(step) = step.as_deref() {
                         self.uses.py_list_slice_step = true;
                         let step_arg = self.gen_expr(step)?;
-                        return Ok(format!(
+                        return Ok(self.wrap_result(format!(
                             "py_list_slice_step(&{}, {}, {}, {})",
                             base, start_arg, end_arg, step_arg
-                        ));
+                        )));
                     }
                     let range = self.slice_range(start.as_deref(), end.as_deref())?;
                     return Ok(format!("{}[{}].to_vec()", base, range));
@@ -1568,12 +1562,16 @@ impl<'a> Codegen<'a> {
         self.current_function.is_none() && self.top_level_can_throw
     }
 
-    fn wrap_parse_result(&self, expr: String) -> String {
+    pub(crate) fn wrap_result(&self, expr: String) -> String {
         if self.in_throwing_context() {
             format!("({}?)", expr)
         } else {
             format!("{}.unwrap()", expr)
         }
+    }
+
+    fn wrap_parse_result(&self, expr: String) -> String {
+        self.wrap_result(expr)
     }
 
     fn python_type_name(&self, ty: &Type) -> Option<String> {
@@ -1664,25 +1662,6 @@ impl<'a> Codegen<'a> {
             Some(Type::Int | Type::Float | Type::Bool | Type::Str | Type::None) => false,
             Some(_) => true,
             None => true,
-        }
-    }
-
-    /// Check if an index expression might be negative.
-    /// Returns true for variables and expressions that could be negative,
-    /// false for non-negative literals.
-    pub(crate) fn may_be_negative(&self, expr: &Expr) -> bool {
-        match &expr.kind {
-            ExprKind::Literal(Literal::Int(n)) => *n < 0,
-            // Variables, binary expressions, and other forms could be negative
-            ExprKind::Name(_) => true,
-            ExprKind::Binary { .. } => true,
-            ExprKind::Unary {
-                op: UnaryOp::Neg, ..
-            } => true,
-            ExprKind::Call { .. } => true,
-            ExprKind::IfExpr { .. } => true,
-            // If it's a constant non-negative literal, it's safe
-            _ => false,
         }
     }
 }

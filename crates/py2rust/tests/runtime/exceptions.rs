@@ -259,6 +259,91 @@ test_not_implemented()
 test_io_error()
 test_overflow_error()
 
+# Builtin error behavior
+def test_builtin_errors() -> None:
+    caught: bool = False
+    try:
+        chr(-1)
+    except ValueError:
+        caught = True
+    assert caught, "chr() should raise ValueError for invalid codepoint"
+
+    caught = False
+    try:
+        ord("")
+    except TypeError:
+        caught = True
+    assert caught, "ord() should raise TypeError for empty string"
+
+    caught = False
+    try:
+        next(range(0))
+    except StopIteration:
+        caught = True
+    assert caught, "next() should raise StopIteration on empty iterator"
+
+    caught = False
+    try:
+        d: dict[str, int] = {"a": 1}
+        d["missing"]
+    except KeyError:
+        caught = True
+    assert caught, "Dict missing key should raise KeyError"
+
+    caught = False
+    try:
+        nums: list[int] = [1, 2]
+        nums[5]
+    except IndexError:
+        caught = True
+    assert caught, "List out-of-range index should raise IndexError"
+
+    caught = False
+    try:
+        max([])
+    except ValueError:
+        caught = True
+    assert caught, "max([]) should raise ValueError"
+
+    caught = False
+    try:
+        min([])
+    except ValueError:
+        caught = True
+    assert caught, "min([]) should raise ValueError"
+
+    caught = False
+    try:
+        range(0, 5, 0)
+    except ValueError:
+        caught = True
+    assert caught, "range() step 0 should raise ValueError"
+
+    caught = False
+    try:
+        step: int = 0
+        nums2: list[int] = [1, 2, 3]
+        nums2[::step]
+    except ValueError:
+        caught = True
+    assert caught, "slice step 0 should raise ValueError"
+
+    caught = False
+    try:
+        int("not-a-number")
+    except ValueError:
+        caught = True
+    assert caught, "int() invalid string should raise ValueError"
+
+    caught = False
+    try:
+        float("not-a-number")
+    except ValueError:
+        caught = True
+    assert caught, "float() invalid string should raise ValueError"
+
+test_builtin_errors()
+
 # Top-level exception handling (exception at script root)
 top_level_caught1: bool = False
 try:

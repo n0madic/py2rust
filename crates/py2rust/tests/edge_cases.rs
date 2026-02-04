@@ -73,10 +73,10 @@ def last(lst: list[int]) -> int:
     return lst[-1]
 "#;
     let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
-    // Literal -1 should trigger py_index usage
+    // Literal -1 should trigger py_list_get usage
     assert!(
-        out.rust.contains("py_index("),
-        "Should use py_index for negative literal"
+        out.rust.contains("py_list_get("),
+        "Should use py_list_get for negative literal"
     );
 }
 
@@ -87,10 +87,10 @@ def get_at(lst: list[int], idx: int) -> int:
     return lst[idx]
 "#;
     let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
-    // Variable index might be negative, should use py_index
+    // Variable index might be negative, should use py_list_get
     assert!(
-        out.rust.contains("py_index("),
-        "Should use py_index for variable index"
+        out.rust.contains("py_list_get("),
+        "Should use py_list_get for variable index"
     );
 }
 
@@ -101,10 +101,14 @@ def first(lst: list[int]) -> int:
     return lst[0]
 "#;
     let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
-    // Positive literal should not use py_index
+    // Positive literal should use py_list_get and not py_index
     assert!(
         !out.rust.contains("py_index("),
         "Should not use py_index for positive literal"
+    );
+    assert!(
+        out.rust.contains("py_list_get("),
+        "Should use py_list_get for positive literal"
     );
 }
 
@@ -221,13 +225,27 @@ def test(s: str) -> int:
 #[test]
 fn py_index_helper_is_emitted() {
     let source = r#"
-def test(lst: list[int], i: int) -> int:
-    return lst[i]
+def test(lst: list[int], i: int, v: int) -> None:
+    lst[i] = v
 "#;
     let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
     // Should contain the py_index helper definition
     assert!(
         out.rust.contains("fn py_index("),
         "Should emit py_index helper"
+    );
+}
+
+#[test]
+fn py_list_get_helper_is_emitted() {
+    let source = r#"
+def test(lst: list[int], i: int) -> int:
+    return lst[i]
+"#;
+    let out = compile(source, "test.py", &CompileOptions::default()).unwrap();
+    // Should contain the py_list_get helper definition
+    assert!(
+        out.rust.contains("fn py_list_get"),
+        "Should emit py_list_get helper"
     );
 }

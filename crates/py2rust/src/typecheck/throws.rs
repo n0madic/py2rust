@@ -204,9 +204,27 @@ impl ThrowAnalyzer {
                     }
                 }
 
-                StmtKind::Assign { value: expr, .. } => {
-                    if self.expr_calls_throwing_function(expr) {
+                StmtKind::Assign { target, value } => {
+                    if self.expr_calls_throwing_function(value) {
                         return true;
+                    }
+                    match target {
+                        AssignTarget::Index { value, index } => {
+                            if self.expr_calls_throwing_function(value)
+                                || self.expr_calls_throwing_function(index)
+                            {
+                                return true;
+                            }
+                            if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+                                return true;
+                            }
+                        }
+                        AssignTarget::Attr { value, .. } => {
+                            if self.expr_calls_throwing_function(value) {
+                                return true;
+                            }
+                        }
+                        AssignTarget::Name(_) => {}
                     }
                 }
 
@@ -307,11 +325,17 @@ impl ThrowAnalyzer {
         match &expr.kind {
             // Function call - check if the function throws
             ExprKind::Call { func, args } => {
-                // Check if the called function is in our throwing set
                 if let ExprKind::Name(name) = &func.kind {
+                    if self.builtin_call_can_throw(name, args) {
+                        return true;
+                    }
                     if self.throwing_functions.contains(name) {
                         return true;
                     }
+                }
+
+                if self.expr_calls_throwing_function(func) {
+                    return true;
                 }
 
                 // Check arguments recursively
@@ -352,7 +376,15 @@ impl ThrowAnalyzer {
 
             // Indexing/slicing - check all parts
             ExprKind::Index { value, index } => {
-                self.expr_calls_throwing_function(value) || self.expr_calls_throwing_function(index)
+                if self.expr_calls_throwing_function(value)
+                    || self.expr_calls_throwing_function(index)
+                {
+                    return true;
+                }
+                matches!(
+                    value.ty.as_ref(),
+                    Some(Type::List(_)) | Some(Type::Dict(_, _))
+                )
             }
 
             ExprKind::Slice {
@@ -361,16 +393,19 @@ impl ThrowAnalyzer {
                 end,
                 step,
             } => {
-                self.expr_calls_throwing_function(value)
+                if self.expr_calls_throwing_function(value)
                     || start
                         .as_ref()
                         .is_some_and(|s| self.expr_calls_throwing_function(s))
                     || end
                         .as_ref()
                         .is_some_and(|e| self.expr_calls_throwing_function(e))
-                    || step
-                        .as_ref()
-                        .is_some_and(|st| self.expr_calls_throwing_function(st))
+                {
+                    return true;
+                }
+                step.as_ref().is_some_and(|st| {
+                    self.expr_calls_throwing_function(st) || self.step_value_can_throw(st)
+                })
             }
 
             // List comprehension - check element expr, iterator, and filters
@@ -400,6 +435,40 @@ impl ThrowAnalyzer {
 
             // Literals and names can't throw
             _ => false,
+        }
+    }
+
+    fn builtin_call_can_throw(&self, name: &str, args: &[Expr]) -> bool {
+        match name {
+            "chr" | "ord" | "next" => true,
+            "max" | "min" => args.len() == 1,
+            "int" | "float" => {
+                if args.is_empty() {
+                    return false;
+                }
+                !matches!(
+                    args[0].ty.as_ref(),
+                    Some(Type::Int | Type::Float | Type::Bool)
+                )
+            }
+            "range" => {
+                if args.len() == 3 {
+                    match &args[2].kind {
+                        ExprKind::Literal(Literal::Int(n)) => *n == 0,
+                        _ => true,
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn step_value_can_throw(&self, step: &Expr) -> bool {
+        match &step.kind {
+            ExprKind::Literal(Literal::Int(n)) => *n == 0,
+            _ => true,
         }
     }
 }
