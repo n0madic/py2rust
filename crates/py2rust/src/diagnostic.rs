@@ -4,6 +4,19 @@ use crate::span::Span;
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use thiserror::Error;
 
+/// Compile error with rich source context.
+///
+/// We use the `miette` crate for error reporting because it provides:
+/// 1. Beautiful terminal output with source snippets and underlining
+/// 2. Support for multiple labels and help text
+/// 3. Integration with the Diagnostic trait for composability
+///
+/// The #[derive(Diagnostic)] macro generates the reporting boilerplate.
+/// Each field is annotated with how it should appear in the error:
+/// - #[error] - The main error message
+/// - #[label] - Underlines the problematic span in source
+/// - #[source_code] - Provides the source text for context
+/// - #[help] - Optional suggestion for fixing the error
 #[derive(Debug, Error, Diagnostic)]
 #[error("{message}")]
 pub struct CompileError {
@@ -38,6 +51,14 @@ impl CompileError {
     }
 }
 
+/// Compiler warning with rich source context.
+///
+/// Identical to CompileError but with severity level set to "warning".
+/// This affects how miette displays it (typically in yellow instead of red).
+///
+/// Warnings are for code that compiles but might not behave as expected,
+/// such as unused variables or potential type mismatches that we can't
+/// definitively prove are errors.
 #[derive(Debug, Error, Diagnostic)]
 #[error("{message}")]
 #[diagnostic(severity(warning))]

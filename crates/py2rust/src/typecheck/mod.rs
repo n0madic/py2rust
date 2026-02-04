@@ -20,24 +20,67 @@ mod type_ops;
 
 pub use context::{ClassInfo, FunctionSig, TypeContext, UnionInfo};
 
+/// Global scope tracking for top-level statements.
+///
+/// Python's `global` statement affects variable resolution. We track which
+/// variables have been declared as global and detect uses before declaration.
 #[derive(Debug, Default, Clone)]
 struct GlobalScope {
+    /// Variables explicitly declared with `global` statement
     declared: HashSet<String>,
+    /// Variables used before being declared global (for error reporting)
     used_before_decl: HashMap<String, Span>,
 }
 
+/// The type checker performs type inference and validation on the HIR.
+///
+/// Type checking is a critical phase that:
+/// 1. Resolves TypeRef annotations to concrete Type values
+/// 2. Infers types for variables and expressions without annotations
+/// 3. Validates type compatibility in assignments, function calls, operations
+/// 4. Detects which functions can throw exceptions (for Result return types)
+/// 5. Fills in the `ty` fields in HIR Expr nodes for codegen to use
+///
+/// The type checker maintains:
+/// - TypeContext: Global registry of classes, unions, functions, and types
+/// - Scope stack: For lexical scoping of local variables
+/// - Global scope stack: For tracking Python's `global` declarations
+/// - Lambda definitions: Inline lambda bodies that need type inference
+///
+/// Design notes:
+/// - We use a simple scope stack rather than a symbol table because Python
+///   has relatively simple scoping rules (no block scoping, just function scoping)
+/// - Exception analysis is done in a separate pass AFTER type checking because
+///   it needs complete type information to determine which operations can throw
+/// - We track exception handler depth to properly handle bare `raise` statements
 pub struct TypeChecker<'a> {
     source: &'a str,
     filename: &'a str,
+    /// Type context containing all type information (output of type checking)
     ctx: TypeContext,
+    /// Stack of local variable scopes (for nested functions, comprehensions, etc.)
     scopes: Vec<HashMap<String, Type>>,
+    /// Stack of global scopes (for tracking `global` declarations)
     global_scopes: Vec<GlobalScope>,
+    /// Accumulated warnings (e.g., unused variables, potential issues)
     warnings: Vec<Warning>,
+    /// Depth of nested exception handlers (for bare `raise` validation)
     except_handler_depth: usize,
+    /// Lambda expression bodies (stored for deferred type inference)
     lambda_defs: HashMap<String, Expr>,
 }
 
 impl<'a> TypeChecker<'a> {
+    /// Create a new type checker and collect top-level signatures.
+    ///
+    /// Before we can type check function bodies, we need to know the signatures
+    /// of all functions and the structure of all classes/unions. This first pass
+    /// collects that information.
+    ///
+    /// We do this in two passes because:
+    /// 1. Functions can call each other recursively
+    /// 2. Classes can reference each other (e.g., Node having a List[Node] field)
+    /// 3. Union variants must be previously-defined classes
     pub fn new(
         program: &Program,
         source: &'a str,
@@ -48,6 +91,7 @@ impl<'a> TypeChecker<'a> {
         let functions = HashMap::new();
         let globals = HashMap::new();
 
+        // First pass: collect union definitions
         for item in &program.items {
             if let Item::Union(def) = item {
                 unions.insert(
@@ -60,6 +104,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Second pass: collect class definitions (need to know about unions first)
         for item in &program.items {
             if let Item::Class(class_def) = item {
                 classes.insert(
@@ -93,19 +138,37 @@ impl<'a> TypeChecker<'a> {
             lambda_defs: HashMap::new(),
         };
 
+        // Third pass: collect function and class signatures (methods, fields)
         checker.collect_signatures(program)?;
 
         Ok(checker)
     }
 
+    /// Main entry point for type checking a program.
+    ///
+    /// Type checking happens in several phases:
+    /// 1. Check top-level statements (initializers, assignments)
+    /// 2. Check all function bodies
+    /// 3. Check all class methods
+    /// 4. Run exception analysis to determine which functions can throw
+    /// 5. Update function signatures with Result types if they can throw
+    ///
+    /// The order matters: we need to type check all code before we can
+    /// analyze exception propagation, because exception analysis needs
+    /// to know the types of all function calls.
     pub fn check_program(&mut self, program: &mut Program) -> Result<TypeContext, CompileError> {
+        // Set up top-level scope with __name__
         self.scopes.push(HashMap::new());
         self.insert_var("__name__", Type::Str, Span::new(0, 0))?;
+
+        // Type check top-level statements
         for item in &mut program.items {
             if let Item::Stmt(stmt) = item {
                 self.check_stmt(stmt.as_mut(), None)?;
             }
         }
+
+        // Save global variable types (excluding __name__ which is a constant)
         if let Some(scope) = self.scopes.last() {
             self.ctx.globals = scope
                 .iter()
@@ -113,6 +176,8 @@ impl<'a> TypeChecker<'a> {
                 .map(|(name, ty)| (name.clone(), ty.clone()))
                 .collect();
         }
+
+        // Type check all functions and classes
         for item in &mut program.items {
             match item {
                 Item::Function(func) => self.check_function(func, None)?,
@@ -122,11 +187,13 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Run throw analysis AFTER type checking
+        // Run exception analysis AFTER type checking
+        // This determines which functions can throw exceptions and need Result return types
         let mut throw_analyzer = throws::ThrowAnalyzer::new(&self.ctx);
         let throw_map = throw_analyzer.analyze_program(program);
 
-        // Update function signatures with throw information
+        // Update function signatures with exception information
+        // Functions that can throw get their return type wrapped in Result<T, PyError>
         for (func_name, can_throw) in throw_map {
             if let Some(sig) = self.ctx.functions.get_mut(&func_name) {
                 sig.can_throw = can_throw;

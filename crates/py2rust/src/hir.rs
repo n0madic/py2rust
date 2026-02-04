@@ -1,19 +1,42 @@
 use crate::span::Span;
 use crate::types::{Type, TypeRef};
 
+/// The High-level Intermediate Representation (HIR) for the program.
+///
+/// HIR sits between the RustPython AST and Rust codegen. It's designed to:
+/// 1. Strip away Python-specific AST details that aren't needed for transpilation
+/// 2. Normalize similar constructs (e.g., all assignments use AssignTarget)
+/// 3. Provide stable anchor points for type information via `ty` fields
+/// 4. Make the structure easier to traverse during type checking and codegen
+///
+/// The HIR is built by the Lowerer and consumed by TypeChecker and Codegen.
 #[derive(Debug, Clone)]
 pub struct Program {
     pub items: Vec<Item>,
 }
 
+/// Top-level items in a Python module.
+///
+/// Design note: We separate top-level statements into Item::Stmt because they need
+/// special handling in codegen (they go into the generated `fn main()`), whereas
+/// functions and classes become top-level Rust items.
 #[derive(Debug, Clone)]
 pub enum Item {
     Function(Function),
     Class(ClassDef),
+    /// Union types are Python's enum-like tagged unions (e.g., `type Result = Ok | Err`)
     Union(UnionDef),
+    /// Top-level statement that will be executed in `fn main()`
     Stmt(Box<Stmt>),
 }
 
+/// A union type definition (tagged union/enum).
+///
+/// Python: `type Status = Success | Failure`
+/// Rust:   `enum Status { Success(SuccessData), Failure(FailureData) }`
+///
+/// Each variant must be a previously-defined class. The union becomes a Rust enum
+/// where each variant wraps the corresponding class type.
 #[derive(Debug, Clone)]
 pub struct UnionDef {
     pub name: String,
@@ -37,6 +60,13 @@ pub struct Param {
     pub span: Span,
 }
 
+/// Class definition for data classes only.
+///
+/// We only support simple data classes (plain structs), not full OOP with inheritance,
+/// polymorphism, etc. Methods are just functions that take `self` as the first parameter.
+///
+/// Python: `class Point: x: int; y: int`
+/// Rust:   `struct Point { x: i64, y: i64 }`
 #[derive(Debug, Clone)]
 pub struct ClassDef {
     pub name: String,
@@ -52,19 +82,38 @@ pub struct FieldDef {
     pub span: Span,
 }
 
+/// Statement in the HIR.
+///
+/// Each statement has a Span for error reporting and source mapping.
+/// Unlike expressions, statements don't directly carry type information
+/// (though their sub-expressions do).
 #[derive(Debug, Clone)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
 }
 
+/// Statement kinds supported in the transpiler.
+///
+/// Design notes:
+/// - Let vs Assign: Let introduces a new variable, Assign mutates existing.
+///   This distinction is important for generating `let` vs bare assignment in Rust.
+/// - Global: Tracks which variables should be treated as module-level globals.
+///   Currently limited in scope but needed for `__name__` and similar.
+/// - Try/Except: Exception handling is complex - see EXCEPTIONS.md for details.
+///   Variables declared in try blocks are wrapped in Option<T> to be accessible
+///   in else blocks without violating Rust's borrow checker.
 #[derive(Debug, Clone)]
 pub enum StmtKind {
+    /// Variable declaration with optional type annotation.
+    /// In Rust: `let name: Type = value`
     Let {
         name: String,
         ann: Option<TypeRef>,
         value: Expr,
     },
+    /// Assignment to an existing variable, field, or index.
+    /// In Rust: bare assignment without `let`
     Assign {
         target: AssignTarget,
         value: Expr,
@@ -86,26 +135,40 @@ pub enum StmtKind {
         iter: Expr,
         body: Vec<Stmt>,
     },
+    /// Global declaration (limited support)
     Global {
         names: Vec<String>,
     },
     Break,
     Continue,
+    /// Expression statement (e.g., a function call for side effects)
     Expr(Expr),
     Assert {
         test: Expr,
         msg: Option<Expr>,
     },
+    /// Pattern matching on union variants.
+    /// Python: `match value: case Success(x): ...`
+    /// Rust:   `match value { Status::Success(x) => ... }`
     Match {
         subject: Expr,
         cases: Vec<MatchCase>,
     },
+    /// Exception handling try/except/else/finally.
+    /// This is one of the most complex constructs because we need to:
+    /// 1. Transform try block into a closure returning Result
+    /// 2. Handle variable scoping across try/except/else
+    /// 3. Support bare `raise` (re-raising current exception)
+    /// 4. Ensure finally always runs via Drop guard
     Try {
         body: Vec<Stmt>,
         handlers: Vec<ExceptHandler>,
         orelse: Vec<Stmt>,
         finalbody: Vec<Stmt>,
     },
+    /// Raise an exception.
+    /// - exc: The exception to raise (None for bare `raise`)
+    /// - cause: Exception chaining is NOT supported, will error if present
     Raise {
         exc: Option<Expr>,
         cause: Option<Expr>,
@@ -120,6 +183,11 @@ pub struct MatchCase {
     pub span: Span,
 }
 
+/// Exception handler (except clause).
+///
+/// - exc_type: The exception class to catch (None means catch-all)
+/// - name: Variable binding for the exception object (if provided)
+/// - body: Handler body statements
 #[derive(Debug, Clone)]
 pub struct ExceptHandler {
     pub exc_type: Option<String>,
@@ -128,6 +196,14 @@ pub struct ExceptHandler {
     pub span: Span,
 }
 
+/// Targets for assignment operations.
+///
+/// AssignTarget unifies different assignment forms:
+/// - Simple: `x = value`
+/// - Attribute: `obj.field = value`
+/// - Index: `list[i] = value`
+///
+/// This makes codegen cleaner since we handle all assignment targets uniformly.
 #[derive(Debug, Clone)]
 pub enum AssignTarget {
     Name(String),
@@ -135,6 +211,16 @@ pub enum AssignTarget {
     Index { value: Expr, index: Expr },
 }
 
+/// Expression in the HIR.
+///
+/// Each expression has:
+/// - kind: The actual expression structure
+/// - span: Source location for error reporting
+/// - ty: Type information filled in by the type checker
+///
+/// The `ty` field is None during lowering and gets populated during type checking.
+/// This allows us to thread type information through the HIR without modifying
+/// its structure after type checking completes.
 #[derive(Debug, Clone)]
 pub struct Expr {
     pub kind: ExprKind,
@@ -142,6 +228,20 @@ pub struct Expr {
     pub ty: Option<Type>,
 }
 
+/// Expression kinds supported by the transpiler.
+///
+/// Design notes:
+/// - Call is generic: it handles builtins (print, len), user functions, methods, and lambdas.
+///   The type checker determines what kind of call it is based on the func type.
+/// - Binary/Unary/Compare: Separated for clarity, though they could be unified.
+///   This makes pattern matching in type checking and codegen more ergonomic.
+/// - ListComp: We only support simple comprehensions (single for, optional ifs).
+///   Nested comprehensions would require more complex HIR representation.
+/// - UnionCtor: Special constructor form for creating union variants.
+///   Python: `Success(value)` where Success is a union variant
+///   Rust:   `Status::Success(value)` where Status is the enum
+/// - Block: Used for try blocks and lambdas. Contains statements that are executed
+///   sequentially, with the last expression (if any) being the block's value.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Literal(Literal),
@@ -180,37 +280,58 @@ pub enum ExprKind {
         value: Box<Expr>,
         index: Box<Expr>,
     },
+    /// Slice expression: value[start:end:step]
+    /// All slice components are optional (e.g., `lst[:]` copies the list)
     Slice {
         value: Box<Expr>,
         start: Option<Box<Expr>>,
         end: Option<Box<Expr>>,
         step: Option<Box<Expr>>,
     },
+    /// List comprehension: [elt for target in iter if conditions]
+    /// We only support single-loop comprehensions; nested loops are not supported.
     ListComp {
         elt: Box<Expr>,
         target: String,
         iter: Box<Expr>,
         ifs: Vec<Expr>,
     },
+    /// Constructor call for a union variant.
+    /// This is lowered from a Call expression when the function is determined
+    /// to be a union variant name during type checking.
     UnionCtor {
         union: String,
         variant: String,
         inner: Box<Expr>,
     },
+    /// Lambda/anonymous function.
+    /// Python: `lambda x, y: x + y`
+    /// Rust:   `|x, y| x + y` or `move |x, y| x + y`
     Lambda {
         params: Vec<String>,
         body: Box<Expr>,
     },
+    /// Conditional expression (ternary).
+    /// Python: `value if condition else other`
+    /// Rust:   `if condition { value } else { other }`
     IfExpr {
         test: Box<Expr>,
         body: Box<Expr>,
         orelse: Box<Expr>,
     },
+    /// Block expression containing statements.
+    /// Used for try blocks and complex lambda bodies.
+    /// The block's value is the value of the last expression (if any).
     Block {
         stmts: Vec<Stmt>,
     },
 }
 
+/// Literal values in Python.
+///
+/// Design note: We use i64/f64 for int/float to match Rust's default numeric types.
+/// Larger integers would require BigInt support, which we don't currently provide.
+/// String literals are stored as String (not &str) to simplify ownership.
 #[derive(Debug, Clone)]
 pub enum Literal {
     Int(i64),
@@ -220,6 +341,10 @@ pub enum Literal {
     None,
 }
 
+/// Binary operators.
+///
+/// Note: Pow (**) is emitted as `i64::pow()` or `f64::powf()` in Rust,
+/// not as a binary operator (Rust doesn't have one).
 #[derive(Debug, Clone, Copy)]
 pub enum BinOp {
     Add,
@@ -234,12 +359,22 @@ pub enum BinOp {
     BitXor,
 }
 
+/// Unary operators.
+///
+/// Not is logical negation (!)
+/// Neg is arithmetic negation (-)
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOp {
     Neg,
     Not,
 }
 
+/// Comparison operators.
+///
+/// Design notes:
+/// - Is/IsNot: For checking object identity (maps to `ptr::eq` for None checks,
+///   otherwise generates compile error since we don't expose object identity)
+/// - In/NotIn: For membership testing (lists, sets, dicts, strings)
 #[derive(Debug, Clone, Copy)]
 pub enum CmpOp {
     Eq,
@@ -254,6 +389,10 @@ pub enum CmpOp {
     NotIn,
 }
 
+/// Boolean operators.
+///
+/// These are short-circuiting in Python and Rust.
+/// And/Or map directly to && and ||.
 #[derive(Debug, Clone, Copy)]
 pub enum BoolOp {
     And,

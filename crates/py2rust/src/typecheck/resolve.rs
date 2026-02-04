@@ -1,6 +1,25 @@
 use super::*;
 
+/// Type reference resolution.
+///
+/// During lowering, we create TypeRef objects from Python type annotations.
+/// During type checking, we need to resolve these to actual Type objects.
+///
+/// Why separate TypeRef and Type?
+/// - TypeRef: What we parse from source ("List[int]", "Optional[str]")
+/// - Type: What we use during checking (Type::List(Box::new(Type::Int)))
+///
+/// Resolution involves:
+/// 1. Looking up class/union names in the type context
+/// 2. Validating that generic parameters make sense
+/// 3. Handling special cases (Optional = Union[T, None])
+/// 4. Rejecting invalid uses (Iterator[T] only valid as return type)
+
 impl<'a> TypeChecker<'a> {
+    /// Resolve parameter type annotations.
+    ///
+    /// Validates that Iterator[T] is not used as a parameter type
+    /// (only allowed as return type for generator functions).
     pub(super) fn resolve_params(&self, params: &[Param]) -> Result<Vec<Type>, CompileError> {
         let mut out = Vec::new();
         for p in params {
@@ -13,6 +32,19 @@ impl<'a> TypeChecker<'a> {
         Ok(out)
     }
 
+    /// Resolve a type reference to a concrete type.
+    ///
+    /// Handles:
+    /// - Built-in types (int, float, bool, str)
+    /// - User-defined classes and unions
+    /// - Generic types (List, Dict, Tuple, Set, Optional)
+    /// - Function types (Lambda)
+    /// - Iterator types (only valid as return type)
+    /// - Inline unions (only Optional[T] = T | None allowed)
+    ///
+    /// Why reject most inline unions?
+    /// Rust doesn't have union types, only enums. We only support
+    /// Union classes (which become Rust enums) and Optional (which becomes Option).
     pub(super) fn resolve_type_ref(&self, ty: &TypeRef, span: Span) -> Result<Type, CompileError> {
         match ty {
             TypeRef::Name(name) => Ok(match name.as_str() {
@@ -62,6 +94,9 @@ impl<'a> TypeChecker<'a> {
                 })
             }
             TypeRef::Union(parts) => {
+                // Inline union type: T | U | None
+                // We only support T | None (which becomes Option<T>)
+                // Other union combinations must use Union class syntax
                 let mut has_none = false;
                 let mut other = Vec::new();
                 for part in parts {
@@ -72,9 +107,11 @@ impl<'a> TypeChecker<'a> {
                         other.push(t);
                     }
                 }
+                // Accept T | None (becomes Option<T>)
                 if has_none && other.len() == 1 {
                     Ok(Type::Option(Box::new(other.remove(0))))
                 } else {
+                    // Reject A | B, A | B | C, etc.
                     Err(self.error(span, "Inline unions are only allowed for Optional[T]"))
                 }
             }

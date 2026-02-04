@@ -1,13 +1,31 @@
 use super::*;
 
+/// Function definition type checking.
+///
+/// Functions are type-checked in their own scope with:
+/// 1. Parameters pre-populated with their declared types
+/// 2. Return type validated against all return statements
+/// 3. Automatic return type inference if not annotated
+///
+/// Special handling:
+/// - Methods receive `self` parameter (checked against class type)
+/// - Return type inference scans all return statements
+/// - Unknown parameter types can be inferred from usage
+/// - Global variable handling (must be declared before use)
+
 impl<'a> TypeChecker<'a> {
+    /// Type check a function definition.
+    ///
+    /// If class_name is provided, this is a method and we validate `self` parameter.
     pub(super) fn check_function(
         &mut self,
         func: &mut Function,
         class_name: Option<&str>,
     ) -> Result<(), CompileError> {
+        // Create a new scope for this function
         self.scopes.push(HashMap::new());
         self.global_scopes.push(GlobalScope::default());
+        // For methods, validate and insert `self` parameter
         if let Some(class_name) = class_name {
             if let Some(first) = func.params.first() {
                 let self_ty = self.resolve_type_ref(&first.ann, first.span)?;
@@ -35,8 +53,11 @@ impl<'a> TypeChecker<'a> {
             self.check_stmt(stmt, Some(&func.ret))?;
         }
 
+        // Infer return type if not annotated
+        // We scan all return statements and find a common type
         if matches!(func.ret, TypeRef::Unknown) {
             let mut inferred: Option<Type> = None;
+            // Recursively visit statements to find return statements
             fn visit(stmt: &Stmt, inferred: &mut Option<Type>) {
                 match &stmt.kind {
                     StmtKind::Return { value } => {

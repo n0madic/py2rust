@@ -1,5 +1,21 @@
 use std::fmt;
 
+/// The type system used during type checking and code generation.
+///
+/// This is a fully-resolved type (as opposed to TypeRef which is an AST-level type annotation).
+/// During type checking, TypeRef annotations are resolved into Type values.
+///
+/// Key design decisions:
+/// - `Str` maps to Rust `String`, not `&str`, to avoid lifetime complexity. This means
+///   string literals are allocated, but it simplifies the type system dramatically.
+/// - `Int` and `Float` map directly to `i64` and `f64` respectively, with explicit
+///   suffix literals in codegen to avoid ambiguity.
+/// - `Ref` and `MutRef` are used internally for method receivers and borrowing but are
+///   not expressible in Python source annotations.
+/// - `Lambda` types are emitted as `impl Fn(...) -> ... + 'static` in Rust to avoid
+///   boxing overhead while supporting closure captures.
+/// - `Unknown` is used during type inference for variables that haven't been resolved yet.
+///   It's allowed locally but should be resolved before codegen.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Int,
@@ -13,18 +29,29 @@ pub enum Type {
     Set(Box<Type>),
     Option(Box<Type>),
     Custom(String),
+    /// Union types are only allowed for enum-like classes (tagged unions).
+    /// Inline union types like `int | str` are not supported except via Optional[T].
     Union(String),
     Iterator(Box<Type>),
-    Lambda { params: Vec<Type>, ret: Box<Type> },
-    Ref(Box<Type>),               // &T (immutable reference)
-    MutRef(Box<Type>),            // &mut T (mutable reference)
-    Slice(Box<Type>),             // &[T] (slice reference)
+    Lambda {
+        params: Vec<Type>,
+        ret: Box<Type>,
+    },
+    Ref(Box<Type>),    // &T (immutable reference)
+    MutRef(Box<Type>), // &mut T (mutable reference)
+    Slice(Box<Type>),  // &[T] (slice reference)
+    /// Result types are used for functions that can raise exceptions.
+    /// The Ok type is the normal return value, Err is always PyError.
     Result(Box<Type>, Box<Type>), // Result<T, E>
-    Exception(String),            // PyError or custom exception
+    /// Exception types represent Python exception classes.
+    /// Used in except handlers and raise statements.
+    Exception(String), // PyError or custom exception
     Unknown,
 }
 
 impl Type {
+    /// Check if this type is numeric (int or float).
+    /// Used for determining valid arithmetic operations.
     pub fn is_numeric(&self) -> bool {
         matches!(self, Type::Int | Type::Float)
     }
@@ -33,6 +60,7 @@ impl Type {
         matches!(self, Type::Option(_))
     }
 
+    /// Extract the inner type from Optional[T], if this is an optional type.
     pub fn unwrap_option(&self) -> Option<&Type> {
         match self {
             Type::Option(inner) => Some(inner.as_ref()),
@@ -44,6 +72,8 @@ impl Type {
         matches!(self, Type::Exception(_))
     }
 
+    /// Extract Ok and Err types from Result<T, E>.
+    /// Used in exception handling to determine function signatures.
     pub fn unwrap_result(&self) -> Option<(&Type, &Type)> {
         match self {
             Type::Result(ok, err) => Some((ok.as_ref(), err.as_ref())),
@@ -51,6 +81,9 @@ impl Type {
         }
     }
 
+    /// Wrap this type in Result<T, error_type>.
+    /// Used when a function can raise exceptions - the normal return type
+    /// becomes the Ok variant, and error_type (typically PyError) is the Err variant.
     pub fn wrap_result(self, error_type: Type) -> Type {
         Type::Result(Box::new(self), Box::new(error_type))
     }
@@ -86,6 +119,17 @@ impl fmt::Display for Type {
     }
 }
 
+/// TypeRef represents a type annotation as it appears in Python source code.
+///
+/// This is the AST-level representation before type resolution. During lowering,
+/// Python type annotations are converted into TypeRef nodes. During type checking,
+/// TypeRef nodes are resolved into actual Type values.
+///
+/// Key differences from Type:
+/// - TypeRef can have Union of arbitrary types, while Type restricts Union to named enum classes
+/// - TypeRef::Name is unresolved (could refer to a class, builtin, or type parameter)
+/// - TypeRef includes None as a separate variant (used in function signatures)
+/// - TypeRef::Unknown represents missing or inferred type annotations
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeRef {
     Name(String),
@@ -102,7 +146,10 @@ pub enum TypeRef {
     },
     Result(Box<TypeRef>, Box<TypeRef>),
     Exception(String),
+    /// Unknown represents inferred types or missing annotations.
+    /// The type checker will attempt to infer the actual type.
     Unknown,
+    /// None as a type annotation (e.g., in return type `-> None`)
     None,
 }
 

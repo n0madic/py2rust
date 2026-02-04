@@ -1,6 +1,34 @@
 use super::*;
 
+/// F-string (formatted string literal) lowering.
+///
+/// Python f-strings: `f"Hello {name}!"`
+/// Are lowered to Rust format! macro calls: `format!("Hello {}!", name)`
+///
+/// This module handles the complex task of converting Python's f-string syntax
+/// to Rust's format! macro, which has different rules:
+///
+/// 1. **Brace escaping**: In Python f-strings, {{ and }} represent literal braces.
+///    In Rust format!, the same syntax is used. We preserve this.
+///
+/// 2. **Format specifiers**: Python uses : for format specs (e.g., {x:.2f})
+///    Rust uses : similarly but with different syntax. We map common patterns.
+///
+/// 3. **Expressions**: Python allows arbitrary expressions in {}
+///    Rust's format! only allows variable names and simple paths.
+///    We lower the expression separately and bind it to a temp variable if needed.
+///
+/// Format spec mapping examples:
+/// - Python {x:.2f} -> Rust {:.2}
+/// - Python {x:d} -> Rust {} (integer formatting is default)
+/// - Python {x:x} -> Rust {:x} (hex)
+/// - Python {x:b} -> Rust {:b} (binary)
+
 impl<'a> Lowerer<'a> {
+    /// Escape literal braces in format strings.
+    ///
+    /// Both Python and Rust use {{ and }} for literal braces in format strings,
+    /// so we convert each { to {{ and each } to }}.
     pub(super) fn escape_format_literal(&self, s: &str) -> String {
         let mut out = String::new();
         for ch in s.chars() {
@@ -45,6 +73,20 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Map Python format specifier to Rust format specifier.
+    ///
+    /// Python format spec syntax: [[fill]align][sign][#][0][width][,][.precision][type]
+    /// Rust format spec syntax: [[fill]align][sign][#][0][width][.precision][type]
+    ///
+    /// We support a subset:
+    /// - width: number of characters (both Python and Rust)
+    /// - .precision: decimal places for floats (both)
+    /// - type: f (float), d (decimal int), x/X (hex), o (octal), b (binary)
+    ///
+    /// Examples:
+    /// - ".2f" -> ".2" (Rust infers float formatting)
+    /// - "10d" -> "10" (Rust infers int formatting)
+    /// - "x" -> "x" (hex formatting)
     pub(super) fn map_format_spec(
         &self,
         spec: &str,
@@ -53,9 +95,12 @@ impl<'a> Lowerer<'a> {
         if spec.is_empty() {
             return Ok(String::new());
         }
+        // Format specs can't contain braces (they'd be confused with expressions)
         if spec.contains('{') || spec.contains('}') {
             return Err(self.error(range, "f-string format spec may not contain braces"));
         }
+
+        // Extract type character (last char if it's a type indicator)
         let last = spec.chars().last();
         let (body, ty) = if let Some(ch) = last {
             if matches!(ch, 'f' | 'd' | 'x' | 'X' | 'o' | 'b') {

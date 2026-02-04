@@ -1,6 +1,21 @@
 use super::*;
 
+/// This module scans the HIR to determine which helper functions and imports are needed.
+///
+/// Why scan before generating?
+/// - We only want to emit helpers that are actually used (keeps output clean)
+/// - We need to know imports (HashMap, HashSet) before emitting the header
+/// - Some optimizations require whole-program analysis (e.g., __name__ comparison)
+///
+/// The scan pass is read-only - it doesn't modify the HIR, just sets flags in `Uses`.
+
 impl<'a> Codegen<'a> {
+    /// Scan the entire program to determine which helpers are needed.
+    ///
+    /// This traverses all functions, classes, statements, and expressions to find:
+    /// - Builtin calls (print, len, range, etc.)
+    /// - Collection types (dict, set - need HashMap/HashSet imports)
+    /// - Special operations (slicing, indexing - may need helpers)
     pub(crate) fn collect_uses(&mut self, program: &Program) -> Result<(), CompileError> {
         for item in &program.items {
             match item {
@@ -64,6 +79,18 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Analyze if __name__ is only used in comparisons with string literals.
+    ///
+    /// Common Python idiom: `if __name__ == "__main__":`
+    ///
+    /// Optimization opportunity:
+    /// - If __name__ is only compared to literals, we can emit const comparisons:
+    ///   `__NAME__ == "__main__"` (no allocation)
+    /// - Otherwise, we must emit `__NAME__.to_string()` on each access (allocates)
+    ///
+    /// This function returns true if we can use the optimized version.
+    /// It traverses the entire program looking for __name__ uses that aren't
+    /// simple string literal comparisons.
     pub(crate) fn analyze_name_compare_only(&self, program: &Program) -> bool {
         let mut ok = true;
         fn visit_stmt(stmt: &Stmt, ok: &mut bool) {

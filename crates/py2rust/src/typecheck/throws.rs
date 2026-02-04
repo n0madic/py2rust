@@ -1,6 +1,30 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 
+/// Exception propagation analysis.
+///
+/// This module determines which functions can throw exceptions that aren't caught.
+/// This information is critical for Rust code generation because:
+/// 1. Functions that can throw must return Result<T, PyError>
+/// 2. Callers of throwing functions must handle the Result
+/// 3. We need to know this before generating code
+///
+/// Analysis strategy:
+/// Phase 1: Find functions with explicit uncaught `raise` statements
+/// Phase 2: Propagate through call graph (fixed-point iteration)
+///          If function A calls throwing function B without catching, A throws
+/// Phase 3: Build final map of function_name -> can_throw
+///
+/// Why multi-phase?
+/// - Explicit raises are easy to detect directly
+/// - Call propagation requires knowing what other functions throw
+/// - Fixed-point iteration handles mutual recursion (A calls B, B calls A)
+///
+/// Try/except handling:
+/// - `except:` or `except Exception:` catches all exceptions
+/// - Specific exception types don't catch all (yet)
+/// - Raises in except/else/finally handlers propagate normally
+///
 /// Analyzes which functions can throw exceptions through control flow analysis
 pub struct ThrowAnalyzer {
     throwing_functions: HashSet<String>,
@@ -13,9 +37,21 @@ impl ThrowAnalyzer {
         }
     }
 
-    /// Analyze the entire program to determine which functions can throw
+    /// Analyze the entire program to determine which functions can throw.
+    ///
+    /// Returns a map from function name to whether it can throw.
+    ///
+    /// The analysis is conservative - we may mark functions as throwing
+    /// even if they never actually throw in practice. But we never miss
+    /// a function that could throw (which would cause Rust compile errors).
+    ///
+    /// Algorithm:
+    /// 1. Find all functions with direct `raise` statements not in try/except
+    /// 2. Repeatedly scan all functions to find those calling throwing functions
+    /// 3. Continue until no new throwing functions are discovered (fixed-point)
     pub fn analyze_program(&mut self, program: &Program) -> HashMap<String, bool> {
-        // Phase 1: Find functions with explicit uncaught raise
+        // Phase 1: Direct exception detection
+        // Find functions that explicitly raise exceptions without catching them
         for item in &program.items {
             if let Item::Function(func) = item {
                 if self.has_uncaught_raise(&func.body) {
@@ -24,7 +60,19 @@ impl ThrowAnalyzer {
             }
         }
 
-        // Phase 2: Propagate through call graph (fixed-point iteration)
+        // Phase 2: Call graph propagation (fixed-point iteration)
+        // If function calls a throwing function and doesn't catch, it throws too.
+        // We repeat until no new throwing functions are discovered.
+        //
+        // Why loop? Consider:
+        //   def a(): b()  # a throws if b throws
+        //   def b(): c()  # b throws if c throws
+        //   def c(): raise ValueError()
+        //
+        // Iteration 1: c is marked throwing (phase 1)
+        // Iteration 2: b is marked throwing (calls c)
+        // Iteration 3: a is marked throwing (calls b)
+        // Iteration 4: no changes, done
         loop {
             let mut changed = false;
             for item in &program.items {
@@ -43,6 +91,7 @@ impl ThrowAnalyzer {
         }
 
         // Phase 3: Build result map
+        // Convert our internal set into a map for all functions
         let mut result = HashMap::new();
         for item in &program.items {
             if let Item::Function(func) = item {
@@ -53,21 +102,34 @@ impl ThrowAnalyzer {
         result
     }
 
-    /// Check if statements contain uncaught raise (not inside try/except that catches it)
+    /// Check if statements contain uncaught raise statements.
+    ///
+    /// A raise is "uncaught" if:
+    /// 1. It's not inside a try/except block, OR
+    /// 2. It's inside a try but the except doesn't catch all exceptions
+    ///
+    /// We're conservative: we only consider `except:` or `except Exception:`
+    /// as catching all. Specific exception types might not catch everything.
+    ///
+    /// Raises in except/else/finally blocks always propagate (they're not
+    /// caught by the same try/except they're in).
     fn has_uncaught_raise(&self, stmts: &[Stmt]) -> bool {
         for stmt in stmts {
             match &stmt.kind {
+                // Bare raise statement - always propagates
                 StmtKind::Raise { .. } => return true,
 
+                // Try/except block - need to check if exceptions are caught
                 StmtKind::Try {
                     body,
                     handlers,
                     orelse,
                     finalbody,
                 } => {
-                    // Check if try body has raises that AREN'T caught
+                    // Check if try body has raises
                     if self.has_uncaught_raise(body) {
-                        // Check if handlers catch all exceptions
+                        // Check if any handler catches all exceptions
+                        // Only `except:` (no type) catches everything
                         let catches_all = handlers.iter().any(|h| h.exc_type.is_none());
                         if !catches_all {
                             // Handlers don't catch all, so raises propagate
@@ -88,6 +150,7 @@ impl ThrowAnalyzer {
                     }
                 }
 
+                // Control flow - check all branches for uncaught raises
                 StmtKind::If { body, orelse, .. } => {
                     if self.has_uncaught_raise(body) || self.has_uncaught_raise(orelse) {
                         return true;
@@ -120,10 +183,19 @@ impl ThrowAnalyzer {
         false
     }
 
-    /// Check if statements contain calls to throwing functions (not caught)
+    /// Check if statements contain calls to throwing functions (not caught).
+    ///
+    /// Similar to has_uncaught_raise but looks for function calls instead.
+    ///
+    /// A throwing call is "uncaught" if:
+    /// 1. The called function can throw (in our throwing_functions set)
+    /// 2. It's not inside a try/except that catches all
+    ///
+    /// We recursively check expressions to find calls at any depth.
     fn has_uncaught_throwing_call(&self, stmts: &[Stmt]) -> bool {
         for stmt in stmts {
             match &stmt.kind {
+                // Check expressions in statements that can contain calls
                 StmtKind::Expr(expr)
                 | StmtKind::Let { value: expr, .. }
                 | StmtKind::Return { value: Some(expr) } => {
@@ -138,15 +210,16 @@ impl ThrowAnalyzer {
                     }
                 }
 
+                // Try/except - same logic as has_uncaught_raise
                 StmtKind::Try {
                     body,
                     handlers,
                     orelse,
                     finalbody,
                 } => {
-                    // Check if try body has throwing calls that AREN'T caught
+                    // Check if try body has throwing calls
                     if self.has_uncaught_throwing_call(body) {
-                        // Check if handlers catch all exceptions
+                        // Only except: catches all
                         let catches_all = handlers.iter().any(|h| h.exc_type.is_none());
                         if !catches_all {
                             // Handlers don't catch all, so throws propagate
@@ -222,11 +295,19 @@ impl ThrowAnalyzer {
         false
     }
 
-    /// Check if an expression calls a throwing function
+    /// Recursively check if an expression contains a call to a throwing function.
+    ///
+    /// We need to check:
+    /// 1. Direct calls: foo() where foo throws
+    /// 2. Calls in subexpressions: (foo() + 1) where foo throws
+    /// 3. Calls in collections: [foo(), bar()] where either throws
+    ///
+    /// Returns true if any throwing call is found at any depth.
     fn expr_calls_throwing_function(&self, expr: &Expr) -> bool {
         match &expr.kind {
+            // Function call - check if the function throws
             ExprKind::Call { func, args } => {
-                // Check if the called function throws
+                // Check if the called function is in our throwing set
                 if let ExprKind::Name(name) = &func.kind {
                     if self.throwing_functions.contains(name) {
                         return true;
@@ -243,6 +324,7 @@ impl ThrowAnalyzer {
                 false
             }
 
+            // Binary/unary/comparison operators - check operands
             ExprKind::Binary { left, right, .. } => {
                 self.expr_calls_throwing_function(left) || self.expr_calls_throwing_function(right)
             }
@@ -253,18 +335,22 @@ impl ThrowAnalyzer {
                 self.expr_calls_throwing_function(left) || self.expr_calls_throwing_function(right)
             }
 
+            // Boolean operations - check all values
             ExprKind::BoolOp { values, .. } => {
                 values.iter().any(|v| self.expr_calls_throwing_function(v))
             }
 
+            // Collection literals - check all elements
             ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
                 items.iter().any(|e| self.expr_calls_throwing_function(e))
             }
 
+            // Dict literal - check keys and values
             ExprKind::Dict(pairs) => pairs.iter().any(|(k, v)| {
                 self.expr_calls_throwing_function(k) || self.expr_calls_throwing_function(v)
             }),
 
+            // Indexing/slicing - check all parts
             ExprKind::Index { value, index } => {
                 self.expr_calls_throwing_function(value) || self.expr_calls_throwing_function(index)
             }
@@ -287,26 +373,32 @@ impl ThrowAnalyzer {
                         .is_some_and(|st| self.expr_calls_throwing_function(st))
             }
 
+            // List comprehension - check element expr, iterator, and filters
             ExprKind::ListComp { elt, iter, ifs, .. } => {
                 self.expr_calls_throwing_function(elt)
                     || self.expr_calls_throwing_function(iter)
                     || ifs.iter().any(|i| self.expr_calls_throwing_function(i))
             }
 
+            // Union constructor and lambda - check inner expressions
             ExprKind::UnionCtor { inner, .. } => self.expr_calls_throwing_function(inner),
 
             ExprKind::Lambda { body, .. } => self.expr_calls_throwing_function(body),
 
+            // Conditional expression - check all branches
             ExprKind::IfExpr { test, body, orelse } => {
                 self.expr_calls_throwing_function(test)
                     || self.expr_calls_throwing_function(body)
                     || self.expr_calls_throwing_function(orelse)
             }
 
+            // Attribute access - check the object
             ExprKind::Attr { value, .. } => self.expr_calls_throwing_function(value),
 
+            // Block expression - check statements
             ExprKind::Block { stmts } => self.has_uncaught_throwing_call(stmts),
 
+            // Literals and names can't throw
             _ => false,
         }
     }

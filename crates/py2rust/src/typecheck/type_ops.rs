@@ -1,6 +1,28 @@
 use super::*;
 
+/// Type operations and utilities.
+///
+/// This module provides:
+/// 1. iter_item_type: Determine what type a for-loop yields
+/// 2. merge_types: Combine type information from multiple sources
+/// 3. type_to_ref: Convert concrete Type to TypeRef for annotations
+/// 4. ensure_assignable: Check type compatibility
+///
+/// These are fundamental operations used throughout type checking.
+
 impl<'a> TypeChecker<'a> {
+    /// Determine the item type for iteration.
+    ///
+    /// For `for x in collection:`, what is the type of `x`?
+    ///
+    /// Handles:
+    /// - Built-in collections (list, dict, tuple, set, str)
+    /// - Iterator types
+    /// - Custom iterator protocol (__iter__ and next)
+    ///
+    /// Why tuple iteration requires uniform types?
+    /// Rust's for-loop requires a single item type. Python allows
+    /// heterogeneous tuples but we can't express that in Rust's type system.
     pub(super) fn iter_item_type(&self, ty: &Type, span: Span) -> Result<Type, CompileError> {
         match ty {
             Type::List(inner) => Ok(*inner.clone()),
@@ -42,7 +64,19 @@ impl<'a> TypeChecker<'a> {
             _ => Err(self.error(span, "Type is not iterable")),
         }
     }
+
+    /// Merge type information from two sources.
+    ///
+    /// Used for type inference when we have partial information:
+    /// - Unknown + T = T (we learn T)
+    /// - int + float = float (numeric promotion)
+    /// - Lambda types merge parameter-wise
+    ///
+    /// Why this design?
+    /// Type inference often gives us Unknown initially, then we learn
+    /// more. We need to combine this information.
     pub(super) fn merge_types(left: Type, right: Type) -> Type {
+        // Unknown absorbs any concrete type
         if matches!(left, Type::Unknown) {
             return right;
         }
@@ -50,6 +84,7 @@ impl<'a> TypeChecker<'a> {
             return left;
         }
         match (left, right) {
+            // Lambda types: merge parameter and return types recursively
             (
                 Type::Lambda {
                     params: left_params,
@@ -75,17 +110,25 @@ impl<'a> TypeChecker<'a> {
                 Type::Lambda { params, ret }
             }
             (left, right) => {
+                // Numeric types: int + float = float
                 if left.is_numeric() && right.is_numeric() {
                     if matches!(left, Type::Float) || matches!(right, Type::Float) {
                         return Type::Float;
                     }
                     return Type::Int;
                 }
+                // Otherwise keep left side (no better option)
                 left
             }
         }
     }
 
+    /// Convert Type to TypeRef.
+    ///
+    /// Used when we infer a function's return type and need to
+    /// update the function signature's TypeRef annotation.
+    ///
+    /// This is the inverse of resolve_type_ref.
     pub(super) fn type_to_ref(ty: &Type) -> TypeRef {
         match ty {
             Type::Int => TypeRef::Name("int".to_string()),
@@ -119,25 +162,46 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Check if actual type can be assigned to expected type.
+    /// \
+    /// This is our type compatibility check. Allows:
+    /// - Exact matches (int == int)
+    /// - int -> float (numeric promotion)
+    /// - T -> Optional[T] (auto-wrap in Some)
+    /// - None -> Optional[T] (None works for any Optional)
+    /// - Callable with matching signatures
+    /// - Unknown matches anything (for inference)
+    /// \
+    /// Why these rules?
+    /// - Python allows int in float contexts (1 + 1.5 works)
+    /// - Python's None is compatible with Optional types
+    /// - We need to support gradual typing (Unknown)
     pub(super) fn ensure_assignable(
         &self,
         actual: &Type,
         expected: &Type,
         span: Span,
     ) -> Result<(), CompileError> {
+        // Unknown types pass all checks (for gradual typing)
         if matches!(expected, Type::Unknown) || matches!(actual, Type::Unknown) {
             return Ok(());
         }
+        // Exact match always works
         if expected == actual {
             return Ok(());
         }
         match (expected, actual) {
+            // Numeric promotion: int can be used as float
             (Type::Float, Type::Int) => Ok(()),
+            // None is assignable to any Optional type
             (Type::Option(_inner), Type::None) => Ok(()),
+            // Optional to Optional: check inner types
             (Type::Option(expected_inner), Type::Option(actual_inner)) => {
                 self.ensure_assignable(actual_inner, expected_inner, span)
             }
+            // Auto-wrap in Optional: T is assignable to Optional[T]
             (Type::Option(inner), actual) => self.ensure_assignable(actual, inner, span),
+            // Callable types: check parameter and return type compatibility
             (
                 Type::Lambda {
                     params: e_params,

@@ -1,6 +1,24 @@
 use super::*;
 
+/// Utility functions for code generation.
+///
+/// These are small helper functions that are used throughout codegen:
+/// - Scope queries (is_global, local_var_type)
+/// - Name generation (global_name, new_tmp)
+/// - Output formatting (push_line)
+/// - Error creation
+///
+/// Also includes mutation analysis for determining when variables need `mut`.
+
 impl<'a> Codegen<'a> {
+    /// Check if a variable name refers to a global variable.
+    ///
+    /// A name is global if:
+    /// 1. It's NOT in the current function's local variable map, AND
+    /// 2. It IS in the program's global variables map
+    ///
+    /// This is used to determine if we need to emit the mutex wrapper
+    /// access pattern for globals.
     pub(crate) fn is_global(&self, name: &str) -> bool {
         if let Some(vars) = self.local_vars.as_ref() {
             if vars.contains_key(name) {
@@ -37,6 +55,23 @@ impl<'a> Codegen<'a> {
     }
 }
 
+/// Count how many times each variable is assigned/mutated in a statement block.
+///
+/// Why this matters:
+/// Rust requires variables to be declared `mut` if they'll be reassigned.
+/// Python doesn't have this distinction - all variables are implicitly mutable.
+///
+/// We analyze the code to determine which variables are assigned more than once
+/// (or mutated by operations like `next(iter)`), and emit `let mut` for those.
+///
+/// This function returns a map of variable name -> assignment count.
+/// If count > 1 (or there's a mutation), we emit `mut`.
+///
+/// Special cases tracked:
+/// - Regular assignments: `x = value`
+/// - next() calls: `next(iterator)` mutates the iterator
+/// - Index assignments: `list[i] = value` mutates the list
+/// - Method calls that mutate: Some methods (if any) mutate their receiver
 pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
     let mut counts = HashMap::new();
     fn visit_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {

@@ -1,6 +1,27 @@
 use super::*;
 
+/// Statement type checking.
+///
+/// Statements are the imperative building blocks that modify state.
+/// Key responsibilities:
+/// 1. Type check variable assignments (Let and Assign)
+/// 2. Validate control flow (if/while/for/match)
+/// 3. Check return statements against function signature
+/// 4. Handle exception statements (try/except/raise)
+/// 5. Transform Let to Assign for global variables
+///
+/// Design decisions:
+/// - Let creates new variable, Assign modifies existing
+/// - Global variables in functions are detected and transformed to Assign
+/// - Lambda assignments need forward declaration for recursion
+/// - Return type must match function signature
+/// - Iterator[T] is only allowed as return type, not variable type
+
 impl<'a> TypeChecker<'a> {
+    /// Type check a statement.
+    ///
+    /// expected_ret is the function's return type annotation, used to
+    /// validate return statements.
     pub(super) fn check_stmt(
         &mut self,
         stmt: &mut Stmt,

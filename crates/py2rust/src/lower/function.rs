@@ -1,6 +1,22 @@
 use super::*;
 
 impl<'a> Lowerer<'a> {
+    /// Lower a decorated function into multiple HIR items.
+    ///
+    /// Python decorators are syntactic sugar: `@dec def f(x): ...` means `f = dec(f)`.
+    /// We support only simple single-name decorators on top-level functions.
+    ///
+    /// Lowering strategy:
+    /// 1. Create `f_impl(x)` with the original function body
+    /// 2. Create a wrapper `f(x)` that calls `dec(f_impl)(x)`
+    ///
+    /// This approach avoids needing to understand what decorators do - we just
+    /// expand the syntactic sugar and let type checking handle the rest.
+    ///
+    /// Limitations:
+    /// - Only one decorator allowed (no stacking like @dec1 @dec2)
+    /// - Decorator must be a simple name (not @module.decorator or @decorator())
+    /// - Only supported on top-level functions (not methods or nested functions)
     pub(super) fn lower_decorated_function(
         &self,
         func: &ast::StmtFunctionDef,
@@ -11,16 +27,23 @@ impl<'a> Lowerer<'a> {
         if !func.type_params.is_empty() {
             return Err(self.error(func.range(), "Type parameters are not supported"));
         }
+
+        // Extract decorator name
         let decorator = match &func.decorator_list[0] {
             ast::Expr::Name(name) => name.id.to_string(),
             _ => return Err(self.error(func.range(), "Only simple name decorators are supported")),
         };
+
+        // Create implementation function with renamed name
         let mut impl_func = self.lower_function(func)?;
         let orig_name = impl_func.name.clone();
         let impl_name = format!("{orig_name}_impl");
         impl_func.name = impl_name.clone();
 
+        // Build wrapper function that calls decorator
         let tmp_name = format!("_decorated_{orig_name}");
+
+        // let _decorated_f = decorator(f_impl);
         let call_decorator = Expr {
             kind: ExprKind::Call {
                 func: Box::new(Expr {
@@ -45,6 +68,8 @@ impl<'a> Lowerer<'a> {
             },
             span: Span::from(func.range()),
         };
+
+        // Build argument list for calling the decorated function
         let mut args = Vec::new();
         for param in &impl_func.params {
             args.push(Expr {
@@ -53,6 +78,8 @@ impl<'a> Lowerer<'a> {
                 ty: None,
             });
         }
+
+        // return _decorated_f(args...);
         let call_wrapped = Expr {
             kind: ExprKind::Call {
                 func: Box::new(Expr {
@@ -72,6 +99,7 @@ impl<'a> Lowerer<'a> {
             span: Span::from(func.range()),
         };
 
+        // Build the wrapper function
         let wrapper = Function {
             name: orig_name,
             params: impl_func.params.clone(),
@@ -79,9 +107,21 @@ impl<'a> Lowerer<'a> {
             body: vec![let_stmt, return_stmt],
             span: Span::from(func.range()),
         };
+
         Ok(vec![Item::Function(impl_func), Item::Function(wrapper)])
     }
 
+    /// Detect and lower union type aliases.
+    ///
+    /// Python 3.10+ allows: `type Status = Success | Failure`
+    /// We support a simpler form: `Status = Success | Failure`
+    ///
+    /// This is detected by looking for assignments where the RHS is a chain
+    /// of bitwise-or operations on simple names. If detected, we create a
+    /// UnionDef HIR item instead of a regular assignment.
+    ///
+    /// The union variants must be previously-defined classes. Type checking
+    /// will verify this and generate a Rust enum.
     pub(super) fn lower_union_alias(
         &self,
         stmt: &ast::StmtAssign,
@@ -94,6 +134,7 @@ impl<'a> Lowerer<'a> {
             ast::Expr::Name(name) => name.id.to_string(),
             _ => return Ok(None),
         };
+
         let mut variants = Vec::new();
         if Self::collect_union_variants(&stmt.value, &mut variants) {
             if variants.is_empty() {
@@ -108,6 +149,12 @@ impl<'a> Lowerer<'a> {
         Ok(None)
     }
 
+    /// Recursively collect union variant names from a chain of | operators.
+    ///
+    /// Example: `A | B | C` is parsed as BinOp(BinOp(A, |, B), |, C)
+    /// We recursively collect [A, B, C] from this structure.
+    ///
+    /// Returns true if the expression is a valid union definition, false otherwise.
     pub(super) fn collect_union_variants(expr: &ast::Expr, out: &mut Vec<String>) -> bool {
         match expr {
             ast::Expr::BinOp(bin) => {
@@ -141,6 +188,21 @@ impl<'a> Lowerer<'a> {
         self.lower_function_with_self(func, Some(class_name))
     }
 
+    /// Lower a function or method definition to HIR.
+    ///
+    /// If self_type is Some, this is a method and we handle the `self` parameter specially:
+    /// - If the first parameter is named "self", we infer its type as the class type
+    /// - This allows `def method(self, x: int):` without needing `self: ClassName` annotation
+    ///
+    /// Unsupported features that will error:
+    /// - Type parameters (generics)
+    /// - Default argument values
+    /// - Positional-only parameters (/)
+    /// - Keyword-only parameters (*)
+    /// - *args and **kwargs
+    ///
+    /// Missing type annotations default to TypeRef::Unknown and will be inferred during
+    /// type checking if possible.
     pub(super) fn lower_function_with_self(
         &self,
         func: &ast::StmtFunctionDef,
@@ -150,6 +212,8 @@ impl<'a> Lowerer<'a> {
         if !func.type_params.is_empty() {
             return Err(self.error(func.range(), "Type parameters are not supported"));
         }
+
+        // Lower parameters
         let mut params = Vec::new();
         for (idx, arg) in func.args.args.iter().enumerate() {
             let def = &arg.def;
@@ -157,11 +221,14 @@ impl<'a> Lowerer<'a> {
                 return Err(self.error(def.range, "Default arguments are not supported"));
             }
             let name_str = def.arg.to_string();
+
+            // Special handling for `self` parameter in methods
             if idx == 0 && name_str == "self" {
                 if let Some(self_name) = self_type {
                     let ann = if let Some(ann_expr) = &def.annotation {
                         self.lower_type_ref(ann_expr)?
                     } else {
+                        // Infer self type as the class name
                         TypeRef::Name(self_name.to_string())
                     };
                     params.push(Param {
@@ -172,6 +239,8 @@ impl<'a> Lowerer<'a> {
                     continue;
                 }
             }
+
+            // Regular parameters
             let ann = match &def.annotation {
                 Some(expr) => self.lower_type_ref(expr)?,
                 None => TypeRef::Unknown,
@@ -182,6 +251,8 @@ impl<'a> Lowerer<'a> {
                 span: Span::from(def.range),
             });
         }
+
+        // Validate we don't have unsupported parameter forms
         if !func.args.posonlyargs.is_empty() || !func.args.kwonlyargs.is_empty() {
             return Err(self.error(
                 func.range(),
@@ -191,11 +262,15 @@ impl<'a> Lowerer<'a> {
         if func.args.vararg.is_some() || func.args.kwarg.is_some() {
             return Err(self.error(func.range(), "*args/**kwargs are not supported"));
         }
+
+        // Lower return type annotation
         let ret = if let Some(ret_expr) = &func.returns {
             self.lower_type_ref(ret_expr)?
         } else {
             TypeRef::Unknown
         };
+
+        // Lower function body
         let mut body_stmts = Vec::new();
         for stmt in &func.body {
             body_stmts.push(self.lower_stmt(stmt)?);

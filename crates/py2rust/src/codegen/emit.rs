@@ -1,7 +1,24 @@
 use super::util::collect_assign_counts;
 use super::*;
 
+/// This module handles emitting header material, helper functions, and structural code.
+///
+/// Key design philosophy: No runtime crate dependency.
+/// All helpers are injected directly into the generated Rust file. This makes the
+/// transpiled code self-contained and easy to distribute (just a single .rs file).
+///
+/// Helpers are only emitted if they're used (determined by the scan pass).
+/// This keeps generated code minimal and readable.
+
 impl<'a> Codegen<'a> {
+    /// Emit file header with necessary imports and suppressions.
+    ///
+    /// We use #![allow(unused)] liberally because:
+    /// 1. Generated code may have unused variables (Python allows this)
+    /// 2. We don't want to burden users with clippy warnings on generated code
+    /// 3. Dead code is harmless in generated output
+    ///
+    /// HashMap/HashSet are only imported if actually used (tracked by scan pass).
     pub(crate) fn emit_header(&mut self) {
         self.push_line("#![allow(unused)]");
         if self.uses.hash_map {
@@ -17,12 +34,29 @@ impl<'a> Codegen<'a> {
         self.push_line("");
     }
 
+    /// Emit all helper functions needed by the generated code.
+    ///
+    /// Helpers are only emitted if their corresponding `uses.*` flag is set.
+    /// This is determined by scanning the HIR before code generation.
+    ///
+    /// Why inject helpers instead of using a runtime crate?
+    /// 1. Self-contained output: one .rs file can be compiled standalone
+    /// 2. No version dependencies: no need to manage crate versions
+    /// 3. Easier distribution: users can just copy the .rs file
+    /// 4. Transparency: users can see exactly what code is running
+    ///
+    /// Drawbacks:
+    /// - Larger generated files if many helpers are used
+    /// - Code duplication if transpiling multiple Python files
+    ///
+    /// We accept these tradeoffs because py2rust targets single-file transpilation.
     pub(crate) fn emit_helpers(&mut self) {
-        // Emit PyError if any function throws
+        // PyError enum is needed for exception handling
         if self.needs_py_error() {
             self.emit_py_error_enum();
         }
 
+        // PyIter wrapper makes iterators clonable (Python's for loops clone iterators)
         if self.uses.py_iter {
             self.push_line("#[derive(Clone)]");
             self.push_line("struct PyIter<T> {");
@@ -111,6 +145,10 @@ impl<'a> Codegen<'a> {
             );
         }
         if self.uses.range3 {
+            // range(start, end, step) with arbitrary step values
+            // Positive step: count up from start to end
+            // Negative step: count down from start to end
+            // Step of 0 is an error (would create infinite loop)
             self.push_line(
                 "fn py_range3(start: i64, end: i64, step: i64) -> Box<dyn Iterator<Item = i64>> {",
             );
@@ -138,13 +176,19 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
         }
         if self.uses.round {
+            // Python's round() uses "round half to even" (banker's rounding)
+            // Unlike Rust's f64::round() which uses "round half away from zero"
+            // Example: round(0.5) = 0, round(1.5) = 2, round(2.5) = 2
+            // This minimizes bias in repeated rounding operations.
             self.push_line("fn py_round_ties_even(value: f64) -> f64 {");
             self.indent += 1;
             self.push_line("let rounded = value.round();");
             self.push_line("let diff = (value - rounded).abs();");
+            // Check if we're exactly at 0.5 (within floating point epsilon)
             self.push_line("if (diff - 0.5).abs() < 1e-12 {");
             self.indent += 1;
             self.push_line("let floor = value.floor();");
+            // Round to nearest even number
             self.push_line("if (floor as i64) % 2 == 0 { floor } else { floor + 1.0 }");
             self.indent -= 1;
             self.push_line("} else {");
@@ -203,6 +247,9 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
         }
         if self.uses.py_index {
+            // Python supports negative indices: list[-1] is the last element
+            // Formula: negative index i becomes len + i
+            // Example: for list of length 5, index -1 becomes 5 + (-1) = 4
             self.push_line("fn py_index(idx: i64, len: usize) -> usize {");
             self.indent += 1;
             self.push_line("if idx >= 0 { idx as usize } else { (len as i64 + idx) as usize }");
@@ -311,6 +358,21 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Emit global variable declarations.
+    ///
+    /// Python allows mutable global variables. In Rust, this requires special handling:
+    /// - Globals must be static (compile-time constants)
+    /// - But we need runtime mutability
+    /// - Solution: OnceLock<Mutex<T>>
+    ///
+    /// OnceLock: Initialized once at first use (lazy initialization)
+    /// Mutex: Provides interior mutability and thread safety
+    ///
+    /// Access pattern in generated code:
+    /// - Read: `GLOBAL_X.get().unwrap().lock().unwrap().clone()`
+    /// - Write: `*GLOBAL_X.get().unwrap().lock().unwrap() = value`
+    ///
+    /// This is verbose but necessary for Rust's safety guarantees.
     pub(crate) fn emit_globals(&mut self) {
         if self.ctx.globals.is_empty() {
             return;
@@ -326,6 +388,16 @@ impl<'a> Codegen<'a> {
         self.push_line("");
     }
 
+    /// Emit a union (enum) definition.
+    ///
+    /// Python unions (created via `Status = Success | Failure`) map to Rust enums.
+    /// Each variant wraps the corresponding class type.
+    ///
+    /// Example:
+    /// Python: `Result = Ok | Err`
+    /// Rust:   `enum Result { Ok(Ok), Err(Err) }`
+    ///
+    /// The variant names are the same as the class names they wrap.
     pub(crate) fn emit_union(&mut self, def: &UnionDef) -> Result<(), CompileError> {
         self.push_line("#[derive(Debug, Clone)]");
         self.push_line(&format!("pub enum {} {{", def.name));

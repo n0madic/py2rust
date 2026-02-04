@@ -13,6 +13,17 @@ use crate::types::{Type, TypeRef};
 use std::collections::{HashMap, HashSet};
 use std::mem;
 
+/// Tracks which helper functions and imports are needed in the generated code.
+///
+/// Rather than always emitting all possible helper functions, we scan the HIR
+/// to determine which helpers are actually used and only emit those. This keeps
+/// the generated Rust code minimal and clean.
+///
+/// Why this matters:
+/// - Smaller generated code is easier to read and debug
+/// - Unused code doesn't affect compilation but adds noise
+/// - Each helper is injected inline rather than being in a separate crate,
+///   so we want to minimize what we inject
 #[derive(Default)]
 pub(crate) struct Uses {
     pub(crate) print: bool,
@@ -35,14 +46,48 @@ pub(crate) struct Uses {
     pub(crate) py_iter: bool,
 }
 
+/// The code generator transforms typed HIR into Rust source code.
+///
+/// Codegen is the final phase of compilation. At this point:
+/// - All types have been inferred and filled into Expr.ty fields
+/// - We know which functions can throw exceptions
+/// - Helper injection points have been identified
+///
+/// Key design decisions:
+///
+/// 1. **No runtime crate**: All helpers are injected directly into generated code.
+///    This makes the generated program self-contained and easier to distribute.
+///
+/// 2. **__name__ handling**: We detect if __name__ is only compared to literals
+///    (common in `if __name__ == "__main__":`). If so, we emit const comparisons
+///    without allocation. Otherwise we emit `.to_string()` on each access.
+///
+/// 3. **Numeric literals**: We suffix all numeric literals (42i64, 3.14f64) to
+///    avoid type ambiguity in Rust. This is more verbose but prevents inference
+///    errors.
+///
+/// 4. **Mixed arithmetic**: When mixing int and float in arithmetic, we cast
+///    ints to f64 to match Python's behavior.
+///
+/// 5. **Exception handling**: Functions that can throw return Result<T, PyError>.
+///    Return statements in such functions are wrapped in Ok(). Try blocks are
+///    emitted as closures that return Result.
+///
+/// 6. **Borrowing**: We track which parameters should be borrowed (&str, &[T])
+///    vs owned (String, Vec<T>) to generate idiomatic Rust.
 pub struct Codegen<'a> {
     pub(crate) ctx: &'a TypeContext,
     pub(crate) source: &'a str,
     pub(crate) filename: &'a str,
+    /// Output buffer where generated Rust code is accumulated
     pub(crate) out: String,
+    /// Current indentation level (number of spaces)
     pub(crate) indent: usize,
+    /// Counter for generating unique temporary variable names
     pub(crate) tmp_counter: usize,
+    /// Tracks which helper functions need to be injected
     pub(crate) uses: Uses,
+    /// True if __name__ is only compared to string literals (optimization)
     pub(crate) name_compare_only: bool,
     /// Parameters that have been converted to borrowed types (e.g., &[T], &str, &HashMap)
     pub(crate) borrowed_params: HashSet<String>,
@@ -88,29 +133,58 @@ impl<'a> Codegen<'a> {
         self.local_vars.as_ref().and_then(|vars| vars.get(name))
     }
 
+    /// Main entry point for code generation.
+    ///
+    /// Code generation happens in multiple phases:
+    ///
+    /// 1. **Scan phase**: Traverse the HIR to determine which helpers are needed
+    ///    (ranges, print, collections, etc.)
+    ///
+    /// 2. **__name__ analysis**: Determine if __name__ needs allocation or can
+    ///    be optimized to const comparisons
+    ///
+    /// 3. **Emit phase**: Generate Rust code for unions, classes, functions, and
+    ///    top-level statements (in that order)
+    ///
+    /// 4. **Header injection**: After generating all code, we prepend:
+    ///    - `#![allow(dead_code, unused_variables, clippy::all)]`
+    ///    - Necessary imports (HashMap, HashSet, etc.)
+    ///    - Global constant declarations (__NAME__)
+    ///    - Helper function definitions
+    ///
+    /// Why generate code first, then inject headers?
+    /// - We don't know which imports/helpers are needed until we scan the code
+    /// - String building is easier when we can append, then prepend headers
     pub fn emit_program(mut self, program: &Program) -> Result<String, CompileError> {
+        // Phase 1: Scan to determine which helpers are needed
         self.collect_uses(program)?;
+
+        // Phase 2: Analyze __name__ usage
         self.name_compare_only = self.analyze_name_compare_only(program);
 
-        // First pass: generate all code to collect uses flags
+        // Phase 3: Generate code for all items
+        // Generate unions first (they're enum definitions)
         for item in &program.items {
             if let Item::Union(def) = item {
                 self.emit_union(def)?;
             }
         }
 
+        // Generate classes (struct definitions + impl blocks)
         for item in &program.items {
             if let Item::Class(class_def) = item {
                 self.emit_class(class_def)?;
             }
         }
 
+        // Generate top-level functions
         for item in &program.items {
             if let Item::Function(func) = item {
                 self.emit_function(func, None)?;
             }
         }
 
+        // Collect top-level statements and generate main()
         let mut top_level = Vec::new();
         for item in &program.items {
             if let Item::Stmt(stmt) = item {
@@ -119,7 +193,7 @@ impl<'a> Codegen<'a> {
         }
         self.emit_main(&top_level)?;
 
-        // Save generated code and emit header + helpers before it
+        // Phase 4: Inject header and helpers before the generated code
         let generated_code = mem::take(&mut self.out);
         self.emit_header();
         self.emit_globals();

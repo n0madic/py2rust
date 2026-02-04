@@ -1,10 +1,37 @@
 use super::*;
 
+/// Statement lowering from RustPython AST to HIR.
+///
+/// Statements are the imperative building blocks of Python programs.
+/// This module handles:
+/// 1. Control flow (if, while, for, match, try/except)
+/// 2. Variable binding (assignments, annotated assignments)
+/// 3. Function definitions (converted to lambda assignments)
+/// 4. Class definitions (handled elsewhere)
+/// 5. Global declarations
+///
+/// Key design decisions:
+/// - Nested function definitions are lowered to lambda assignments
+///   This allows them to be type-checked like any other value
+///   Example: `def f(): ...` becomes `f = lambda: ...` in HIR
+/// - We distinguish between Let (new variable) and Assign (mutation)
+///   This makes it easier to determine Rust's `let` vs bare assignment
+/// - We normalize assignment targets (name, attribute, index) into AssignTarget
+/// - Exception handling is preserved in HIR for later analysis
+
 impl<'a> Lowerer<'a> {
     pub(super) fn lower_stmt(&self, stmt: &ast::Stmt) -> Result<Stmt, CompileError> {
         let span = Span::from(stmt.range());
         let kind = match stmt {
+            // Nested function definition (inside another function/class)
+            // We lower this to a lambda assignment: `f = lambda params: body`
+            //
+            // Why treat nested functions differently from top-level?
+            // - Top-level functions are Item::Function (proper function definitions)
+            // - Nested functions are local variables that happen to contain lambdas
+            // - This matches Python's semantics where nested functions are closures
             ast::Stmt::FunctionDef(def) => {
+                // Decorators only allowed on top-level functions
                 if !def.decorator_list.is_empty() {
                     return Err(
                         self.error(def.range(), "Decorators are not supported inside functions")
@@ -122,6 +149,7 @@ impl<'a> Lowerer<'a> {
                 for stmt in &def.body {
                     body_stmts.push(self.lower_stmt(stmt)?);
                 }
+                // else branch (can be empty)
                 let mut else_stmts = Vec::new();
                 for stmt in &def.orelse {
                     else_stmts.push(self.lower_stmt(stmt)?);
@@ -132,6 +160,9 @@ impl<'a> Lowerer<'a> {
                     orelse: else_stmts,
                 }
             }
+            // While loop: while test: body
+            // Python allows else clause (runs if loop completes without break)
+            // We don't support else on while yet
             ast::Stmt::While(def) => {
                 let test = self.lower_expr(&def.test)?;
                 let mut body_stmts = Vec::new();
@@ -143,11 +174,18 @@ impl<'a> Lowerer<'a> {
                     body: body_stmts,
                 }
             }
+            // For loop: for target in iter: body
+            // We support:
+            // - Simple name target: for x in items:
+            // - Tuple unpacking: for (a, b) in pairs:
+            // Tuple unpacking is lowered to index access on a temporary variable
             ast::Stmt::For(def) => {
                 let iter = self.lower_expr(&def.iter)?;
                 let mut body_stmts = Vec::new();
                 let target_name = match &*def.target {
                     ast::Expr::Name(name) => name.id.to_string(),
+                    // Tuple unpacking: for (a, b) in pairs:
+                    // Becomes: for _iterN_tmp in pairs: { let a = _iterN_tmp[0]; let b = _iterN_tmp[1]; ... }
                     ast::Expr::Tuple(tuple) => {
                         let tmp_name = format!("_iter{}_tmp", usize::from(def.range().start()));
                         for (idx, elt) in tuple.elts.iter().enumerate() {
@@ -216,6 +254,9 @@ impl<'a> Lowerer<'a> {
                 let expr = self.lower_expr(&def.value)?;
                 StmtKind::Expr(expr)
             }
+            // Augmented assignment: x += 1, obj.field *= 2, list[0] //= 3
+            // These are syntactic sugar for x = x + 1, etc.
+            // We lower to a regular assignment with binary operation
             ast::Stmt::AugAssign(def) => {
                 let target = self.lower_assign_target(&def.target)?;
                 let target_expr = self.assign_target_expr(&def.target)?;
@@ -240,6 +281,11 @@ impl<'a> Lowerer<'a> {
                 };
                 StmtKind::Assign { target, value }
             }
+            // Match statement (pattern matching):
+            // match value:
+            //     case Constructor(x):
+            //         ...
+            // We only support matching on Union constructors
             ast::Stmt::Match(def) => {
                 let subject = self.lower_expr(&def.subject)?;
                 let mut lowered_cases = Vec::new();
@@ -251,6 +297,9 @@ impl<'a> Lowerer<'a> {
                     cases: lowered_cases,
                 }
             }
+            // Import statement: import typing
+            // We only allow importing typing module (used for type annotations)
+            // All other imports are rejected
             ast::Stmt::Import(import) => {
                 if import
                     .names
@@ -266,6 +315,8 @@ impl<'a> Lowerer<'a> {
                     return Err(self.error(stmt.range(), "Unsupported import"));
                 }
             }
+            // From-import: from typing import List, Dict, ...
+            // Only allowed for typing module, all others rejected
             ast::Stmt::ImportFrom(import) => {
                 let module_ok = import
                     .module
@@ -282,11 +333,22 @@ impl<'a> Lowerer<'a> {
                     return Err(self.error(stmt.range(), "Unsupported import"));
                 }
             }
+            // Pass statement (no-op)
+            // Lowered to None expression for consistency
             ast::Stmt::Pass(_) => StmtKind::Expr(Expr {
                 kind: ExprKind::Literal(Literal::None),
                 span,
                 ty: None,
             }),
+            // Exception handling:
+            // try:
+            //     body
+            // except ExceptionType as var:
+            //     handler
+            // else:
+            //     orelse  (runs if no exception)
+            // finally:
+            //     finalbody  (always runs)
             ast::Stmt::Try(try_stmt) => {
                 let body_stmts = try_stmt
                     .body
@@ -319,6 +381,11 @@ impl<'a> Lowerer<'a> {
                     finalbody: final_stmts,
                 }
             }
+            // Raise statement: raise Exception("message") or bare raise (re-raise)
+            // We support:
+            // - raise ExceptionType(args): create and raise new exception
+            // - raise: re-raise current exception (only valid in except handler)
+            // - raise X from Y: exception chaining (not yet supported)
             ast::Stmt::Raise(raise_stmt) => {
                 let exc = raise_stmt
                     .exc
@@ -337,6 +404,12 @@ impl<'a> Lowerer<'a> {
         Ok(Stmt { kind, span })
     }
 
+    /// Lower a match case pattern.
+    ///
+    /// We only support matching on Union variant constructors:
+    /// case Constructor(x, y):
+    ///
+    /// Guards (case X if condition:) are not supported.
     pub(super) fn lower_match_case(
         &self,
         case: &ast::MatchCase,
@@ -358,6 +431,14 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// Lower an except handler clause.
+    ///
+    /// Forms:
+    /// - except: (catch all exceptions)
+    /// - except ExceptionType: (catch specific type)
+    /// - except ExceptionType as var: (catch and bind to variable)
+    ///
+    /// We only support simple exception type names, not complex expressions.
     pub(super) fn lower_except_handler(
         &self,
         handler: &ast::ExceptHandler,
@@ -391,6 +472,16 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Lower a match pattern.
+    ///
+    /// We only support class constructor patterns: Constructor(x, y)
+    /// Returns: (variant_name, list_of_binding_names)
+    ///
+    /// Not supported:
+    /// - Literal patterns (case 1:, case "hello":)
+    /// - Wildcard patterns (case _:) - use bare except instead
+    /// - OR patterns (case X | Y:)
+    /// - Nested patterns
     pub(super) fn lower_pattern(
         &self,
         pattern: &ast::Pattern,
@@ -436,6 +527,16 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Lower an assignment target (left-hand side of assignment).
+    ///
+    /// Valid targets:
+    /// - name: simple variable assignment
+    /// - obj.attr: attribute assignment (mutation)
+    /// - obj[index]: subscript assignment (mutation)
+    ///
+    /// Not supported:
+    /// - Tuple unpacking (a, b = values) - use separate assignments
+    /// - List targets ([a, b] = values)
     pub(super) fn lower_assign_target(
         &self,
         expr: &ast::Expr,

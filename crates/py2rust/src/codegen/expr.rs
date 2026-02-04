@@ -2,13 +2,34 @@ use super::util::collect_assign_counts;
 use super::*;
 
 impl<'a> Codegen<'a> {
+    /// Generate Rust code for an expression.
+    ///
+    /// This is one of the most complex parts of codegen because expressions:
+    /// 1. Need type-specific handling (numeric suffixes, collection constructors)
+    /// 2. May require helper function injection (print, len, range, etc.)
+    /// 3. Must handle mixed int/float arithmetic with casts
+    /// 4. Need to bridge Python's dynamic semantics to Rust's static types
+    ///
+    /// Key design decisions:
+    /// - Literals: Always suffix numeric literals (42i64, 3.14f64) to avoid ambiguity
+    /// - Strings: Use String::from() instead of .to_string() for consistency
+    /// - None: Maps to () or None depending on whether it's in Optional context
+    /// - __name__: Special variable backed by const __NAME__, calls .to_string() on access
+    /// - Globals: Access via OnceLock mutex wrapper for thread-safe mutation
+    /// - Builtins: Many Python builtins (print, len, range) are emitted as helper calls
     pub(crate) fn gen_expr(&mut self, expr: &Expr) -> Result<String, CompileError> {
         match &expr.kind {
             ExprKind::Literal(lit) => match lit {
+                // Always suffix numeric literals to avoid Rust type inference ambiguity.
+                // Without suffixes, `42` could be i8, i16, i32, i64, etc.
                 Literal::Int(v) => Ok(format!("{}i64", v)),
                 Literal::Float(v) => Ok(format!("{}f64", v)),
                 Literal::Bool(v) => Ok(format!("{}", v)),
+                // Use String::from for string literals (more consistent than .to_string())
                 Literal::Str(s) => Ok(format!("String::from({s:?})")),
+                // None maps to different Rust types depending on context:
+                // - Option<T>: emit `None`
+                // - Unit type: emit `()`
                 Literal::None => {
                     if let Some(Type::Option(_)) = expr.ty.as_ref() {
                         Ok("None".to_string())

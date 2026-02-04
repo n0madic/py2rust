@@ -1,6 +1,31 @@
 use super::*;
 
+/// Type mapping from Python types to Rust types.
+///
+/// This module handles the core type translation that makes transpilation work.
+///
+/// Key mapping decisions:
+/// - int -> i64 (not i32, to handle large numbers)
+/// - float -> f64 (standard floating point)
+/// - str -> String (owned, not &str, to avoid lifetime complexity)
+/// - list -> Vec<T>
+/// - dict -> HashMap<K, V>
+/// - set -> HashSet<T>
+/// - None -> () (unit type)
+/// - Optional[T] -> Option<T>
+///
+/// Special cases:
+/// - Lambdas: `impl Fn(...) -> ... + 'static` (no boxing for performance)
+/// - Iterators: `impl Iterator<Item = T>` (no boxing)
+/// - Globals: Need thread-safe wrappers (Arc, Mutex)
+/// - References: &str instead of &String for ergonomics
+
 impl<'a> Codegen<'a> {
+    /// Convert a Python Type to its Rust representation.
+    ///
+    /// This is used for local variable declarations, function parameters,
+    /// and return types. The generated types are optimized for local use
+    /// (e.g., using `impl Trait` for lambdas and iterators).
     pub(crate) fn rust_type(&mut self, ty: &Type) -> String {
         match ty {
             Type::Int => "i64".to_string(),
@@ -65,9 +90,22 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Convert a Python Type to its Rust representation for global variables.
+    ///
+    /// Global variables have special requirements in Rust:
+    /// 1. Must be thread-safe (Send + Sync)
+    /// 2. Lambdas and iterators can't use `impl Trait` (can't be stored in globals)
+    /// 3. Need concrete types for the OnceLock wrapper
+    ///
+    /// Differences from rust_type():
+    /// - Iterators: PyIter<T> (clonable wrapper) instead of impl Iterator
+    /// - Lambdas: Arc<dyn Fn...> (boxed trait object) instead of impl Fn
+    /// - Everything must be Send + Sync for global storage
     pub(crate) fn rust_type_for_global(&mut self, ty: &Type) -> String {
         match ty {
             Type::Iterator(inner) => {
+                // PyIter wraps an iterator in Arc<Mutex<Box<dyn Iterator>>>
+                // This makes it clonable and thread-safe for global storage
                 self.uses.py_iter = true;
                 format!("PyIter<{}>", self.rust_type_for_global(inner))
             }

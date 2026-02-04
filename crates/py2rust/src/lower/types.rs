@@ -1,18 +1,34 @@
 use super::*;
 
 impl<'a> Lowerer<'a> {
+    /// Lower a Python type annotation expression to a TypeRef.
+    ///
+    /// Python type annotations can be:
+    /// - Simple names: `int`, `str`, `MyClass`
+    /// - Subscripted generics: `list[int]`, `dict[str, int]`, `Optional[str]`
+    /// - Union types: `int | str` (Python 3.10+ syntax)
+    /// - None type: `None` (for return types)
+    ///
+    /// We map Python types to their Rust equivalents during type checking.
+    /// Here we just build the TypeRef AST representation.
+    ///
+    /// Design note: We allow TypeRef::Unknown for lambda type annotations
+    /// because lambdas' types are usually inferred from context.
     pub(super) fn lower_type_ref(&self, expr: &ast::Expr) -> Result<TypeRef, CompileError> {
         match expr {
             ast::Expr::Name(name) => Ok(match name.id.as_ref() {
                 "None" => TypeRef::None,
                 _ => TypeRef::Name(name.id.to_string()),
             }),
+            // Lambda in type position -> infer the type
             ast::Expr::Lambda(_) => Ok(TypeRef::Unknown),
             ast::Expr::Constant(cons) => match &cons.value {
                 ast::Constant::None => Ok(TypeRef::None),
+                // String literals as types (for forward references)
                 ast::Constant::Str(s) => Ok(TypeRef::Name(s.to_string())),
                 _ => Err(self.error(expr.range(), "Unsupported type annotation literal")),
             },
+            // Generic types: list[T], dict[K, V], Optional[T], etc.
             ast::Expr::Subscript(sub) => {
                 let base = match &*sub.value {
                     ast::Expr::Name(name) => name.id.as_ref(),
@@ -52,6 +68,7 @@ impl<'a> Lowerer<'a> {
                     _ => Err(self.error(sub.value.range(), "Unsupported type constructor")),
                 }
             }
+            // Union type with | operator: int | str
             ast::Expr::BinOp(bin) => {
                 if !matches!(bin.op, ast::Operator::BitOr) {
                     return Err(self.error(expr.range(), "Unsupported type expression"));
@@ -64,6 +81,12 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Recursively collect types from a union expression (A | B | C).
+    ///
+    /// The parser represents `A | B | C` as nested BinOp nodes:
+    /// BinOp(BinOp(A, |, B), |, C)
+    ///
+    /// We flatten this into a Vec of TypeRefs.
     pub(super) fn collect_union_type_refs(
         &self,
         expr: &ast::Expr,
@@ -82,6 +105,10 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// Extract type arguments from a subscript slice.
+    ///
+    /// Handles both single arguments (list[int]) and tuple arguments (dict[str, int]).
+    /// Python represents dict[str, int] as a tuple in the slice position.
     pub(super) fn extract_type_args(&self, expr: &ast::Expr) -> Result<Vec<TypeRef>, CompileError> {
         match expr {
             ast::Expr::Tuple(tuple) => {
@@ -91,6 +118,7 @@ impl<'a> Lowerer<'a> {
                 }
                 Ok(args)
             }
+            // Single argument: list[int]
             _ => Ok(vec![self.lower_type_ref(expr)?]),
         }
     }

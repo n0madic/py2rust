@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+// Allow large Result types because our CompileError includes source text
 #![allow(clippy::result_large_err)]
 
 pub mod codegen;
@@ -20,8 +21,11 @@ use rustpython_parser::Parse;
 
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
+    /// Emit debug HIR representation
     pub emit_hir: bool,
+    /// Emit debug type information
     pub emit_types: bool,
+    /// Run rustfmt on the generated code
     pub pretty: bool,
 }
 
@@ -33,24 +37,44 @@ pub struct CompileOutput {
     pub warnings: Vec<Warning>,
 }
 
+/// Main compilation pipeline: Python source → Rust source.
+///
+/// The pipeline consists of four phases:
+/// 1. Parse: Python source → RustPython AST
+/// 2. Lower: RustPython AST → HIR (High-level IR)
+/// 3. TypeCheck: HIR → Typed HIR (fills in type information)
+/// 4. Codegen: Typed HIR → Rust source code
+///
+/// Between phases 2 and 3, we perform `rename_user_main` to handle the special case
+/// where the user defines a function named `main()`. Since we always generate a
+/// Rust `fn main()` for top-level code, we need to rename the user's function to
+/// avoid a collision (e.g., to `__py_main`).
 pub fn compile(
     source: &str,
     filename: &str,
     opts: &CompileOptions,
 ) -> Result<CompileOutput, miette::Report> {
+    // Phase 1: Parse Python source
     let suite = ast::Suite::parse(source, filename).map_err(|err| {
         let span = Span::new(0, 0);
         CompileError::new(err.to_string(), span, source, filename)
     })?;
 
+    // Phase 2: Lower to HIR
     let mut program = Lowerer::new(source, filename).lower(&suite)?;
+
+    // Handle user-defined `main()` function collision
     rename_user_main(&mut program);
+
+    // Phase 3: Type check
     let mut checker = TypeChecker::new(&program, source, filename)?;
     let ctx = checker.check_program(&mut program)?;
     let warnings = checker.take_warnings();
 
+    // Phase 4: Generate Rust code
     let rust = Codegen::new(&ctx, source, filename).emit_program(&program)?;
 
+    // Optional: Emit debug information
     let hir = if opts.emit_hir {
         Some(format!("{:#?}", program))
     } else {
@@ -73,6 +97,21 @@ pub fn compile(
 
 const MAX_RENAME_ATTEMPTS: usize = 1000;
 
+/// Rename user-defined `main()` function to avoid collision with generated `fn main()`.
+///
+/// Why this is needed:
+/// - We always generate a Rust `fn main()` to execute top-level Python statements
+/// - If the user also defines `def main()`, we'd have a name collision
+/// - We can't just skip generating `fn main()` because top-level statements need
+///   somewhere to execute
+///
+/// How it works:
+/// 1. Check if there's a user-defined function named "main"
+/// 2. If yes, rename it to "__py_main" (or "__py_mainN" if that's also taken)
+/// 3. Update all calls to `main()` to use the new name
+///
+/// This happens after lowering but before type checking so that type checking
+/// sees the renamed function.
 fn rename_user_main(program: &mut hir::Program) {
     let has_user_main = program
         .items
@@ -81,6 +120,8 @@ fn rename_user_main(program: &mut hir::Program) {
     if !has_user_main {
         return;
     }
+
+    // Find an unused name for the renamed function
     let mut new_name = "__py_main".to_string();
     let mut suffix = 0;
     while program
@@ -98,6 +139,8 @@ fn rename_user_main(program: &mut hir::Program) {
         }
         new_name = format!("__py_main{suffix}");
     }
+
+    // Rename the function definition
     for item in &mut program.items {
         if let hir::Item::Function(func) = item {
             if func.name == "main" {
@@ -105,6 +148,8 @@ fn rename_user_main(program: &mut hir::Program) {
             }
         }
     }
+
+    // Rename all calls to main() throughout the program
     for item in &mut program.items {
         match item {
             hir::Item::Function(func) => {
@@ -127,6 +172,8 @@ fn rename_user_main(program: &mut hir::Program) {
     }
 }
 
+/// Recursively rename calls to `main()` in a statement.
+/// This is needed because the user's code might call their own `main()` function.
 fn rename_main_calls_in_stmt(stmt: &mut hir::Stmt, new_name: &str) {
     match &mut stmt.kind {
         hir::StmtKind::Let { value, .. } => rename_main_calls_in_expr(value, new_name),
@@ -206,8 +253,13 @@ fn rename_main_calls_in_stmt(stmt: &mut hir::Stmt, new_name: &str) {
     }
 }
 
+/// Recursively rename calls to `main()` in an expression.
+///
+/// We need to traverse the entire expression tree because main() could be called
+/// anywhere: in arguments to other functions, in binary operations, in list literals, etc.
 fn rename_main_calls_in_expr(expr: &mut hir::Expr, new_name: &str) {
     match &mut expr.kind {
+        // Special handling for Call: check if we're calling main()
         hir::ExprKind::Call { func, args } => {
             if let hir::ExprKind::Name(name) = &mut func.kind {
                 if name == "main" {
@@ -285,6 +337,7 @@ fn rename_main_calls_in_expr(expr: &mut hir::Expr, new_name: &str) {
                 rename_main_calls_in_stmt(stmt, new_name);
             }
         }
+        // Literals and simple names don't contain calls
         hir::ExprKind::Literal(_) | hir::ExprKind::Name(_) => {}
     }
 }

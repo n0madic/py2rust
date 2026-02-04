@@ -1,7 +1,31 @@
 use super::util::collect_assign_counts;
 use super::*;
 
+/// Statement code generation.
+///
+/// Statements are the imperative building blocks of programs. This module handles:
+/// - Control flow (if, while, for, match)
+/// - Variable binding (let, assign)
+/// - Exception handling (try/except/finally/raise)
+/// - Returns and breaks
+///
+/// Key challenges:
+/// 1. Variable mutability: Rust requires `mut` annotations, Python doesn't
+/// 2. Exception handling: Python's try/except maps to Rust's Result + closures
+/// 3. Scope management: Python's function-level scope vs Rust's block scope
+/// 4. Lambda captures: Determining when lambdas need `move` keyword
+
 impl<'a> Codegen<'a> {
+    /// Determine if a lambda captures variables from outer scope.
+    ///
+    /// Why this matters:
+    /// - Lambdas that capture must use `move` keyword in Rust
+    /// - This transfers ownership of captured variables into the closure
+    /// - Without `move`, we'd get borrow checker errors when the lambda outlives
+    ///   the scope that created it
+    ///
+    /// This function analyzes the lambda body to detect references to variables
+    /// defined in outer scopes (but not in the lambda's own parameters).
     fn lambda_captures_outer(&self, name: &str, params: &[String], body: &Expr) -> bool {
         let outer_locals: HashSet<String> = match &self.local_vars {
             Some(vars) => vars.keys().cloned().collect(),
@@ -216,14 +240,19 @@ impl<'a> Codegen<'a> {
                     orelse,
                     finalbody,
                 } => {
-                    body.iter().any(|s| stmt_uses_outer(s, locals, globals, outers))
+                    body.iter()
+                        .any(|s| stmt_uses_outer(s, locals, globals, outers))
                         || handlers.iter().any(|h| {
                             h.body
                                 .iter()
                                 .any(|s| stmt_uses_outer(s, locals, globals, outers))
                         })
-                        || orelse.iter().any(|s| stmt_uses_outer(s, locals, globals, outers))
-                        || finalbody.iter().any(|s| stmt_uses_outer(s, locals, globals, outers))
+                        || orelse
+                            .iter()
+                            .any(|s| stmt_uses_outer(s, locals, globals, outers))
+                        || finalbody
+                            .iter()
+                            .any(|s| stmt_uses_outer(s, locals, globals, outers))
                 }
                 StmtKind::Raise { exc, cause } => {
                     exc.as_ref()

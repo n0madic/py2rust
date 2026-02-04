@@ -1,12 +1,36 @@
 use super::*;
 
+/// Expression type checking.
+///
+/// This module implements the core type checking logic for expressions.
+/// Key responsibilities:
+/// 1. Infer types for expressions without annotations
+/// 2. Check that operations are valid for their operand types
+/// 3. Propagate type information (e.g., x is int implies x+1 is int)
+/// 4. Handle Python-specific semantics (division, string ops, etc.)
+///
+/// Design decisions:
+/// - Type::Unknown is allowed locally but we try to resolve it
+/// - Mixed int/float arithmetic promotes to float
+/// - String operations (+ for concat, * for repeat) are special-cased
+/// - Set operations (|, &, -, ^) are distinct from bitwise ops
+/// - Division always returns float (Python 3 semantics)
+/// - We track expected types and use them to guide inference
+
 impl<'a> TypeChecker<'a> {
+    /// Check an expression and determine its type.
+    ///
+    /// The expected parameter guides type inference when we have a hint
+    /// about what type we want (e.g., from an annotation or context).
+    ///
+    /// Returns the inferred type and updates expr.ty.
     pub(super) fn check_expr(
         &mut self,
         expr: &mut Expr,
         expected: Option<&Type>,
     ) -> Result<Type, CompileError> {
         let ty = match &mut expr.kind {
+            // Literals have straightforward types
             ExprKind::Literal(lit) => match lit {
                 Literal::Int(_) => Type::Int,
                 Literal::Float(_) => Type::Float,
@@ -14,9 +38,12 @@ impl<'a> TypeChecker<'a> {
                 Literal::Str(_) => Type::Str,
                 Literal::None => Type::None,
             },
+            // Variable reference: look up in scopes
             ExprKind::Name(name) => {
+                // Track global usage for validation
                 self.note_global_use(name, expr.span);
                 if let Some(mut ty) = self.lookup_var(name) {
+                    // If variable is Unknown, try to use expected type
                     if matches!(ty, Type::Unknown) {
                         if let Some(expected) = expected {
                             if !matches!(expected, Type::Unknown) {
@@ -27,11 +54,14 @@ impl<'a> TypeChecker<'a> {
                     }
                     ty
                 } else if let Some(sig) = self.ctx.functions.get(name) {
+                    // Function reference (can be called later)
                     Type::Lambda {
                         params: sig.params.clone(),
                         ret: Box::new(sig.ret.clone()),
                     }
                 } else {
+                    // Built-in type constructors: str(), int(), float()
+                    // These are special - they're not in ctx.functions
                     match name.as_str() {
                         "str" => Type::Lambda {
                             params: vec![Type::Unknown],
@@ -46,13 +76,16 @@ impl<'a> TypeChecker<'a> {
                             ret: Box::new(Type::Float),
                         },
                         _ => {
+                            // Unknown name - set to None literal to avoid cascading errors
                             expr.kind = ExprKind::Literal(Literal::None);
                             Type::None
                         }
                     }
                 }
             }
+            // Attribute access: obj.field
             ExprKind::Attr { value, attr } => {
+                // Special case: type(x).__name__ is always a str
                 if attr == "__name__" {
                     if let ExprKind::Call { func, args } = &mut value.kind {
                         if let ExprKind::Name(name) = &func.kind {
@@ -82,15 +115,18 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             ExprKind::Call { func, args } => self.check_call(func, args, expected, expr.span)?,
+            // Binary operations: +, -, *, /, etc.
             ExprKind::Binary { op, left, right } => {
                 let left_ty = self.check_expr(left, None)?;
                 let right_ty = self.check_expr(right, None)?;
+                // Bidirectional type inference: if one side is Unknown, use the other
                 if matches!(left_ty, Type::Unknown) && !matches!(right_ty, Type::Unknown) {
                     self.maybe_update_from_expr(left, &right_ty);
                 }
                 if matches!(right_ty, Type::Unknown) && !matches!(left_ty, Type::Unknown) {
                     self.maybe_update_from_expr(right, &left_ty);
                 }
+                // If both Unknown, we can't check much (but string concat is special)
                 if matches!(left_ty, Type::Unknown) || matches!(right_ty, Type::Unknown) {
                     if matches!(op, BinOp::Add)
                         && (matches!(left_ty, Type::Str) || matches!(right_ty, Type::Str))
@@ -100,6 +136,8 @@ impl<'a> TypeChecker<'a> {
                     return Ok(Type::Unknown);
                 }
                 match op {
+                    // Set operations: | (union), & (intersection), ^ (symmetric difference)
+                    // These overlap with bitwise operators but we detect set usage by type
                     BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor => {
                         if let (Type::Set(left_inner), Type::Set(right_inner)) =
                             (&left_ty, &right_ty)
@@ -119,7 +157,9 @@ impl<'a> TypeChecker<'a> {
                         }
                         return Err(self.error(expr.span, "Set operation requires set operands"));
                     }
+                    // Subtraction: numeric or set difference
                     BinOp::Sub => {
+                        // Set difference: {1, 2, 3} - {2} = {1, 3}
                         if let (Type::Set(left_inner), Type::Set(right_inner)) =
                             (&left_ty, &right_ty)
                         {
@@ -147,6 +187,11 @@ impl<'a> TypeChecker<'a> {
                             Type::Int
                         }
                     }
+                    // Arithmetic operations: +, *, /, **, %, //
+                    // Special cases:
+                    // - str + str (concatenation)
+                    // - str * int (repetition)
+                    // - tuple + tuple (concatenation)
                     BinOp::Add
                     | BinOp::Mul
                     | BinOp::Div
@@ -185,7 +230,8 @@ impl<'a> TypeChecker<'a> {
                                 self.error(expr.span, "Binary arithmetic requires numeric types")
                             );
                         }
-                        // Check for division by zero with literal zero
+                        // Detect division by zero with constant literals
+                        // This is a warning, not an error (might be intentional for infinity)
                         if matches!(op, BinOp::Div | BinOp::FloorDiv | BinOp::Mod) {
                             if let ExprKind::Literal(lit) = &right.kind {
                                 let is_zero = matches!(lit, Literal::Int(0))
@@ -228,9 +274,11 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // Comparison operators: ==, !=, <, <=, >, >=, is, is not, in, not in
             ExprKind::Compare { op, left, right } => {
                 let left_ty = self.check_expr(left, None)?;
                 let right_ty = self.check_expr(right, None)?;
+                // Propagate type information to empty list literals
                 if let (Type::List(left_inner), Type::List(right_inner)) = (&left_ty, &right_ty) {
                     if matches!(left_inner.as_ref(), Type::Unknown)
                         && !matches!(right_inner.as_ref(), Type::Unknown)
@@ -244,10 +292,12 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 match op {
+                    // Membership testing: x in collection, x not in collection
                     CmpOp::In | CmpOp::NotIn => {
                         if matches!(right_ty, Type::Unknown) {
                             return Ok(Type::Bool);
                         }
+                        // Extract element type from container
                         let elem_ty = match &right_ty {
                             Type::List(inner) | Type::Set(inner) => (*inner.as_ref()).clone(),
                             Type::Dict(key, _) => (*key.as_ref()).clone(),
@@ -295,6 +345,8 @@ impl<'a> TypeChecker<'a> {
                         }
                         Type::Bool
                     }
+                    // Identity comparison: x is None, x is not None
+                    // We require left side to be Optional if comparing to None
                     CmpOp::Is | CmpOp::IsNot => {
                         if matches!(right_ty, Type::None)
                             && !left_ty.is_optional()
@@ -304,6 +356,8 @@ impl<'a> TypeChecker<'a> {
                         }
                         Type::Bool
                     }
+                    // General comparisons: <, <=, >, >=, ==, !=
+                    // Require matching types with some flexibility for Optional and Unknown
                     _ => {
                         if matches!(left_ty, Type::Unknown) && !matches!(right_ty, Type::Unknown) {
                             self.maybe_update_from_expr(left, &right_ty);
@@ -350,6 +404,8 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // Boolean operations: and, or
+            // Values should be bool-like (we check they're bool or coercible)
             ExprKind::BoolOp { op: _, values } => {
                 for v in values {
                     let ty = self.check_expr(v, Some(&Type::Bool))?;
@@ -359,7 +415,10 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Bool
             }
+            // List literal: [1, 2, 3]
+            // All elements must have the same type (homogeneous)
             ExprKind::List(items) => {
+                // Empty list: infer from expected type or default to Unknown
                 if items.is_empty() {
                     if let Some(Type::List(inner)) = expected {
                         Type::List(inner.clone())
@@ -391,6 +450,8 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // Tuple literal: (1, "hello", True)
+            // Elements can have different types (heterogeneous)
             ExprKind::Tuple(items) => {
                 let mut tys = Vec::new();
                 for item in items {
@@ -398,6 +459,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 Type::Tuple(tys)
             }
+            // Set literal: {1, 2, 3}
+            // All elements must have the same type
             ExprKind::Set(items) => {
                 if items.is_empty() {
                     if let Some(Type::Set(inner)) = expected {
@@ -416,6 +479,8 @@ impl<'a> TypeChecker<'a> {
                     Type::Set(Box::new(first_ty))
                 }
             }
+            // Dict literal: {"a": 1, "b": 2}
+            // All keys must have same type, all values must have same type
             ExprKind::Dict(items) => {
                 if items.is_empty() {
                     if let Some(Type::Dict(key_ty, val_ty)) = expected {
@@ -436,19 +501,24 @@ impl<'a> TypeChecker<'a> {
                     Type::Dict(Box::new(key_ty), Box::new(val_ty))
                 }
             }
+            // Indexing: list[0], dict["key"], tuple[1]
+            // Returns element type for list/dict, specific tuple element for tuple
             ExprKind::Index { value, index } => {
                 let value_ty = self.check_expr(value, None)?;
                 let index_ty = self.check_expr(index, None)?;
                 match value_ty {
                     Type::List(inner) => {
+                        // List indexing requires int
                         self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
                         *inner
                     }
                     Type::Dict(key_ty, val_ty) => {
+                        // Dict indexing requires matching key type
                         self.ensure_assignable(&index_ty, &key_ty, expr.span)?;
                         *val_ty
                     }
                     Type::Tuple(items) => {
+                        // Tuple indexing: if literal index, check bounds and return specific type
                         if let ExprKind::Literal(Literal::Int(idx)) = &index.as_ref().kind {
                             let idx = *idx as usize;
                             if idx >= items.len() {

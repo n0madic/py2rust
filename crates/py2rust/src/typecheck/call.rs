@@ -1,6 +1,26 @@
 use super::*;
 
+/// Function call type checking.
+///
+/// This is one of the most complex parts of type checking because:
+/// 1. We have many built-in functions with special rules
+/// 2. Type inference flows through function calls
+/// 3. Constructor calls need special handling
+/// 4. Iterator protocol affects for-loop type checking
+///
+/// Built-in functions handled:
+/// - print, len, range, round, list, dict, set, tuple, str, int, float
+/// - enumerate, zip, map, filter, all, any, sum
+/// - reversed, sorted, max, min
+/// - isinstance, type
+///
+/// Each has its own type rules and some modify their arguments' types.
+
 impl<'a> TypeChecker<'a> {
+    /// Type check a function call.
+    ///
+    /// Returns the call's result type.
+    /// The expected parameter helps with type inference for the result.
     pub(super) fn check_call(
         &mut self,
         func: &mut Expr,
