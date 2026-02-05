@@ -281,6 +281,14 @@ fn rename_main_calls_in_expr(expr: &mut hir::Expr, new_name: &str) {
             rename_main_calls_in_expr(left, new_name);
             rename_main_calls_in_expr(right, new_name);
         }
+        hir::ExprKind::CompareChain {
+            left, comparators, ..
+        } => {
+            rename_main_calls_in_expr(left, new_name);
+            for cmp in comparators {
+                rename_main_calls_in_expr(cmp, new_name);
+            }
+        }
         hir::ExprKind::BoolOp { values, .. } => {
             for v in values {
                 rename_main_calls_in_expr(v, new_name);

@@ -176,6 +176,14 @@ impl<'a> TypeChecker<'a> {
                         collect_names(left, out);
                         collect_names(right, out);
                     }
+                    ExprKind::CompareChain {
+                        left, comparators, ..
+                    } => {
+                        collect_names(left, out);
+                        for cmp in comparators {
+                            collect_names(cmp, out);
+                        }
+                    }
                     ExprKind::Unary { expr: inner, .. } => collect_names(inner, out),
                     ExprKind::BoolOp { values, .. } => {
                         for v in values {
@@ -267,6 +275,14 @@ impl<'a> TypeChecker<'a> {
                     ExprKind::Compare { left, right, .. } => {
                         visit_expr(left, out);
                         visit_expr(right, out);
+                    }
+                    ExprKind::CompareChain {
+                        left, comparators, ..
+                    } => {
+                        visit_expr(left, out);
+                        for cmp in comparators {
+                            visit_expr(cmp, out);
+                        }
                     }
                     ExprKind::Unary { expr: inner, .. } => visit_expr(inner, out),
                     ExprKind::BoolOp { values, .. } => {

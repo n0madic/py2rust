@@ -9,7 +9,7 @@ use super::*;
 /// - float -> f64 (standard floating point)
 /// - str -> String (owned, not &str, to avoid lifetime complexity)
 /// - list -> Arc<Mutex<Vec<T>>>
-/// - dict -> HashMap<K, V>
+/// - dict -> Arc<Mutex<HashMap<K, V>>>
 /// - set -> HashSet<T>
 /// - None -> () (unit type)
 /// - Optional[T] -> Option<T>
@@ -37,7 +37,11 @@ impl<'a> Codegen<'a> {
             Type::List(inner) => format!("Arc<Mutex<Vec<{}>>>", self.rust_type(inner)),
             Type::Dict(k, v) => {
                 self.uses.hash_map = true;
-                format!("HashMap<{}, {}>", self.rust_type(k), self.rust_type(v))
+                format!(
+                    "Arc<Mutex<HashMap<{}, {}>>>",
+                    self.rust_type(k),
+                    self.rust_type(v)
+                )
             }
             Type::Tuple(items) => {
                 let parts: Vec<String> = items.iter().map(|t| self.rust_type(t)).collect();
@@ -101,6 +105,17 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Convert a Python Type to a Rust type, using the requested dict storage.
+    pub(crate) fn rust_type_for_dict_storage(&mut self, ty: &Type, storage: DictStorage) -> String {
+        match (ty, storage) {
+            (Type::Dict(k, v), DictStorage::Local) => {
+                self.uses.hash_map = true;
+                format!("HashMap<{}, {}>", self.rust_type(k), self.rust_type(v))
+            }
+            _ => self.rust_type(ty),
+        }
+    }
+
     /// Convert a Python Type to its Rust representation for global variables.
     ///
     /// Global variables have special requirements in Rust:
@@ -154,9 +169,10 @@ impl<'a> Codegen<'a> {
                 format!("HashSet<{}>", self.rust_type_for_global(inner))
             }
             Type::Dict(k, v) => {
+                // Match local dict semantics (shared Arc) even in globals.
                 self.uses.hash_map = true;
                 format!(
-                    "HashMap<{}, {}>",
+                    "Arc<Mutex<HashMap<{}, {}>>>",
                     self.rust_type_for_global(k),
                     self.rust_type_for_global(v)
                 )

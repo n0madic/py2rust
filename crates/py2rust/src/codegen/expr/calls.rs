@@ -299,19 +299,30 @@ impl<'a> Codegen<'a> {
             }
             self.uses.hash_map = true;
             if args.is_empty() {
-                return Ok(Some("HashMap::new()".to_string()));
+                return Ok(Some("Arc::new(Mutex::new(HashMap::new()))".to_string()));
             }
             let arg_expr = self.gen_expr(&args[0])?;
             if matches!(args[0].ty.as_ref(), Some(Type::Dict(_, _))) {
-                if let ExprKind::Name(name) = &args[0].kind {
-                    if self.is_borrowed_param(name) {
-                        return Ok(Some(format!("(*{}).clone()", arg_expr)));
-                    }
-                }
-                return Ok(Some(format!("{}.clone()", arg_expr)));
+                // dict(existing_dict) creates a shallow copy, not a shared alias.
+                let tmp = self.new_tmp();
+                let guard = self.new_tmp();
+                let init = if matches!(args[0].kind, ExprKind::Name(_)) {
+                    format!("{}.clone()", arg_expr)
+                } else {
+                    arg_expr
+                };
+                return Ok(Some(format!(
+                    "{{ let {tmp} = {init}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); Arc::new(Mutex::new({guard}.clone())) }}",
+                    tmp = tmp,
+                    init = init,
+                    guard = guard
+                )));
             }
             let iter_src = self.gen_iter_source(&args[0])?;
-            let body = format!("({}).collect::<HashMap<_, _>>()", iter_src.expr);
+            let body = format!(
+                "Arc::new(Mutex::new(({}).collect::<HashMap<_, _>>()))",
+                iter_src.expr
+            );
             return Ok(Some(iter_src.wrap(body)));
         }
         if name == "bytes" {
@@ -1042,6 +1053,15 @@ impl<'a> Codegen<'a> {
         attr: &str,
         args: &[Expr],
     ) -> Result<String, CompileError> {
+        if attr == "upper" {
+            if let Some(Type::Str) = value.ty.as_ref() {
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "str.upper() expects no arguments"));
+                }
+                // Rust's to_uppercase() matches Python's str.upper() semantics.
+                return Ok(format!("{}.to_uppercase()", self.gen_expr(value)?));
+            }
+        }
         if attr == "append" {
             if let Some(Type::List(_)) = value.ty.as_ref() {
                 let target = if let ExprKind::Name(name) = &value.kind {
@@ -1548,12 +1568,30 @@ impl<'a> Codegen<'a> {
                 } else {
                     None
                 };
+                if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                    let target_expr = self.gen_expr(value)?;
+                    if let Some(default_expr) = default_expr {
+                        return Ok(format!(
+                            "{target}.get(&{key}).cloned().unwrap_or({default})",
+                            target = target_expr,
+                            key = key_expr,
+                            default = default_expr
+                        ));
+                    }
+                    self.uses.py_dict_get = true;
+                    return Ok(
+                        self.wrap_result(format!("py_dict_get(&{}, &{})", target_expr, key_expr))
+                    );
+                }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        // Global dicts store an Arc<Mutex<...>> inside a global lock.
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         if let Some(default_expr) = default_expr {
                             return Ok(format!(
-                                "{{ let {guard} = {lock}; {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
+                                "{{ let {outer} = {lock}; let {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
+                                outer = outer,
                                 guard = guard,
                                 lock = self.global_lock_expr(name),
                                 key = key_expr,
@@ -1562,7 +1600,8 @@ impl<'a> Codegen<'a> {
                         }
                         self.uses.py_dict_get = true;
                         return Ok(self.wrap_result(format!(
-                            "{{ let {guard} = {lock}; py_dict_get(&{guard}, &{key}) }}",
+                            "{{ let {outer} = {lock}; let {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{key}) }}",
+                            outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name),
                             key = key_expr
@@ -1571,27 +1610,44 @@ impl<'a> Codegen<'a> {
                 }
                 let target_expr = self.gen_expr(value)?;
                 if let Some(default_expr) = default_expr {
+                    let guard = self.new_tmp();
                     if !matches!(value.kind, ExprKind::Name(_)) {
                         let tmp = self.new_tmp();
                         return Ok(format!(
-                            "{{ let {tmp} = {target}; {tmp}.get(&{key}).cloned().unwrap_or({default}) }}",
+                            "{{ let {tmp} = {target}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
                             tmp = tmp,
                             target = target_expr,
+                            guard = guard,
                             key = key_expr,
                             default = default_expr
                         ));
                     }
                     return Ok(format!(
-                        "{target}.get(&{key}).cloned().unwrap_or({default})",
+                        "{{ let {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
+                        guard = guard,
                         target = target_expr,
                         key = key_expr,
                         default = default_expr
                     ));
                 }
                 self.uses.py_dict_get = true;
-                return Ok(
-                    self.wrap_result(format!("py_dict_get(&{}, &{})", target_expr, key_expr))
-                );
+                let guard = self.new_tmp();
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    return Ok(self.wrap_result(format!(
+                        "{{ let {tmp} = {target}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{key}) }}",
+                        tmp = tmp,
+                        target = target_expr,
+                        guard = guard,
+                        key = key_expr
+                    )));
+                }
+                return Ok(self.wrap_result(format!(
+                    "{{ let {guard} = {target}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{key}) }}",
+                    guard = guard,
+                    target = target_expr,
+                    key = key_expr
+                )));
             }
         }
         if attr == "pop" {
@@ -1606,12 +1662,32 @@ impl<'a> Codegen<'a> {
                 } else {
                     None
                 };
+                if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                    let target_expr = self.gen_expr(value)?;
+                    if let Some(default_expr) = default_expr {
+                        return Ok(format!(
+                            "{target}.remove(&{key}).unwrap_or({default})",
+                            target = target_expr,
+                            key = key_expr,
+                            default = default_expr
+                        ));
+                    }
+                    let pop_expr = format!(
+                        "{target}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".to_string()))",
+                        target = target_expr,
+                        key = key_expr
+                    );
+                    return Ok(self.wrap_result(pop_expr));
+                }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        // Lock the inner dict before mutating.
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         if let Some(default_expr) = default_expr {
                             return Ok(format!(
-                                "{{ let mut {guard} = {lock}; {guard}.remove(&{key}).unwrap_or({default}) }}",
+                                "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {guard}.remove(&{key}).unwrap_or({default}) }}",
+                                outer = outer,
                                 guard = guard,
                                 lock = self.global_lock_expr(name),
                                 key = key_expr,
@@ -1624,7 +1700,8 @@ impl<'a> Codegen<'a> {
                             key = key_expr
                         );
                         return Ok(self.wrap_result(format!(
-                            "{{ let mut {guard} = {lock}; {pop} }}",
+                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {pop} }}",
+                            outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name),
                             pop = pop_expr
@@ -1633,28 +1710,48 @@ impl<'a> Codegen<'a> {
                 }
                 let target_expr = self.gen_expr(value)?;
                 if let Some(default_expr) = default_expr {
+                    let guard = self.new_tmp();
                     if !matches!(value.kind, ExprKind::Name(_)) {
                         let tmp = self.new_tmp();
                         return Ok(format!(
-                            "{{ let mut {tmp} = {target}; {tmp}.remove(&{key}).unwrap_or({default}) }}",
+                            "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.remove(&{key}).unwrap_or({default}) }}",
                             tmp = tmp,
                             target = target_expr,
+                            guard = guard,
                             key = key_expr,
                             default = default_expr
                         ));
                     }
                     return Ok(format!(
-                        "{target}.remove(&{key}).unwrap_or({default})",
+                        "{{ let mut {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {guard}.remove(&{key}).unwrap_or({default}) }}",
+                        guard = guard,
                         target = target_expr,
                         key = key_expr,
                         default = default_expr
                     ));
                 }
                 let pop_expr = format!(
-                    "{}.remove(&{}).ok_or_else(|| PyError::KeyError(\"KeyError\".to_string()))",
-                    target_expr, key_expr
+                    "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".to_string()))",
+                    guard = "{guard}",
+                    key = key_expr
                 );
-                return Ok(self.wrap_result(pop_expr));
+                let guard = self.new_tmp();
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    return Ok(self.wrap_result(format!(
+                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {pop} }}",
+                        tmp = tmp,
+                        target = target_expr,
+                        guard = guard,
+                        pop = pop_expr.replace("{guard}", &guard)
+                    )));
+                }
+                return Ok(self.wrap_result(format!(
+                    "{{ let mut {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {pop} }}",
+                    guard = guard,
+                    target = target_expr,
+                    pop = pop_expr.replace("{guard}", &guard)
+                )));
             }
         }
         if attr == "clear" {
@@ -1662,26 +1759,39 @@ impl<'a> Codegen<'a> {
                 if !args.is_empty() {
                     return Err(self.error(value.span, "dict.clear() expects no arguments"));
                 }
+                if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                    let target_expr = self.gen_expr(value)?;
+                    return Ok(format!("{}.clear()", target_expr));
+                }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        // Clear through the inner dict lock for globals.
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         return Ok(format!(
-                            "{{ let mut {guard} = {lock}; {guard}.clear(); }}",
+                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {guard}.clear(); }}",
+                            outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name)
                         ));
                     }
                 }
                 let target_expr = self.gen_expr(value)?;
+                let guard = self.new_tmp();
                 if !matches!(value.kind, ExprKind::Name(_)) {
                     let tmp = self.new_tmp();
                     return Ok(format!(
-                        "{{ let mut {tmp} = {target}; {tmp}.clear(); }}",
+                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.clear(); }}",
                         tmp = tmp,
-                        target = target_expr
+                        target = target_expr,
+                        guard = guard
                     ));
                 }
-                return Ok(format!("{}.clear()", target_expr));
+                return Ok(format!(
+                    "{{ let mut {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {guard}.clear(); }}",
+                    guard = guard,
+                    target = target_expr
+                ));
             }
         }
         if attr == "copy" {
@@ -1689,13 +1799,40 @@ impl<'a> Codegen<'a> {
                 if !args.is_empty() {
                     return Err(self.error(value.span, "dict.copy() expects no arguments"));
                 }
+                if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                    let target_expr = self.gen_expr(value)?;
+                    // HashMap::clone creates a new dict object.
+                    return Ok(format!("{}.clone()", target_expr));
+                }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
-                        return Ok(format!("{}.clone()", self.global_lock_expr(name)));
+                        // Copy the underlying HashMap so the result is a new dict object.
+                        let outer = self.new_tmp();
+                        let guard = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let {outer} = {lock}; let {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); Arc::new(Mutex::new({guard}.clone())) }}",
+                            outer = outer,
+                            guard = guard,
+                            lock = self.global_lock_expr(name)
+                        ));
                     }
                 }
                 let target_expr = self.gen_expr(value)?;
-                return Ok(format!("{}.clone()", target_expr));
+                let guard = self.new_tmp();
+                if !matches!(value.kind, ExprKind::Name(_)) {
+                    let tmp = self.new_tmp();
+                    return Ok(format!(
+                        "{{ let {tmp} = {target}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); Arc::new(Mutex::new({guard}.clone())) }}",
+                        tmp = tmp,
+                        target = target_expr,
+                        guard = guard
+                    ));
+                }
+                return Ok(format!(
+                    "{{ let {guard} = {target}.lock().expect(\"dict mutex poisoned\"); Arc::new(Mutex::new({guard}.clone())) }}",
+                    guard = guard,
+                    target = target_expr
+                ));
             }
         }
         if attr == "update" {
@@ -1705,33 +1842,74 @@ impl<'a> Codegen<'a> {
                 }
                 self.uses.hash_map = true;
                 let arg_expr = self.gen_expr(&args[0])?;
-                let extend_expr = format!(
-                    "{target}.extend({arg}.iter().map(|(k, v)| (k.clone(), v.clone())))",
-                    target = "{target}",
-                    arg = arg_expr
-                );
+                // Snapshot key/value pairs to avoid holding two dict borrows/locks at once.
+                let pairs_tmp = self.new_tmp();
+                let pairs_expr = if matches!(
+                    self.dict_storage_for_expr(&args[0]),
+                    DictStorage::Local
+                ) {
+                    format!(
+                        "{arg}.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>()",
+                        arg = arg_expr
+                    )
+                } else {
+                    let arg_tmp = self.new_tmp();
+                    let arg_guard = self.new_tmp();
+                    let arg_init = if matches!(args[0].kind, ExprKind::Name(_)) {
+                        format!("{}.clone()", arg_expr)
+                    } else {
+                        arg_expr
+                    };
+                    format!(
+                        "{{ let {arg_tmp} = {arg_init}; let {arg_guard} = {arg_tmp}.lock().expect(\"dict mutex poisoned\"); {arg_guard}.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>() }}",
+                        arg_tmp = arg_tmp,
+                        arg_init = arg_init,
+                        arg_guard = arg_guard
+                    )
+                };
+                if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                    let target_expr = self.gen_expr(value)?;
+                    return Ok(format!(
+                        "{{ let {pairs} = {pairs_expr}; {target}.extend({pairs}); }}",
+                        pairs = pairs_tmp,
+                        pairs_expr = pairs_expr,
+                        target = target_expr
+                    ));
+                }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
+                        let outer = self.new_tmp();
                         let guard = self.new_tmp();
                         return Ok(format!(
-                            "{{ let mut {guard} = {lock}; {extend}; }}",
+                            "{{ let {pairs} = {pairs_expr}; let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {guard}.extend({pairs}); }}",
+                            pairs = pairs_tmp,
+                            pairs_expr = pairs_expr,
+                            outer = outer,
                             guard = guard,
-                            lock = self.global_lock_expr(name),
-                            extend = extend_expr.replace("{target}", &guard)
+                            lock = self.global_lock_expr(name)
                         ));
                     }
                 }
                 let target_expr = self.gen_expr(value)?;
+                let guard = self.new_tmp();
                 if !matches!(value.kind, ExprKind::Name(_)) {
                     let tmp = self.new_tmp();
                     return Ok(format!(
-                        "{{ let mut {tmp} = {target}; {extend}; }}",
+                        "{{ let {pairs} = {pairs_expr}; let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.extend({pairs}); }}",
+                        pairs = pairs_tmp,
+                        pairs_expr = pairs_expr,
                         tmp = tmp,
                         target = target_expr,
-                        extend = extend_expr.replace("{target}", &tmp)
+                        guard = guard
                     ));
                 }
-                return Ok(extend_expr.replace("{target}", &target_expr));
+                return Ok(format!(
+                    "{{ let {pairs} = {pairs_expr}; let mut {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {guard}.extend({pairs}); }}",
+                    pairs = pairs_tmp,
+                    pairs_expr = pairs_expr,
+                    guard = guard,
+                    target = target_expr
+                ));
             }
         }
         if attr == "add" {

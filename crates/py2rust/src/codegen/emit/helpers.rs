@@ -120,6 +120,13 @@ impl<'a> Codegen<'a> {
             self.push_line("fn py_len(&self) -> i64 { self.len() as i64 }");
             self.indent -= 1;
             self.push_line("}");
+            self.push_line("impl<K, V> PyLen for Arc<Mutex<std::collections::HashMap<K, V>>> {");
+            self.indent += 1;
+            self.push_line(
+                "fn py_len(&self) -> i64 { self.lock().expect(\"dict mutex poisoned\").len() as i64 }",
+            );
+            self.indent -= 1;
+            self.push_line("}");
             self.push_line("impl<T> PyLen for std::collections::HashSet<T> {");
             self.indent += 1;
             self.push_line("fn py_len(&self) -> i64 { self.len() as i64 }");

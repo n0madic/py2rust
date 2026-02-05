@@ -342,6 +342,13 @@ pub enum ExprKind {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    /// Chained comparisons (e.g., a < b < c).
+    /// Evaluates left-to-right with short-circuiting.
+    CompareChain {
+        left: Box<Expr>,
+        ops: Vec<CmpOp>,
+        comparators: Vec<Expr>,
+    },
     BoolOp {
         op: BoolOp,
         values: Vec<Expr>,
@@ -448,10 +455,12 @@ pub enum BinOp {
 ///
 /// Not is logical negation (!)
 /// Neg is arithmetic negation (-)
+/// BitNot is bitwise NOT (~) for integers
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOp {
     Neg,
     Not,
+    BitNot,
 }
 
 /// Comparison operators.

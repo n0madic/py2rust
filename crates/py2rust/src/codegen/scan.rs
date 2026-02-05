@@ -214,6 +214,18 @@ impl<'a> Codegen<'a> {
                     visit_expr(left, ok);
                     visit_expr(right, ok);
                 }
+                ExprKind::CompareChain {
+                    left, comparators, ..
+                } => {
+                    if is_name_name(left) || comparators.iter().any(is_name_name) {
+                        *ok = false;
+                        return;
+                    }
+                    visit_expr(left, ok);
+                    for cmp in comparators {
+                        visit_expr(cmp, ok);
+                    }
+                }
                 ExprKind::Call { func, args } => {
                     visit_expr(func, ok);
                     for arg in args {
@@ -458,6 +470,14 @@ impl<'a> Codegen<'a> {
             ExprKind::Compare { left, right, .. } => {
                 self.scan_expr(left)?;
                 self.scan_expr(right)?;
+            }
+            ExprKind::CompareChain {
+                left, comparators, ..
+            } => {
+                self.scan_expr(left)?;
+                for cmp in comparators {
+                    self.scan_expr(cmp)?;
+                }
             }
             ExprKind::BoolOp { values, .. } => {
                 for v in values {

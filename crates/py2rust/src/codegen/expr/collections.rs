@@ -96,9 +96,20 @@ impl<'a> Codegen<'a> {
         expr: &Expr,
         items: &[(Expr, Expr)],
     ) -> Result<String, CompileError> {
+        self.gen_dict_expr_with_storage(expr, items, DictStorage::Shared)
+    }
+
+    /// Lower a dict literal expression with an explicit storage strategy.
+    pub(crate) fn gen_dict_expr_with_storage(
+        &mut self,
+        expr: &Expr,
+        items: &[(Expr, Expr)],
+        storage: DictStorage,
+    ) -> Result<String, CompileError> {
         self.uses.hash_map = true;
         if items.is_empty() {
-            return Ok("HashMap::new()".to_string());
+            let base = "HashMap::new()".to_string();
+            return Ok(self.wrap_dict_storage_expr(&base, storage));
         }
         let (expected_key, expected_val) = match expr.ty.as_ref() {
             Some(Type::Dict(k, v)) => (Some(k.as_ref()), Some(v.as_ref())),
@@ -110,7 +121,8 @@ impl<'a> Codegen<'a> {
             let val_expr = self.gen_expr_with_expected(v, expected_val)?;
             pairs.push(format!("({}, {})", key_expr, val_expr));
         }
-        Ok(format!("HashMap::from([{}])", pairs.join(", ")))
+        let base = format!("HashMap::from([{}])", pairs.join(", "));
+        Ok(self.wrap_dict_storage_expr(&base, storage))
     }
 
     /// Lower a set literal expression.
@@ -173,7 +185,16 @@ impl<'a> Codegen<'a> {
             let idx = self.gen_expr(index)?;
             self.uses.py_dict_get = true;
             self.uses.hash_map = true;
-            return Ok(self.wrap_result(format!("py_dict_get(&{}, &{})", base, idx)));
+            if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                return Ok(self.wrap_result(format!("py_dict_get(&{}, &{})", base, idx)));
+            }
+            let guard = self.new_tmp();
+            return Ok(self.wrap_result(format!(
+                "{{ let {guard} = {base}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                guard = guard,
+                base = base,
+                idx = idx
+            )));
         }
         // Handle list indexing with negative index support.
         if matches!(value.ty.as_ref(), Some(Type::List(_)) | Some(Type::Bytes)) {

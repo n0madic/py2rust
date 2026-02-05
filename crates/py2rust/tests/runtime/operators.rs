@@ -33,6 +33,25 @@ def test_arithmetic() -> None:
     assert -5 == 0 - 5
     assert -(-10) == 10
 
+    # Float arithmetic
+    float_x: float = 7.5
+    float_y: float = 2.5
+    assert float_x + float_y == 10.0
+    assert float_x - float_y == 5.0
+    assert float_x * float_y == 18.75
+    assert float_x / float_y == 3.0
+    assert round(float_x / float_y) == 3
+
+    # String multiplication
+    str_s: str = "Hello"
+    assert str_s * 3 == "HelloHelloHello"
+    assert "ab" * 2 == "abab"
+
+    # String multiplication edge cases
+    assert "x" * 0 == ""
+    assert "hello" * 0 == ""
+    assert "x" * -1 == ""
+
     # Mixed operations
     assert 2 + 3 * 4 == 14
     assert (2 + 3) * 4 == 20
@@ -84,6 +103,119 @@ def test_comparison() -> None:
     assert 2 in s
     assert 3 not in s
 
+# Identity operators
+def test_identity() -> None:
+    # Lists
+    list1: list[int] = [1, 2, 3]
+    list2: list[int] = [1, 2, 3]
+    list3: list[int] = list1
+    assert list1 is list3
+    assert list1 is not list2
+    assert not (list1 is list2)
+    assert not (list1 is not list3)
+
+    # Strings
+    str1: str = "hello"
+    str2: str = "hello"
+    str3: str = str1
+    assert str1 is str3
+
+    # None
+    none1: None = None
+    none2: None = None
+    assert none1 is none2
+    assert none1 is not list1
+
+    # Dicts
+    dict1: dict[str, int] = {"a": 1}
+    dict2: dict[str, int] = {"a": 1}
+    dict3: dict[str, int] = dict1
+    assert dict1 is dict3
+    assert dict1 is not dict2
+
+# Chained comparisons
+chain_call_count: int = 0
+
+def chain_increment_and_return(val: int) -> int:
+    global chain_call_count
+    chain_call_count = chain_call_count + 1
+    return val
+
+def test_chained_comparisons() -> None:
+    # Basic chained comparison
+    chain_x: int = 5
+    assert 1 < chain_x < 10
+    assert not (10 < chain_x < 20)
+
+    # Chained comparison with variables
+    chain_a: int = 1
+    chain_b: int = 2
+    chain_c: int = 3
+    assert chain_a < chain_b < chain_c
+    assert not (chain_c < chain_b < chain_a)
+
+    # Equality chains
+    eq_a: int = 5
+    eq_b: int = 5
+    eq_c: int = 5
+    assert eq_a == eq_b == eq_c
+
+    eq_d: int = 6
+    assert not (eq_a == eq_b == eq_d)
+
+    # Mixed operators
+    assert 1 < 2 <= 2 < 3
+    assert 1 <= 1 < 2 <= 2
+
+    # Four-way chains
+    assert 1 < 2 < 3 < 4
+    assert not (1 < 2 < 3 < 2)
+
+    # Float comparisons in chains
+    f_a: float = 1.0
+    f_b: float = 2.5
+    f_c: float = 5.0
+    assert f_a < f_b < f_c
+    assert 0.5 < f_a < f_b
+
+    # Edge cases: boundary conditions
+    assert 0 <= 0 < 1
+    assert not (0 < 0 < 1)
+    assert 1 <= 1 <= 1
+
+    # Mixed int and float in chains
+    assert 1 < 2.5 < 4
+
+    # Short-circuit verification
+    global chain_call_count
+    chain_call_count = 0
+    chain_result: bool = 10 < chain_increment_and_return(5) < 3
+    assert chain_call_count == 1
+    assert not chain_result
+
+    chain_call_count = 0
+    chain_result = 1 < chain_increment_and_return(5) < 10
+    assert chain_call_count == 1
+    assert chain_result
+
+    # Greater-than chains
+    assert 10 > 5 > 1
+    assert not (1 > 5 > 10)
+
+    # Not-equal chains
+    assert 1 != 2 != 3
+    assert not (1 != 2 != 2)
+
+    # Multiple function calls in chain
+    chain_call_count = 0
+    chain_result = (
+        chain_increment_and_return(1)
+        < chain_increment_and_return(2)
+        < chain_increment_and_return(3)
+    )
+    assert chain_call_count == 3
+    assert chain_result
+
 # Boolean logic
 def test_boolean() -> None:
     # Basic boolean values
@@ -110,6 +242,69 @@ def test_boolean() -> None:
     assert not (True and False)
     assert (True or False) and True
     assert not ((False or False) and True)
+
+# Short-circuit semantics and truthiness returns
+def test_short_circuit() -> None:
+    x: int = 15
+    y: int = 10
+    z: int = 5
+
+    assert x > y and y > z
+    assert x > y or y < z
+    assert not (x < y)
+
+    assert x > 10 and y < 20
+    assert x > 10 and y < 20 or z == 5
+
+    sc_and_1: int = 5 and 10
+    assert sc_and_1 == 10
+
+    sc_and_2: int = 0 and 10
+    assert sc_and_2 == 0
+
+    sc_and_3: int = 42 and 99
+    assert sc_and_3 == 99
+
+    sc_or_1: int = 5 or 10
+    assert sc_or_1 == 5
+
+    sc_or_2: int = 0 or 10
+    assert sc_or_2 == 10
+
+    sc_or_3: int = 42 or 99
+    assert sc_or_3 == 42
+
+    sc_str_or: str = "" or "default"
+    assert sc_str_or == "default"
+
+    sc_str_and: str = "hello" and "world"
+    assert sc_str_and == "world"
+
+    sc_method: str = ("" or "hello").upper()
+    assert sc_method == "HELLO"
+
+    sc_none_or_1: int = 0 or 42
+    assert sc_none_or_1 == 42
+
+    sc_none_and_1: int = 42 and 0
+    assert sc_none_and_1 == 0
+
+    a: int = 42
+    neg_a: int = -a
+    assert neg_a == -42
+    assert neg_a + a == 0
+
+    b: int = 5
+    neg_b: int = -b
+    pos_b: int = -neg_b
+    assert pos_b == b
+
+    flag1: bool = True
+    flag2: bool = False
+    assert not (not flag1)
+    assert not flag2
+    assert flag1 or flag2
+    assert flag1 and not flag2
 
 # Set operations
 def test_set_ops() -> None:
@@ -196,6 +391,64 @@ def test_set_ops() -> None:
     assert "b" in str_inter
     assert "c" in str_inter
     assert len(str_inter) == 2
+
+# Power operator
+def test_power() -> None:
+    # Integer powers
+    pow_x: int = 2 ** 3
+    assert pow_x == 8
+
+    pow_y: int = 3 ** 4
+    assert pow_y == 81
+
+    pow_z: int = 5 ** 0
+    assert pow_z == 1
+
+    pow_w: int = 2 ** 10
+    assert pow_w == 1024
+
+    # Negative base
+    pow_a: int = (-2) ** 3
+    assert pow_a == -8
+
+    pow_b: int = (-2) ** 4
+    assert pow_b == 16
+
+    # Float powers
+    f1: float = 2.0 ** 3.0
+    assert f1 == 8.0
+
+    f2: float = 4.0 ** 0.5
+    assert f2 == 2.0
+
+    f3: float = 2.5 ** 2.0
+    assert f3 == 6.25
+
+    # Mixed int/float
+    m1: float = 2 ** 3.0
+    assert m1 == 8.0
+
+    m2: float = 2.0 ** 3
+    assert m2 == 8.0
+
+    # Edge cases
+    e1: int = 1 ** 100
+    assert e1 == 1
+
+    e2: int = 0 ** 5
+    assert e2 == 0
+
+    e3: int = 10 ** 1
+    assert e3 == 10
+
+    # Larger values
+    big: int = 2 ** 20
+    assert big == 1048576
+
+    # Additional power checks
+    assert 2 ** 3 == 8
+    assert 3 ** 2 == 9
+    assert 2 ** 0 == 1
 
 # Helper classes for augmented assignment tests
 class Counter:
@@ -349,6 +602,77 @@ def test_bitwise() -> None:
     assert (12 ^ 10) == 6
     assert (1 << 4) == 16
     assert (64 >> 2) == 16
+    assert (~0) == -1
+    assert (~(-1)) == 0
+    assert (~5) == -6
+
+    bit_a: int = 0b1100
+    bit_b: int = 0b1010
+    bit_result: int = bit_a & bit_b
+    assert bit_result == 0b1000
+    assert (15 & 7) == 7
+
+    bit_result = bit_a | bit_b
+    assert bit_result == 0b1110
+    assert (8 | 4) == 12
+
+    bit_result = bit_a ^ bit_b
+    assert bit_result == 0b0110
+    assert (12 ^ 10) == 6
+
+    bit_x: int = 1
+    bit_result = bit_x << 4
+    assert bit_result == 16
+    assert (3 << 2) == 12
+
+    bit_y: int = 16
+    bit_result = bit_y >> 2
+    assert bit_result == 4
+    assert (32 >> 3) == 4
+
+    bit_z: int = 0
+    bit_result = ~bit_z
+    assert bit_result == -1
+    bit_result = ~(-1)
+    assert bit_result == 0
+    n: int = 5
+    bit_result = ~n
+    assert bit_result == -6
+
+    combined: int = (bit_a & bit_b) | (bit_a ^ bit_b)
+    assert combined == (bit_a | bit_b)
+
+    val: int = 1
+    val = val << 3
+    val = val << 1
+    assert val == 16
+    val = val >> 2
+    assert val == 4
+
+    neg: int = -8
+    bit_result = neg >> 2
+    assert bit_result == -2
+
+    byte: int = 255
+    mask: int = 0x0F
+    lower: int = byte & mask
+    assert lower == 15
+    upper: int = (byte >> 4) & mask
+    assert upper == 15
+
+    flags: int = 0
+    flags = flags | (1 << 0)
+    assert flags == 1
+    flags = flags | (1 << 2)
+    assert flags == 5
+
+    bit1: int = (flags >> 1) & 1
+    assert bit1 == 0
+    bit2: int = (flags >> 2) & 1
+    assert bit2 == 1
+
+    flags = flags & ~(1 << 0)
+    assert flags == 4
 
 # Augmented assignment for bitwise and shifts
 def test_augmented_bitwise() -> None:
@@ -374,12 +698,16 @@ def test_augmented_bitwise() -> None:
 
 # Run all tests
 test_arithmetic()
+test_power()
 test_comparison()
+test_identity()
 test_boolean()
+test_short_circuit()
 test_set_ops()
 test_augmented_assignments()
 test_bitwise()
 test_augmented_bitwise()
+test_chained_comparisons()
 
 print("All operator tests passed!")
 "#,

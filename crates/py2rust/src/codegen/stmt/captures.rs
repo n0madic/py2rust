@@ -139,6 +139,16 @@ impl<'a> Codegen<'a> {
                     expr_uses_outer(left, locals, globals, outers)
                         || expr_uses_outer(right, locals, globals, outers)
                 }
+                ExprKind::CompareChain {
+                    left, comparators, ..
+                } => {
+                    if expr_uses_outer(left, locals, globals, outers) {
+                        return true;
+                    }
+                    comparators
+                        .iter()
+                        .any(|cmp| expr_uses_outer(cmp, locals, globals, outers))
+                }
                 ExprKind::BoolOp { values, .. } => values
                     .iter()
                     .any(|v| expr_uses_outer(v, locals, globals, outers)),

@@ -58,6 +58,9 @@ impl<'a> Codegen<'a> {
         // Precompute list storage strategy for this function's locals.
         self.local_list_storage =
             Some(self.collect_list_storage_for_stmts(&func.body, &HashSet::new()));
+        // Precompute dict storage strategy for this function's locals.
+        self.local_dict_storage =
+            Some(self.collect_dict_storage_for_stmts(&func.body, &HashSet::new()));
         let mut_counts = collect_assign_counts(&func.body);
         for stmt in &func.body {
             self.emit_stmt(stmt, &mut_counts)?;
@@ -83,6 +86,7 @@ impl<'a> Codegen<'a> {
         self.local_vars = None;
         self.inferred_list_elems = None;
         self.local_list_storage = None;
+        self.local_dict_storage = None;
         Ok(())
     }
 
@@ -209,7 +213,7 @@ impl<'a> Codegen<'a> {
     /// Convert a type to its borrowed equivalent for function parameters.
     /// - list[T] -> Arc<Mutex<Vec<T>>> (shared list, no borrowing)
     /// - str -> &str
-    /// - dict[K,V] -> &HashMap<K,V>
+    /// - dict[K,V] -> Arc<Mutex<HashMap<K,V>>> (shared dict, no borrowing)
     /// - Primitives (int, float, bool) stay owned (Copy types)
     pub(crate) fn to_borrowed_param_type(&self, ty: &Type) -> Type {
         match ty {
@@ -221,8 +225,8 @@ impl<'a> Codegen<'a> {
             Type::Bytes => Type::Bytes,
             // Lists are shared (Arc<Mutex<...>>), so keep owned.
             Type::List(_) => ty.clone(),
-            // HashMap/HashSet -> borrowed reference.
-            Type::Dict(k, v) => Type::Ref(Box::new(Type::Dict(k.clone(), v.clone()))),
+            // Dicts are shared (Arc<Mutex<...>>), so keep owned.
+            Type::Dict(_, _) => ty.clone(),
             Type::Set(inner) => Type::Ref(Box::new(Type::Set(inner.clone()))),
             // Tuples stay owned (they can contain Copy types or be small).
             Type::Tuple(_) => ty.clone(),

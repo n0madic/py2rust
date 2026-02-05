@@ -177,6 +177,14 @@ impl<'a> Codegen<'a> {
                         }
                         return Ok(());
                     }
+                    if let Some(expr) = self.gen_dict_assignment_expr(name, value)? {
+                        let mut_kw = mut_kw_for_name(name, mut_counts);
+                        self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                        if let Some(ty) = value.ty.clone() {
+                            self.set_local_var_type(name, ty);
+                        }
+                        return Ok(());
+                    }
                     let expr = self.gen_expr(value)?;
                     let expr = self.maybe_clone_list_expr(expr, value.ty.as_ref(), None);
                     let mut_kw = mut_kw_for_name(name, mut_counts);
@@ -188,6 +196,10 @@ impl<'a> Codegen<'a> {
                     let expected = self.local_var_type(name).cloned();
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                     if let Some(local_expr) = self.gen_list_assignment_expr(name, value)? {
+                        self.push_line(&format!("{} = {};", name, local_expr));
+                        return Ok(());
+                    }
+                    if let Some(local_expr) = self.gen_dict_assignment_expr(name, value)? {
                         self.push_line(&format!("{} = {};", name, local_expr));
                         return Ok(());
                     }
@@ -335,6 +347,7 @@ impl<'a> Codegen<'a> {
                     if self.is_global(name) {
                         let guard = self.new_tmp();
                         let inner = self.new_tmp();
+                        let dict_guard = self.new_tmp();
                         self.push_line("{");
                         self.indent += 1;
                         self.push_line(&format!(
@@ -344,9 +357,14 @@ impl<'a> Codegen<'a> {
                         ));
                         if let Some(Type::Dict(_, _)) = container.ty.as_ref() {
                             let idx_expr = self.gen_expr(index)?;
+                            // Lock the inner dict before inserting.
+                            self.push_line(&format!(
+                                "let mut {} = {}.lock().expect(\"dict mutex poisoned\");",
+                                dict_guard, guard
+                            ));
                             self.push_line(&format!(
                                 "{}.insert({}, {});",
-                                guard, idx_expr, val_expr
+                                dict_guard, idx_expr, val_expr
                             ));
                         } else if matches!(container.ty.as_ref(), Some(Type::List(_))) {
                             let idx_raw = self.gen_expr(index)?;
@@ -385,10 +403,25 @@ impl<'a> Codegen<'a> {
                 let cont_expr = self.gen_expr(container)?;
                 if let Some(Type::Dict(_, _)) = container.ty.as_ref() {
                     let idx_expr = self.gen_expr(index)?;
-                    self.push_line(&format!(
-                        "{}.insert({}, {});",
-                        cont_expr, idx_expr, val_expr
-                    ));
+                    if matches!(self.dict_storage_for_expr(container), DictStorage::Local) {
+                        // Local dicts are plain HashMap values.
+                        self.push_line(&format!(
+                            "{}.insert({}, {});",
+                            cont_expr, idx_expr, val_expr
+                        ));
+                    } else {
+                        let guard = self.new_tmp();
+                        // Scope the lock so dict mutations don't hold the mutex past this statement.
+                        self.push_line("{");
+                        self.indent += 1;
+                        self.push_line(&format!(
+                            "let mut {} = {}.lock().expect(\"dict mutex poisoned\");",
+                            guard, cont_expr
+                        ));
+                        self.push_line(&format!("{}.insert({}, {});", guard, idx_expr, val_expr));
+                        self.indent -= 1;
+                        self.push_line("}");
+                    }
                 } else if matches!(container.ty.as_ref(), Some(Type::List(_))) {
                     if let ExprKind::Name(name) = &container.kind {
                         if self.is_local_list_name(name) {
@@ -650,6 +683,8 @@ impl<'a> Codegen<'a> {
                     };
                 let expr = if let Some(local_expr) = self.gen_list_assignment_expr(name, value)? {
                     local_expr
+                } else if let Some(local_expr) = self.gen_dict_assignment_expr(name, value)? {
+                    local_expr
                 } else {
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                     self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref())
@@ -657,8 +692,18 @@ impl<'a> Codegen<'a> {
                 let mut_kw = mut_kw_for_name(name, mut_counts);
                 if ann.is_some() {
                     let ty = declared.expect("resolved above");
-                    let storage = self.list_storage_for_name(name);
-                    let ty_str = self.rust_type_for_list_storage(&ty, storage);
+                    // Choose a storage-aware type for lists/dicts; everything else uses rust_type().
+                    let ty_str = match ty {
+                        Type::List(_) => {
+                            let storage = self.list_storage_for_name(name);
+                            self.rust_type_for_list_storage(&ty, storage)
+                        }
+                        Type::Dict(_, _) => {
+                            let storage = self.dict_storage_for_name(name);
+                            self.rust_type_for_dict_storage(&ty, storage)
+                        }
+                        _ => self.rust_type(&ty),
+                    };
                     self.push_line(&format!("let {}{}: {} = {};", mut_kw, name, ty_str, expr));
                     self.set_local_var_type(name, ty);
                 } else {
@@ -818,17 +863,12 @@ impl<'a> Codegen<'a> {
                 }
 
                 // General for loop with iterator.
-                let iter_expr = self.gen_expr(iter)?;
-                let iter_src = if let Some(Type::Dict(_, _)) = iter.ty.as_ref() {
-                    format!("{}.into_iter().map(|(k, _)| k)", iter_expr)
-                } else {
-                    let IterSource { setup, expr } = self.gen_iter_source(iter)?;
-                    // Keep list lock guards alive for the duration of the loop body.
-                    for line in setup {
-                        self.push_line(&format!("{};", line));
-                    }
-                    expr
-                };
+                let IterSource { setup, expr } = self.gen_iter_source(iter)?;
+                // Keep list/dict lock guards alive for the duration of the loop body.
+                for line in setup {
+                    self.push_line(&format!("{};", line));
+                }
+                let iter_src = expr;
                 self.push_line(&format!("for {} in {} {{", target_pattern, iter_src));
                 self.indent += 1;
                 let saved_locals = self.local_vars.clone();
@@ -945,6 +985,60 @@ impl<'a> Codegen<'a> {
                 ifs,
                 ListStorage::Local,
             )?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Generate a dict expression for a local HashMap-backed dict assignment.
+    fn gen_dict_assignment_expr(
+        &mut self,
+        name: &str,
+        value: &Expr,
+    ) -> Result<Option<String>, CompileError> {
+        if !matches!(value.ty.as_ref(), Some(Type::Dict(_, _))) {
+            return Ok(None);
+        }
+        if !matches!(self.dict_storage_for_name(name), DictStorage::Local) {
+            return Ok(None);
+        }
+        match &value.kind {
+            ExprKind::Dict(items) => Ok(Some(self.gen_dict_expr_with_storage(
+                value,
+                items,
+                DictStorage::Local,
+            )?)),
+            ExprKind::Call { func, args } => {
+                if let ExprKind::Name(call_name) = &func.kind {
+                    if call_name == "dict" {
+                        self.uses.hash_map = true;
+                        if args.is_empty() {
+                            return Ok(Some("HashMap::new()".to_string()));
+                        }
+                        if args.len() == 1 {
+                            let arg = &args[0];
+                            if matches!(arg.ty.as_ref(), Some(Type::Dict(_, _))) {
+                                let arg_expr = self.gen_expr(arg)?;
+                                if matches!(self.dict_storage_for_expr(arg), DictStorage::Local) {
+                                    // Local dict copy is a simple HashMap clone.
+                                    return Ok(Some(format!("{}.clone()", arg_expr)));
+                                }
+                                let tmp = self.new_tmp();
+                                let guard = self.new_tmp();
+                                return Ok(Some(format!(
+                                    "{{ let {tmp} = {arg}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.clone() }}",
+                                    tmp = tmp,
+                                    arg = arg_expr,
+                                    guard = guard
+                                )));
+                            }
+                            let iter_src = self.gen_iter_source(arg)?;
+                            let body = format!("({}).collect::<HashMap<_, _>>()", iter_src.expr);
+                            return Ok(Some(iter_src.wrap(body)));
+                        }
+                    }
+                }
+                Ok(None)
+            }
             _ => Ok(None),
         }
     }

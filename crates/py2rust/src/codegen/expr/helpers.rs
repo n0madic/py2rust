@@ -56,8 +56,11 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(arg)?
             };
             if let Some(param_ty) = param_ty {
-                // Lists are shared (Arc<Mutex<...>>); clone to avoid moves.
-                if matches!(param_ty, Type::List(_)) {
+                // Shared containers and owned strings must be cloned to avoid moves.
+                if matches!(
+                    param_ty,
+                    Type::List(_) | Type::Dict(_, _) | Type::Str | Type::Bytes
+                ) {
                     parts.push(format!("{}.clone()", rendered));
                     continue;
                 }
@@ -84,7 +87,7 @@ impl<'a> Codegen<'a> {
             Type::Ref(inner) if matches!(inner.as_ref(), Type::Str) => {
                 matches!(arg_ty, Some(Type::Str))
             }
-            // Parameter expects &HashMap, argument is HashMap.
+            // Parameter expects &dict, argument is dict.
             Type::Ref(inner) if matches!(inner.as_ref(), Type::Dict(_, _)) => {
                 matches!(arg_ty, Some(Type::Dict(_, _)))
             }
@@ -172,6 +175,37 @@ impl<'a> Codegen<'a> {
                         format!("let {} = {}.clone()", tmp, rendered),
                         format!(
                             "let {} = {}.lock().expect(\"list mutex poisoned\")",
+                            guard, tmp
+                        ),
+                    ],
+                    expr: iter_expr,
+                })
+            }
+            Some(Type::Dict(key_ty, _)) => {
+                if matches!(self.dict_storage_for_expr(expr), DictStorage::Local) {
+                    let iter_expr = if self.is_copy_type(key_ty) {
+                        format!("{}.keys().copied()", rendered)
+                    } else {
+                        format!("{}.keys().cloned()", rendered)
+                    };
+                    return Ok(IterSource {
+                        setup: Vec::new(),
+                        expr: iter_expr,
+                    });
+                }
+                let tmp = self.new_tmp();
+                let guard = self.new_tmp();
+                let iter_expr = if self.is_copy_type(key_ty) {
+                    format!("{}.keys().copied()", guard)
+                } else {
+                    format!("{}.keys().cloned()", guard)
+                };
+                Ok(IterSource {
+                    // Clone the Arc to avoid moving out of the source expression.
+                    setup: vec![
+                        format!("let {} = {}.clone()", tmp, rendered),
+                        format!(
+                            "let {} = {}.lock().expect(\"dict mutex poisoned\")",
                             guard, tmp
                         ),
                     ],
@@ -358,6 +392,46 @@ impl<'a> Codegen<'a> {
                     item = item_expr
                 ))
             }
+            Some(Type::Dict(key_ty, _)) => {
+                let iter_method = if self.is_copy_type(key_ty) {
+                    "keys().copied()"
+                } else {
+                    "keys().cloned()"
+                };
+                if matches!(self.dict_storage_for_expr(expr), DictStorage::Local) {
+                    // Local dicts can borrow directly for immediate consumption.
+                    if context == IterContext::ImmediateConsumption {
+                        return Ok(format!("{}.{}", rendered, iter_method));
+                    }
+                    // Snapshot keys to avoid borrowing across escaped iterators.
+                    let keys = self.new_tmp();
+                    return Ok(format!(
+                        "{{ let {keys} = {expr}.{iter}.collect::<Vec<_>>(); {keys}.into_iter() }}",
+                        keys = keys,
+                        expr = rendered,
+                        iter = iter_method
+                    ));
+                }
+                // For immediate consumption, keep the lock for the iterator lifetime.
+                if context == IterContext::ImmediateConsumption {
+                    return Ok(format!(
+                        "{}.lock().expect(\"dict mutex poisoned\").{}",
+                        rendered, iter_method
+                    ));
+                }
+                // Snapshot keys to avoid holding the lock across escaped iterators.
+                let tmp = self.new_tmp();
+                let guard = self.new_tmp();
+                let keys = self.new_tmp();
+                Ok(format!(
+                    "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); let {keys} = {guard}.{iter}.collect::<Vec<_>>(); {keys}.into_iter() }}",
+                    tmp = tmp,
+                    expr = rendered,
+                    guard = guard,
+                    keys = keys,
+                    iter = iter_method
+                ))
+            }
             _ => Ok(self.gen_iter_source(expr)?.expr),
         }
     }
@@ -398,7 +472,11 @@ impl<'a> Codegen<'a> {
             Type::Int => format!("{} != 0", expr_str),
             Type::Float => format!("{} != 0.0", expr_str),
             Type::Str => format!("!{}.is_empty()", expr_str),
-            Type::Bytes | Type::Set(_) | Type::Dict(_, _) => format!("!{}.is_empty()", expr_str),
+            Type::Bytes | Type::Set(_) => format!("!{}.is_empty()", expr_str),
+            Type::Dict(_, _) => {
+                self.uses.len = true;
+                format!("py_len(&{}) != 0", expr_str)
+            }
             Type::List(_) => {
                 // Use py_len so both Vec and Arc<Mutex<Vec<T>>> are supported.
                 self.uses.len = true;

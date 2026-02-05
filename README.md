@@ -9,8 +9,8 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Functions with required type annotations
 - Basic types: `int`, `float`, `bool`, `str`, `bytes`, `None`
 - Collections: `list[T]`, `dict[K, V]`, `tuple[...]`, `set[T]`
-- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`
-- Arithmetic and bitwise ops: `+`, `-`, `*`, `/`, `//`, `%`, `**`, `&`, `|`, `^`, `<<`, `>>` (`int` for bitwise/shifts)
+- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, chained comparisons
+- Arithmetic and bitwise ops: `+`, `-`, `*`, `/`, `//`, `%`, `**`, `&`, `|`, `^`, `~`, `<<`, `>>` (`int` for bitwise/shifts)
 - Augmented assignment: `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 - Control flow: `if/elif/else`, `x if cond else y`, `while`, `for`, `return`, `break`, `continue`
 - Tuple/list unpacking assignments (including nested)
@@ -18,6 +18,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`
 - Dict methods: `get`, `pop`, `update`, `clear`, `copy`
 - Set methods: `add`, `remove`, `discard`, `clear`, `copy`
+- String methods: `upper`
 - Classes with fields, methods, and class attributes
 - Single inheritance with method overrides and `super().__init__` calls
 - Decorators: `@property` (getter/setter), `@staticmethod`, `@classmethod`, and simple top-level function decorators

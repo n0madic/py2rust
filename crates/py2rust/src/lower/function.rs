@@ -135,6 +135,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn lower_union_alias(
         &self,
         stmt: &ast::StmtAssign,
+        known_classes: &std::collections::HashSet<String>,
     ) -> Result<Option<UnionDef>, CompileError> {
         if stmt.targets.len() != 1 {
             return Ok(None);
@@ -148,6 +149,12 @@ impl<'a> Lowerer<'a> {
         let mut variants = Vec::new();
         if Self::collect_union_variants(&stmt.value, &mut variants) {
             if variants.is_empty() {
+                return Ok(None);
+            }
+            if !variants
+                .iter()
+                .all(|variant| known_classes.contains(variant))
+            {
                 return Ok(None);
             }
             return Ok(Some(UnionDef {

@@ -49,6 +49,7 @@ impl<'a> Lowerer<'a> {
     /// - Regular assignments become top-level statements
     pub fn lower(&self, suite: &ast::Suite) -> Result<Program, CompileError> {
         let mut items = Vec::new();
+        let mut known_classes = std::collections::HashSet::new();
         for stmt in suite {
             match stmt {
                 ast::Stmt::FunctionDef(def) => {
@@ -63,10 +64,11 @@ impl<'a> Lowerer<'a> {
                 }
                 ast::Stmt::ClassDef(def) => {
                     items.push(Item::Class(self.lower_class(def)?));
+                    known_classes.insert(def.name.to_string());
                 }
                 ast::Stmt::Assign(def) => {
                     // Check if this is a union type alias (e.g., Status = Success | Failure)
-                    if let Some(union_item) = self.lower_union_alias(def)? {
+                    if let Some(union_item) = self.lower_union_alias(def, &known_classes)? {
                         items.push(Item::Union(union_item));
                     } else {
                         // Regular assignment - becomes a top-level statement

@@ -966,6 +966,13 @@ impl<'a> TypeChecker<'a> {
                         return Ok((*inner.as_ref()).clone());
                     }
                 }
+                // String method support for core casing helpers.
+                if matches!(obj_ty, Type::Str) && attr == "upper" {
+                    if !args.is_empty() {
+                        return Err(self.error(span, "str.upper() expects no arguments"));
+                    }
+                    return Ok(Type::Str);
+                }
                 if attr == "format" {
                     if args.is_empty() {
                         return Ok(Type::Str);

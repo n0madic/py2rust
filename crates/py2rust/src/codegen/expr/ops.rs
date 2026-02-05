@@ -79,12 +79,40 @@ impl<'a> Codegen<'a> {
             if left_is_str && matches!(right.ty.as_ref(), Some(Type::Int)) {
                 let left_expr = self.gen_expr(left)?;
                 let right_expr = self.gen_expr(right)?;
-                return Ok(format!("{}.repeat({} as usize)", left_expr, right_expr));
+                let str_tmp = self.new_tmp();
+                let count_tmp = self.new_tmp();
+                // Evaluate both operands once and guard against negative repeat counts.
+                let str_init = if matches!(left.kind, ExprKind::Name(_)) {
+                    format!("{}.clone()", left_expr)
+                } else {
+                    left_expr
+                };
+                return Ok(format!(
+                    "{{ let {str_tmp} = {str_init}; let {count_tmp} = {count_expr}; if {count_tmp} <= 0 {{ \"\".to_string() }} else {{ {str_tmp}.repeat({count_tmp} as usize) }} }}",
+                    str_tmp = str_tmp,
+                    str_init = str_init,
+                    count_tmp = count_tmp,
+                    count_expr = right_expr
+                ));
             }
             if right_is_str && matches!(left.ty.as_ref(), Some(Type::Int)) {
                 let left_expr = self.gen_expr(left)?;
                 let right_expr = self.gen_expr(right)?;
-                return Ok(format!("{}.repeat({} as usize)", right_expr, left_expr));
+                let str_tmp = self.new_tmp();
+                let count_tmp = self.new_tmp();
+                // Evaluate both operands once and guard against negative repeat counts.
+                let str_init = if matches!(right.kind, ExprKind::Name(_)) {
+                    format!("{}.clone()", right_expr)
+                } else {
+                    right_expr
+                };
+                return Ok(format!(
+                    "{{ let {str_tmp} = {str_init}; let {count_tmp} = {count_expr}; if {count_tmp} <= 0 {{ \"\".to_string() }} else {{ {str_tmp}.repeat({count_tmp} as usize) }} }}",
+                    str_tmp = str_tmp,
+                    str_init = str_init,
+                    count_tmp = count_tmp,
+                    count_expr = left_expr
+                ));
             }
         }
         if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor) {
@@ -240,6 +268,7 @@ impl<'a> Codegen<'a> {
         let op_str = match op {
             UnaryOp::Neg => "-",
             UnaryOp::Not => "!",
+            UnaryOp::BitNot => "!",
         };
         Ok(format!("({}{})", op_str, self.gen_expr(inner)?))
     }
@@ -293,10 +322,28 @@ impl<'a> Codegen<'a> {
                 Some(Type::Set(_)) | Some(Type::Slice(_)) => {
                     format!("{}.contains(&{})", right_expr, left_expr)
                 }
-                Some(Type::Dict(_, _)) => format!("{}.contains_key(&{})", right_expr, left_expr),
+                Some(Type::Dict(_, _)) => {
+                    if matches!(self.dict_storage_for_expr(right), DictStorage::Local) {
+                        format!("{}.contains_key(&{})", right_expr, left_expr)
+                    } else {
+                        format!(
+                            "{}.lock().expect(\"dict mutex poisoned\").contains_key(&{})",
+                            right_expr, left_expr
+                        )
+                    }
+                }
                 Some(Type::Str) => format!("{}.contains(&{})", right_expr, left_expr),
                 Some(Type::Ref(inner)) => match inner.as_ref() {
-                    Type::Dict(_, _) => format!("{}.contains_key(&{})", right_expr, left_expr),
+                    Type::Dict(_, _) => {
+                        if matches!(self.dict_storage_for_expr(right), DictStorage::Local) {
+                            format!("{}.contains_key(&{})", right_expr, left_expr)
+                        } else {
+                            format!(
+                                "{}.lock().expect(\"dict mutex poisoned\").contains_key(&{})",
+                                right_expr, left_expr
+                            )
+                        }
+                    }
                     Type::Set(_) | Type::List(_) | Type::Slice(_) => {
                         format!("{}.contains(&{})", right_expr, left_expr)
                     }
@@ -340,20 +387,80 @@ impl<'a> Codegen<'a> {
             }
             return Ok(expr);
         }
-        if matches!(op, CmpOp::Is | CmpOp::IsNot)
-            && matches!(&right.kind, ExprKind::Literal(Literal::None))
-        {
-            let left_expr = self.gen_expr(left)?;
-            if matches!(left.ty.as_ref(), Some(Type::Option(_))) {
-                if matches!(op, CmpOp::Is) {
-                    return Ok(format!("{}.is_none()", left_expr));
+        if matches!(op, CmpOp::Is | CmpOp::IsNot) {
+            // Treat typed None values the same as None literals for identity checks.
+            let left_is_none = matches!(&left.kind, ExprKind::Literal(Literal::None))
+                || matches!(left.ty.as_ref(), Some(Type::None));
+            let right_is_none = matches!(&right.kind, ExprKind::Literal(Literal::None))
+                || matches!(right.ty.as_ref(), Some(Type::None));
+            if left_is_none && right_is_none {
+                return Ok(if matches!(op, CmpOp::Is) {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                });
+            }
+            if right_is_none {
+                let left_expr = self.gen_expr(left)?;
+                if matches!(left.ty.as_ref(), Some(Type::Option(_))) {
+                    if matches!(op, CmpOp::Is) {
+                        return Ok(format!("{}.is_none()", left_expr));
+                    }
+                    return Ok(format!("!{}.is_none()", left_expr));
                 }
-                return Ok(format!("!{}.is_none()", left_expr));
+                return Ok(if matches!(op, CmpOp::Is) {
+                    "false".to_string()
+                } else {
+                    "true".to_string()
+                });
             }
-            if matches!(op, CmpOp::Is) {
-                return Ok(format!("{} == ()", left_expr));
+            if left_is_none {
+                let right_expr = self.gen_expr(right)?;
+                if matches!(right.ty.as_ref(), Some(Type::Option(_))) {
+                    if matches!(op, CmpOp::Is) {
+                        return Ok(format!("{}.is_none()", right_expr));
+                    }
+                    return Ok(format!("!{}.is_none()", right_expr));
+                }
+                return Ok(if matches!(op, CmpOp::Is) {
+                    "false".to_string()
+                } else {
+                    "true".to_string()
+                });
             }
-            return Ok(format!("{} != ()", left_expr));
+        }
+        if matches!(op, CmpOp::Is | CmpOp::IsNot) {
+            if matches!(left.ty.as_ref(), Some(Type::List(_)))
+                && matches!(right.ty.as_ref(), Some(Type::List(_)))
+            {
+                let left_expr = self.gen_expr(left)?;
+                let right_expr = self.gen_expr(right)?;
+                let expr = format!("Arc::ptr_eq(&{}, &{})", left_expr, right_expr);
+                if matches!(op, CmpOp::Is) {
+                    return Ok(expr);
+                }
+                return Ok(format!("!({})", expr));
+            }
+            if matches!(left.ty.as_ref(), Some(Type::Dict(_, _)))
+                && matches!(right.ty.as_ref(), Some(Type::Dict(_, _)))
+            {
+                let left_expr = self.gen_expr(left)?;
+                let right_expr = self.gen_expr(right)?;
+                let left_local = matches!(self.dict_storage_for_expr(left), DictStorage::Local);
+                let right_local = matches!(self.dict_storage_for_expr(right), DictStorage::Local);
+                let expr = if left_local && right_local {
+                    format!("std::ptr::eq(&{}, &{})", left_expr, right_expr)
+                } else if left_local || right_local {
+                    // Different storage representations cannot be identical.
+                    "false".to_string()
+                } else {
+                    format!("Arc::ptr_eq(&{}, &{})", left_expr, right_expr)
+                };
+                if matches!(op, CmpOp::Is) {
+                    return Ok(expr);
+                }
+                return Ok(format!("!({})", expr));
+            }
         }
         if matches!(op, CmpOp::Eq | CmpOp::NotEq) {
             let op_str = if matches!(op, CmpOp::Eq) { "==" } else { "!=" };
@@ -420,6 +527,55 @@ impl<'a> Codegen<'a> {
                     format!(
                         // Clone the Arcs to avoid moving list values out of scope.
                         "{{ let {left_tmp} = {left_expr}.clone(); let {right_tmp} = {right_expr}.clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().expect(\"list mutex poisoned\"); let {right_guard} = {right_tmp}.lock().expect(\"list mutex poisoned\"); {left_guard}.iter().eq({right_guard}.iter()) }} }}",
+                        left_tmp = left_tmp,
+                        right_tmp = right_tmp,
+                        left_guard = left_guard,
+                        right_guard = right_guard,
+                        left_expr = left_expr,
+                        right_expr = right_expr
+                    )
+                };
+                if matches!(op, CmpOp::Eq) {
+                    return Ok(eq_expr);
+                }
+                return Ok(format!("!({})", eq_expr));
+            }
+            if matches!(left.ty.as_ref(), Some(Type::Dict(_, _)))
+                && matches!(right.ty.as_ref(), Some(Type::Dict(_, _)))
+            {
+                let left_expr = self.gen_expr(left)?;
+                let right_expr = self.gen_expr(right)?;
+                let left_local = matches!(self.dict_storage_for_expr(left), DictStorage::Local);
+                let right_local = matches!(self.dict_storage_for_expr(right), DictStorage::Local);
+                let eq_expr = if left_local && right_local {
+                    format!("{} == {}", left_expr, right_expr)
+                } else if left_local {
+                    let right_tmp = self.new_tmp();
+                    let right_guard = self.new_tmp();
+                    format!(
+                        "{{ let {right_tmp} = {right_expr}.clone(); let {right_guard} = {right_tmp}.lock().expect(\"dict mutex poisoned\"); {left_expr} == *{right_guard} }}",
+                        right_tmp = right_tmp,
+                        right_guard = right_guard,
+                        left_expr = left_expr,
+                        right_expr = right_expr
+                    )
+                } else if right_local {
+                    let left_tmp = self.new_tmp();
+                    let left_guard = self.new_tmp();
+                    format!(
+                        "{{ let {left_tmp} = {left_expr}.clone(); let {left_guard} = {left_tmp}.lock().expect(\"dict mutex poisoned\"); *{left_guard} == {right_expr} }}",
+                        left_tmp = left_tmp,
+                        left_guard = left_guard,
+                        left_expr = left_expr,
+                        right_expr = right_expr
+                    )
+                } else {
+                    let left_tmp = self.new_tmp();
+                    let right_tmp = self.new_tmp();
+                    let left_guard = self.new_tmp();
+                    let right_guard = self.new_tmp();
+                    format!(
+                        "{{ let {left_tmp} = {left_expr}.clone(); let {right_tmp} = {right_expr}.clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().expect(\"dict mutex poisoned\"); let {right_guard} = {right_tmp}.lock().expect(\"dict mutex poisoned\"); *{left_guard} == *{right_guard} }} }}",
                         left_tmp = left_tmp,
                         right_tmp = right_tmp,
                         left_guard = left_guard,
@@ -510,12 +666,98 @@ impl<'a> Codegen<'a> {
             CmpOp::IsNot => "!=",
             CmpOp::In | CmpOp::NotIn => unreachable!(),
         };
+        if matches!(left.ty.as_ref(), Some(Type::Int | Type::Float))
+            && matches!(right.ty.as_ref(), Some(Type::Int | Type::Float))
+        {
+            let is_float = matches!(left.ty.as_ref(), Some(Type::Float))
+                || matches!(right.ty.as_ref(), Some(Type::Float));
+            let left_expr = self.gen_numeric_operand(left, is_float)?;
+            let right_expr = self.gen_numeric_operand(right, is_float)?;
+            return Ok(format!("({} {} {})", left_expr, op_str, right_expr));
+        }
         Ok(format!(
             "({} {} {})",
             self.gen_expr(left)?,
             op_str,
             self.gen_expr(right)?
         ))
+    }
+
+    /// Lower a chained comparison expression (e.g., a < b < c).
+    ///
+    /// We preserve Python's left-to-right evaluation order and short-circuiting:
+    /// - Evaluate left once
+    /// - Evaluate each comparator only if previous comparison is true
+    pub(super) fn gen_compare_chain_expr(
+        &mut self,
+        expr: &Expr,
+        left: &Expr,
+        ops: &[CmpOp],
+        comparators: &[Expr],
+    ) -> Result<String, CompileError> {
+        if ops.is_empty() || ops.len() != comparators.len() {
+            return Err(self.error(expr.span, "Invalid comparison chain"));
+        }
+
+        let mut out = String::new();
+        out.push_str("{ ");
+
+        let left_tmp = self.new_tmp();
+        out.push_str(&self.gen_compare_chain_init(left, &left_tmp)?);
+        out.push(' ');
+
+        let mut prev_tmp = left_tmp;
+        let mut prev_ty = left.ty.clone();
+        for (idx, op) in ops.iter().enumerate() {
+            let right_expr = &comparators[idx];
+            let right_tmp = self.new_tmp();
+            out.push_str(&self.gen_compare_chain_init(right_expr, &right_tmp)?);
+            out.push(' ');
+
+            let left_tmp_expr = Expr {
+                kind: ExprKind::Name(prev_tmp.clone()),
+                span: expr.span,
+                ty: prev_ty.clone(),
+            };
+            let right_tmp_expr = Expr {
+                kind: ExprKind::Name(right_tmp.clone()),
+                span: expr.span,
+                ty: right_expr.ty.clone(),
+            };
+            let cmp_expr = self.gen_compare_expr(expr, op, &left_tmp_expr, &right_tmp_expr)?;
+            out.push_str(&format!("if !({}) {{ false }} else {{ ", cmp_expr));
+
+            prev_tmp = right_tmp;
+            prev_ty = right_expr.ty.clone();
+        }
+
+        out.push_str("true");
+        for _ in 0..ops.len() {
+            out.push_str(" }");
+        }
+        out.push_str(" }");
+        Ok(out)
+    }
+
+    /// Emit a temporary binding for a chained comparison operand.
+    fn gen_compare_chain_init(&mut self, value: &Expr, tmp: &str) -> Result<String, CompileError> {
+        let mut rendered = self.gen_expr(value)?;
+        if let ExprKind::Name(name) = &value.kind {
+            if !self.is_global(name) {
+                if let Some(ty) = value.ty.as_ref() {
+                    if !self.is_copy_type(ty)
+                        && !matches!(ty, Type::Ref(_) | Type::MutRef(_) | Type::Slice(_))
+                    {
+                        rendered = format!("{}.clone()", rendered);
+                    }
+                }
+            }
+        }
+        if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+            let storage = self.list_storage_for_expr(value);
+            self.set_list_storage_for_temp(tmp, storage);
+        }
+        Ok(format!("let {} = {};", tmp, rendered))
     }
 
     /// Emit lexicographic comparison for tuples with different lengths.
@@ -570,12 +812,58 @@ impl<'a> Codegen<'a> {
         op: &BoolOp,
         values: &[Expr],
     ) -> Result<String, CompileError> {
-        let op_str = match op {
-            BoolOp::And => "&&",
-            BoolOp::Or => "||",
-        };
-        let parts: Result<Vec<String>, CompileError> =
-            values.iter().map(|v| self.gen_expr(v)).collect();
-        Ok(format!("({})", parts?.join(&format!(" {} ", op_str))))
+        let all_bool = values
+            .iter()
+            .all(|v| matches!(v.ty.as_ref(), Some(Type::Bool)));
+        if all_bool {
+            let op_str = match op {
+                BoolOp::And => "&&",
+                BoolOp::Or => "||",
+            };
+            let parts: Result<Vec<String>, CompileError> =
+                values.iter().map(|v| self.gen_expr(v)).collect();
+            return Ok(format!("({})", parts?.join(&format!(" {} ", op_str))));
+        }
+
+        if values.is_empty() {
+            return Ok("false".to_string());
+        }
+
+        let mut out = String::new();
+        out.push_str("{ ");
+
+        let first_tmp = self.new_tmp();
+        out.push_str(&self.gen_compare_chain_init(&values[0], &first_tmp)?);
+        out.push(' ');
+
+        let mut prev_tmp = first_tmp;
+        let mut prev_ty = values[0].ty.clone();
+        for idx in 0..values.len() - 1 {
+            let cond = match prev_ty.as_ref() {
+                Some(ty) if !matches!(ty, Type::Unknown) => {
+                    self.truthy_expr_for_type(&prev_tmp, ty)
+                }
+                _ => format!("({})", prev_tmp),
+            };
+            let branch_cond = match op {
+                BoolOp::And => format!("!{}", cond),
+                BoolOp::Or => cond,
+            };
+            out.push_str(&format!("if {} {{ {} }} else {{ ", branch_cond, prev_tmp));
+
+            let next_tmp = self.new_tmp();
+            out.push_str(&self.gen_compare_chain_init(&values[idx + 1], &next_tmp)?);
+            out.push(' ');
+
+            prev_tmp = next_tmp;
+            prev_ty = values[idx + 1].ty.clone();
+        }
+
+        out.push_str(&prev_tmp);
+        for _ in 0..values.len() - 1 {
+            out.push_str(" }");
+        }
+        out.push_str(" }");
+        Ok(out)
     }
 }

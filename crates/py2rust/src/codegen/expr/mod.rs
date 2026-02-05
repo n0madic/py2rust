@@ -34,6 +34,11 @@ impl<'a> Codegen<'a> {
             ExprKind::Binary { op, left, right } => self.gen_binary_expr(expr, op, left, right),
             ExprKind::Unary { op, expr: inner } => self.gen_unary_expr(op, inner),
             ExprKind::Compare { op, left, right } => self.gen_compare_expr(expr, op, left, right),
+            ExprKind::CompareChain {
+                left,
+                ops,
+                comparators,
+            } => self.gen_compare_chain_expr(expr, left, ops, comparators),
             ExprKind::BoolOp { op, values } => self.gen_boolop_expr(op, values),
             ExprKind::List(items) => self.gen_list_expr(expr, items),
             ExprKind::Tuple(items) => self.gen_tuple_expr(expr, items),

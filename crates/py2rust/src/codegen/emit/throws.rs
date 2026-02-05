@@ -82,6 +82,14 @@ impl<'a> Codegen<'a> {
             ExprKind::Compare { left, right, .. } => {
                 self.expr_can_throw(left) || self.expr_can_throw(right)
             }
+            ExprKind::CompareChain {
+                left, comparators, ..
+            } => {
+                if self.expr_can_throw(left) {
+                    return true;
+                }
+                comparators.iter().any(|cmp| self.expr_can_throw(cmp))
+            }
             ExprKind::BoolOp { values, .. } => values.iter().any(|v| self.expr_can_throw(v)),
             ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
                 items.iter().any(|e| self.expr_can_throw(e))

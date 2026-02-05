@@ -129,13 +129,14 @@ impl<'a> Lowerer<'a> {
                     right: Box::new(self.lower_expr(&bin.right)?),
                 }
             }
-            // Unary operations: -x, not x
-            // We only support negation and logical not.
-            // Python's unary + and ~ are rejected.
+            // Unary operations: -x, not x, ~x
+            // We support negation, logical not, and bitwise not.
+            // Python's unary + is rejected.
             ast::Expr::UnaryOp(unary) => {
                 let op = match unary.op {
                     ast::UnaryOp::USub => UnaryOp::Neg,
                     ast::UnaryOp::Not => UnaryOp::Not,
+                    ast::UnaryOp::Invert => UnaryOp::BitNot,
                     _ => return Err(self.error(expr.range(), "Unsupported unary operator")),
                 };
                 ExprKind::Unary {
@@ -160,30 +161,46 @@ impl<'a> Lowerer<'a> {
                     values: lowered,
                 }
             }
-            // Comparison operations
+            // Comparison operations (including chained comparisons)
             ast::Expr::Compare(comp) => {
-                // Python allows chained comparisons: a < b < c
-                // We reject these because they complicate type checking and codegen.
-                // Users must write: (a < b) and (b < c)
-                if comp.ops.len() != 1 || comp.comparators.len() != 1 {
-                    return Err(self.error(expr.range(), "Only single comparisons are supported"));
-                }
-                let op = match comp.ops[0] {
-                    ast::CmpOp::Eq => CmpOp::Eq,
-                    ast::CmpOp::NotEq => CmpOp::NotEq,
-                    ast::CmpOp::Lt => CmpOp::Lt,
-                    ast::CmpOp::LtE => CmpOp::LtEq,
-                    ast::CmpOp::Gt => CmpOp::Gt,
-                    ast::CmpOp::GtE => CmpOp::GtEq,
-                    ast::CmpOp::Is => CmpOp::Is,
-                    ast::CmpOp::IsNot => CmpOp::IsNot,
-                    ast::CmpOp::In => CmpOp::In,
-                    ast::CmpOp::NotIn => CmpOp::NotIn,
+                let map_op = |op: &ast::CmpOp| -> CmpOp {
+                    match op {
+                        ast::CmpOp::Eq => CmpOp::Eq,
+                        ast::CmpOp::NotEq => CmpOp::NotEq,
+                        ast::CmpOp::Lt => CmpOp::Lt,
+                        ast::CmpOp::LtE => CmpOp::LtEq,
+                        ast::CmpOp::Gt => CmpOp::Gt,
+                        ast::CmpOp::GtE => CmpOp::GtEq,
+                        ast::CmpOp::Is => CmpOp::Is,
+                        ast::CmpOp::IsNot => CmpOp::IsNot,
+                        ast::CmpOp::In => CmpOp::In,
+                        ast::CmpOp::NotIn => CmpOp::NotIn,
+                    }
                 };
-                ExprKind::Compare {
-                    op,
-                    left: Box::new(self.lower_expr(&comp.left)?),
-                    right: Box::new(self.lower_expr(&comp.comparators[0])?),
+                if comp.ops.len() != comp.comparators.len() {
+                    return Err(self.error(expr.range(), "Invalid comparison expression"));
+                }
+                if comp.ops.len() == 1 {
+                    let op = map_op(&comp.ops[0]);
+                    ExprKind::Compare {
+                        op,
+                        left: Box::new(self.lower_expr(&comp.left)?),
+                        right: Box::new(self.lower_expr(&comp.comparators[0])?),
+                    }
+                } else {
+                    let mut ops = Vec::new();
+                    for op in &comp.ops {
+                        ops.push(map_op(op));
+                    }
+                    let mut comparators = Vec::new();
+                    for cmp in &comp.comparators {
+                        comparators.push(self.lower_expr(cmp)?);
+                    }
+                    ExprKind::CompareChain {
+                        left: Box::new(self.lower_expr(&comp.left)?),
+                        ops,
+                        comparators,
+                    }
                 }
             }
             // List literal: [1, 2, 3]

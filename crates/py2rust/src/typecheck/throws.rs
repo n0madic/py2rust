@@ -350,6 +350,16 @@ impl ThrowAnalyzer {
             ExprKind::Compare { left, right, .. } => {
                 self.expr_calls_throwing_function(left) || self.expr_calls_throwing_function(right)
             }
+            ExprKind::CompareChain {
+                left, comparators, ..
+            } => {
+                if self.expr_calls_throwing_function(left) {
+                    return true;
+                }
+                comparators
+                    .iter()
+                    .any(|cmp| self.expr_calls_throwing_function(cmp))
+            }
 
             // Boolean operations - check all values
             ExprKind::BoolOp { values, .. } => {

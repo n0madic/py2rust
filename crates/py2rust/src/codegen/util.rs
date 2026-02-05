@@ -91,6 +91,49 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Determine the storage strategy for a dict variable by name.
+    pub(crate) fn dict_storage_for_name(&self, name: &str) -> DictStorage {
+        if self.is_global(name) {
+            return DictStorage::Shared;
+        }
+        if self.current_function.is_some() {
+            if let Some(map) = self.local_dict_storage.as_ref() {
+                if let Some(storage) = map.get(name) {
+                    return *storage;
+                }
+            }
+            return DictStorage::Shared;
+        }
+        if let Some(storage) = self.main_dict_storage.get(name) {
+            return *storage;
+        }
+        DictStorage::Shared
+    }
+
+    /// Resolve storage strategy for a dict expression (defaults to Shared).
+    pub(crate) fn dict_storage_for_expr(&self, expr: &Expr) -> DictStorage {
+        if matches!(expr.ty.as_ref(), Some(Type::Dict(_, _))) {
+            if let ExprKind::Name(name) = &expr.kind {
+                return if matches!(self.dict_storage_for_name(name), DictStorage::Local) {
+                    DictStorage::Local
+                } else {
+                    DictStorage::Shared
+                };
+            }
+        }
+        DictStorage::Shared
+    }
+
+    /// Wrap a dict expression with the configured storage strategy.
+    pub(crate) fn wrap_dict_storage_expr(&self, expr: &str, storage: DictStorage) -> String {
+        match storage {
+            DictStorage::Local => expr.to_string(),
+            DictStorage::Shared => format!("Arc::new(Mutex::new({}))", expr),
+        }
+    }
+
+    // Dict storage for temporaries currently defaults to Shared; add tracking if needed.
+
     pub(crate) fn global_name(&self, name: &str) -> String {
         format!("__GLOBAL_{}", name.to_uppercase())
     }
@@ -151,7 +194,7 @@ impl<'a> Codegen<'a> {
             .map(|(_, expr)| expr.as_str())
     }
 
-    /// Clone list values to preserve Python reference semantics.
+    /// Clone shared/owned values to preserve Python assignment semantics.
     pub(crate) fn maybe_clone_list_expr(
         &self,
         expr: String,
@@ -159,7 +202,10 @@ impl<'a> Codegen<'a> {
         expected_ty: Option<&Type>,
     ) -> String {
         let ty = expected_ty.or(value_ty);
-        if matches!(ty, Some(Type::List(_))) {
+        if matches!(
+            ty,
+            Some(Type::List(_)) | Some(Type::Dict(_, _)) | Some(Type::Str) | Some(Type::Bytes)
+        ) {
             return format!("{}.clone()", expr);
         }
         expr
@@ -283,6 +329,14 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
             ExprKind::Compare { left, right, .. } => {
                 visit_expr(left, counts);
                 visit_expr(right, counts);
+            }
+            ExprKind::CompareChain {
+                left, comparators, ..
+            } => {
+                visit_expr(left, counts);
+                for cmp in comparators {
+                    visit_expr(cmp, counts);
+                }
             }
             ExprKind::BoolOp { values, .. } => {
                 for v in values {
