@@ -273,6 +273,11 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
+        } else if matches!(kind, MethodKind::Class) {
+            // For classmethods, consume the cls parameter and generate cls: ()
+            if let Some(cls_param) = iter.next() {
+                params.push(format!("{}: ()", cls_param.name));
+            }
         }
         for param in iter {
             let ty = self.resolve_type_ref(&param.ann, param.span)?;

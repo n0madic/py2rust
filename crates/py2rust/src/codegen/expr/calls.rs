@@ -1926,10 +1926,11 @@ impl<'a> Codegen<'a> {
                                 .map(|t| self.to_borrowed_param_type(t))
                                 .collect();
                             let mut args_with_cls = Vec::with_capacity(args.len() + 1);
+                            // cls parameter is unit type () in Rust
                             args_with_cls.push(Expr {
-                                kind: ExprKind::Literal(Literal::Int(0)),
+                                kind: ExprKind::Literal(Literal::None),
                                 span: value.span,
-                                ty: Some(Type::Int),
+                                ty: Some(Type::None),
                             });
                             args_with_cls.extend_from_slice(args);
                             let full_args = self.fill_trailing_defaults(
