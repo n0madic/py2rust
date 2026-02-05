@@ -856,3 +856,85 @@ print("Pattern matching tests passed!")
         None,
     );
 }
+
+#[test]
+fn runtime_match_args_support() {
+    run_py(
+        "match_args",
+        r#"
+# Test __match_args__ with reversed field order
+class Point:
+    __match_args__ = ('y', 'x')
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+# Test class without __match_args__ (uses declaration order)
+class Color:
+    r: int
+    g: int
+    b: int
+
+    def __init__(self, r: int, g: int, b: int) -> None:
+        self.r = r
+        self.g = g
+        self.b = b
+
+# Union for pattern matching
+Coord = Point | Color
+
+def describe(c: Coord) -> str:
+    match c:
+        case Point(y_val, x_val):
+            # Due to __match_args__ = ('y', 'x'), first binding is y, second is x
+            return f"Point: y={y_val}, x={x_val}"
+        case Color(r_val, g_val, b_val):
+            # No __match_args__, uses declaration order: r, g, b
+            return f"Color: r={r_val}, g={g_val}, b={b_val}"
+
+p: Coord = Point(10, 20)
+c: Coord = Color(255, 128, 64)
+
+print(describe(p))
+print(describe(c))
+"#,
+        Some("Point: y=20, x=10\nColor: r=255, g=128, b=64"),
+    );
+}
+
+#[test]
+fn runtime_match_args_partial() {
+    run_py(
+        "match_args_partial",
+        r#"
+# Test __match_args__ with subset of fields
+class Rect:
+    __match_args__ = ('width', 'height')
+    x: int
+    y: int
+    width: int
+    height: int
+
+    def __init__(self, x: int, y: int, width: int, height: int) -> None:
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+
+Shape = Rect
+
+def area(s: Shape) -> int:
+    match s:
+        case Rect(w, h):
+            # Only width and height are in __match_args__, so those are matched
+            return w * h
+
+r: Shape = Rect(10, 20, 30, 40)
+print(area(r))
+"#,
+        Some("1200"),
+    );
+}

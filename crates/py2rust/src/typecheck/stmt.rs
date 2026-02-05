@@ -476,20 +476,32 @@ impl<'a> TypeChecker<'a> {
                     if !union_variants.contains(&case.variant) {
                         return Err(self.error(case.span, "Case variant not in union"));
                     }
-                    let fields: Vec<(String, Type)> = self
-                        .ctx
-                        .classes
-                        .get(&case.variant)
-                        .ok_or_else(|| {
-                            self.error(
-                                case.span,
-                                format!("Unknown variant class: {}", case.variant),
-                            )
-                        })?
-                        .fields
+                    let class_info = self.ctx.classes.get(&case.variant).ok_or_else(|| {
+                        self.error(
+                            case.span,
+                            format!("Unknown variant class: {}", case.variant),
+                        )
+                    })?;
+
+                    // Determine field order: use __match_args__ if present, otherwise declaration order
+                    let field_order: Vec<String> =
+                        if let Some(ref match_args) = class_info.match_args {
+                            match_args.clone()
+                        } else {
+                            class_info.fields.keys().cloned().collect()
+                        };
+
+                    // Build ordered fields list
+                    let fields: Vec<(String, Type)> = field_order
                         .iter()
-                        .map(|(name, ty)| (name.clone(), ty.clone()))
+                        .filter_map(|name| {
+                            class_info
+                                .fields
+                                .get(name)
+                                .map(|ty| (name.clone(), ty.clone()))
+                        })
                         .collect();
+
                     if fields.len() != case.bindings.len() {
                         return Err(
                             self.error(case.span, "Case binding count does not match fields")

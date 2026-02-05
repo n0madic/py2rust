@@ -78,6 +78,9 @@ pub struct ClassDef {
     pub methods: Vec<Function>,
     pub method_kinds: HashMap<String, MethodKind>,
     pub properties: Vec<PropertyDef>,
+    /// Pattern matching field order (from __match_args__).
+    /// If None, use field declaration order.
+    pub match_args: Option<Vec<String>>,
     pub span: Span,
 }
 

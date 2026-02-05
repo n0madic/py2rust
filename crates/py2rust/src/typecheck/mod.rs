@@ -125,6 +125,7 @@ impl<'a> TypeChecker<'a> {
                         iter_return: None,
                         iter_item: None,
                         next_item: None,
+                        match_args: class_def.match_args.clone(),
                     },
                 );
             }

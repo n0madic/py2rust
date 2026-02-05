@@ -49,6 +49,9 @@ pub struct ClassInfo {
     pub iter_return: Option<String>,
     pub iter_item: Option<Type>,
     pub next_item: Option<Type>,
+    /// Pattern matching field order (from __match_args__).
+    /// If None, use field declaration order.
+    pub match_args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

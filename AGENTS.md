@@ -64,6 +64,10 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
   - `IterContext::DeferredCapture` locks per-iteration when iterator is returned/stored (map/filter results)
 - List/set iteration for builtins uses `.iter().cloned()` to avoid moves.
 - Set ops map to `&set1 | &set2`, `&set1 & &set2`, `&set1 - &set2`, `&set1 ^ &set2`.
+- Pattern matching:
+  - `__match_args__` defines field order for pattern matching (CPython 3.10+ compatible)
+  - If not specified, uses field declaration order
+  - All fields must appear in Rust pattern, unbound fields use `_`
 - Exception handling uses `Result<T, PyError>` with closures for try blocks.
 - Variables declared in try block are exposed to else via `Option<T>` wrapper.
 - Functions with unhandled exceptions return `Result<T, PyError>`.

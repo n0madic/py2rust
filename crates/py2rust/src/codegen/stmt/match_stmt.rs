@@ -12,14 +12,36 @@ impl<'a> Codegen<'a> {
                 format!("Unknown variant class: {}", case.variant),
             )
         })?;
+
+        // Determine which fields to bind: use __match_args__ if present, otherwise all fields
+        let fields_to_bind: Vec<String> = if let Some(ref match_args) = class_info.match_args {
+            match_args.clone()
+        } else {
+            class_info.fields.keys().cloned().collect()
+        };
+
+        // Build field binding map (field_name -> binding_name)
+        let mut field_bindings: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (field, binding) in fields_to_bind.iter().zip(case.bindings.iter()) {
+            field_bindings.insert(field.clone(), binding.clone());
+        }
+
+        // Generate pattern for ALL fields (required by Rust), using bindings or _ for each
         let mut bindings = Vec::new();
-        for ((field, _), binding) in class_info.fields.iter().zip(case.bindings.iter()) {
-            if field == binding {
-                bindings.push(field.clone());
+        for (field, _) in class_info.fields.iter() {
+            if let Some(binding) = field_bindings.get(field) {
+                if field == binding {
+                    bindings.push(field.clone());
+                } else {
+                    bindings.push(format!("{}: {}", field, binding));
+                }
             } else {
-                bindings.push(format!("{}: {}", field, binding));
+                // Field not in __match_args__, ignore it with _
+                bindings.push(format!("{}: _", field));
             }
         }
+
         let union = self
             .find_union_for_variant(&case.variant)
             .ok_or_else(|| self.error(case.span, "Unable to locate union for variant"))?;

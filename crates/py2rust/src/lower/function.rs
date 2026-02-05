@@ -492,6 +492,10 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+
+        // Extract __match_args__ if present from AST
+        let match_args = self.extract_match_args_from_ast(&class.body)?;
+
         Ok(ClassDef {
             name: class.name.to_string(),
             base,
@@ -500,8 +504,57 @@ impl<'a> Lowerer<'a> {
             methods,
             method_kinds,
             properties,
+            match_args,
             span: Span::from(class.range()),
         })
+    }
+
+    /// Extract __match_args__ from class body AST if present.
+    ///
+    /// __match_args__ should be a tuple of strings defining field order for pattern matching.
+    /// Example: __match_args__ = ('x', 'y')
+    fn extract_match_args_from_ast(
+        &self,
+        body: &[ast::Stmt],
+    ) -> Result<Option<Vec<String>>, CompileError> {
+        for item in body {
+            if let ast::Stmt::Assign(def) = item {
+                if def.targets.len() == 1 {
+                    if let ast::Expr::Name(name) = &def.targets[0] {
+                        if name.id.as_str() == "__match_args__" {
+                            // __match_args__ must be a tuple of string literals
+                            if let ast::Expr::Tuple(tuple) = &*def.value {
+                                let mut field_names = Vec::new();
+                                for elem in &tuple.elts {
+                                    if let ast::Expr::Constant(cons) = elem {
+                                        if let ast::Constant::Str(s) = &cons.value {
+                                            field_names.push(s.to_string());
+                                        } else {
+                                            return Err(self.error(
+                                                elem.range(),
+                                                "__match_args__ must contain only string literals",
+                                            ));
+                                        }
+                                    } else {
+                                        return Err(self.error(
+                                            elem.range(),
+                                            "__match_args__ must contain only string literals",
+                                        ));
+                                    }
+                                }
+                                return Ok(Some(field_names));
+                            } else {
+                                return Err(self.error(
+                                    def.value.range(),
+                                    "__match_args__ must be a tuple of strings",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub(super) fn extract_init_fields_from_ast(

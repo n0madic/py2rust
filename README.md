@@ -20,7 +20,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Single inheritance with method overrides and `super().__init__` calls
 - Decorators: `@property` (getter/setter), `@staticmethod`, `@classmethod`, and simple top-level function decorators
 - Enum-like `Union` aliases via `A | B` type aliases
-- `match/case` on union variants
+- `match/case` on union variants with `__match_args__` support
 - Custom iterators via `__iter__` and `next`
 - Simple list and set comprehensions
 - Builtins: `abs`, `all`, `any`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `str`, `sum`, `tuple`, `type`, `zip`
