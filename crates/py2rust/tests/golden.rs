@@ -123,3 +123,16 @@ def f() -> int:
     // Access from a function should force a global storage slot.
     assert!(out.rust.contains("__GLOBAL_X"));
 }
+
+#[test]
+fn emits_keyword_argument_reordering() {
+    let source = r#"
+def f(a: int, b: int) -> int:
+    return a - b
+
+x: int = f(b=1, a=3)
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    assert!(out.rust.contains("f(3i64, 1i64)"));
+}

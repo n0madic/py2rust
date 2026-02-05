@@ -49,7 +49,11 @@ impl<'a> Codegen<'a> {
 
     fn expr_can_throw(&self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Call { func, args } => {
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
                 if let ExprKind::Name(name) = &func.kind {
                     if self.builtin_call_can_throw(name, args) {
                         return true;
@@ -74,6 +78,7 @@ impl<'a> Codegen<'a> {
                     return true;
                 }
                 args.iter().any(|arg| self.expr_can_throw(arg))
+                    || keywords.iter().any(|kw| self.expr_can_throw(&kw.value))
             }
             ExprKind::Binary { left, right, .. } => {
                 self.expr_can_throw(left) || self.expr_can_throw(right)

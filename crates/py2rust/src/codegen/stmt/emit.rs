@@ -1058,8 +1058,14 @@ impl<'a> Codegen<'a> {
         let is_empty_list = matches!(&value.kind, ExprKind::List(items) if items.is_empty());
         let is_empty_call = matches!(
             &value.kind,
-            ExprKind::Call { func, args }
-                if args.is_empty() && matches!(&func.kind, ExprKind::Name(name) if name == "list" || name == "tuple")
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            }
+                if args.is_empty()
+                    && keywords.is_empty()
+                    && matches!(&func.kind, ExprKind::Name(name) if name == "list" || name == "tuple")
         );
         if !is_empty_list && !is_empty_call {
             return Ok(None);
@@ -1122,14 +1128,18 @@ impl<'a> Codegen<'a> {
                 items,
                 DictStorage::Local,
             )?)),
-            ExprKind::Call { func, args } => {
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
                 if let ExprKind::Name(call_name) = &func.kind {
                     if call_name == "dict" {
                         self.uses.hash_map = true;
-                        if args.is_empty() {
+                        if args.is_empty() && keywords.is_empty() {
                             return Ok(Some("HashMap::new()".to_string()));
                         }
-                        if args.len() == 1 {
+                        if args.len() == 1 && keywords.is_empty() {
                             let arg = &args[0];
                             if matches!(arg.ty.as_ref(), Some(Type::Dict(_, _))) {
                                 let arg_expr = self.gen_expr(arg)?;

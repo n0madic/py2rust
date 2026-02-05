@@ -879,11 +879,25 @@ impl<'a> Codegen<'a> {
                     used.insert(name.clone());
                 }
             }
-            ExprKind::Call { func, args } => {
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
                 self.collect_used_globals_in_expr(func, locals, outers, globals, module_vars, used);
                 for arg in args {
                     self.collect_used_globals_in_expr(
                         arg,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+                for kw in keywords {
+                    self.collect_used_globals_in_expr(
+                        &kw.value,
                         locals,
                         outers,
                         globals,
@@ -1247,7 +1261,11 @@ impl<'a> Codegen<'a> {
     /// Walk expressions and record list element types inferred from list method calls.
     fn collect_list_elem_types_in_expr(&self, expr: &Expr, inferred: &mut HashMap<String, Type>) {
         match &expr.kind {
-            ExprKind::Call { func, args } => {
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
                 if let ExprKind::Attr { value, attr } = &func.kind {
                     if let ExprKind::Name(name) = &value.kind {
                         let elem_ty = match attr.as_str() {
@@ -1271,6 +1289,9 @@ impl<'a> Codegen<'a> {
                 self.collect_list_elem_types_in_expr(func, inferred);
                 for arg in args {
                     self.collect_list_elem_types_in_expr(arg, inferred);
+                }
+                for kw in keywords {
+                    self.collect_list_elem_types_in_expr(&kw.value, inferred);
                 }
             }
             ExprKind::Attr { value, .. } => {
@@ -1572,7 +1593,11 @@ impl<'a> Codegen<'a> {
                     self.mark_list_shared(name, storage);
                 }
             }
-            ExprKind::Call { func, args } => {
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
                 let safe = self.call_is_list_safe(func);
                 match &func.kind {
                     ExprKind::Attr { value, .. } => {
@@ -1599,6 +1624,9 @@ impl<'a> Codegen<'a> {
                 };
                 for arg in args {
                     self.collect_list_storage_in_expr(arg, arg_ctx, shared_globals, storage);
+                }
+                for kw in keywords {
+                    self.collect_list_storage_in_expr(&kw.value, arg_ctx, shared_globals, storage);
                 }
             }
             ExprKind::Attr { value, .. } => {
@@ -2116,7 +2144,11 @@ impl<'a> Codegen<'a> {
                     self.mark_dict_shared(name, storage);
                 }
             }
-            ExprKind::Call { func, args } => {
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
                 let safe = self.call_is_dict_safe(func);
                 match &func.kind {
                     ExprKind::Attr { value, .. } => {
@@ -2143,6 +2175,9 @@ impl<'a> Codegen<'a> {
                 };
                 for arg in args {
                     self.collect_dict_storage_in_expr(arg, arg_ctx, shared_globals, storage);
+                }
+                for kw in keywords {
+                    self.collect_dict_storage_in_expr(&kw.value, arg_ctx, shared_globals, storage);
                 }
             }
             ExprKind::Attr { value, .. } => {
@@ -2596,7 +2631,11 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                ExprKind::Call { func, args } => {
+                ExprKind::Call {
+                    func,
+                    args,
+                    keywords,
+                } => {
                     visit_expr_for_lambdas(
                         this,
                         func,
@@ -2610,6 +2649,17 @@ impl<'a> Codegen<'a> {
                         visit_expr_for_lambdas(
                             this,
                             arg,
+                            locals,
+                            nonlocals,
+                            globals,
+                            cell_locals,
+                            unresolved,
+                        );
+                    }
+                    for kw in keywords {
+                        visit_expr_for_lambdas(
+                            this,
+                            &kw.value,
                             locals,
                             nonlocals,
                             globals,

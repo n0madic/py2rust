@@ -19,6 +19,7 @@ use super::*;
 /// to determine if callers need to return Result<T, PyError>.
 #[derive(Debug, Clone)]
 pub struct FunctionSig {
+    pub param_names: Vec<String>,
     pub params: Vec<Type>,
     pub ret: Type,
     pub span: Span,

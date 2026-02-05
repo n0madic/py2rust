@@ -9,14 +9,15 @@ impl<'a> Codegen<'a> {
         expr: &Expr,
         func: &Expr,
         args: &[Expr],
+        keywords: &[KeywordArg],
     ) -> Result<String, CompileError> {
         if let ExprKind::Name(name) = &func.kind {
-            if let Some(result) = self.gen_builtin_call(expr, name, args)? {
+            if let Some(result) = self.gen_builtin_call(expr, name, args, keywords)? {
                 return Ok(result);
             }
         }
         if let ExprKind::Attr { value, attr } = &func.kind {
-            return self.gen_attr_call(value, attr, args);
+            return self.gen_attr_call(value, attr, args, keywords);
         }
         // Check if this is a user-defined function.
         if let ExprKind::Name(name) = &func.kind {
@@ -27,8 +28,22 @@ impl<'a> Codegen<'a> {
                     .map(|t| self.to_borrowed_param_type(t))
                     .collect();
                 let full_args = if let Some(def) = self.function_defs.get(name) {
-                    self.fill_trailing_defaults(args, &def.params, &param_types, None, name)?
+                    self.resolve_call_args(
+                        args,
+                        keywords,
+                        &def.params,
+                        &param_types,
+                        None,
+                        name,
+                        false,
+                    )?
                 } else {
+                    if !keywords.is_empty() {
+                        return Err(self.error(
+                            expr.span,
+                            "Keyword arguments require a known function signature",
+                        ));
+                    }
                     args.to_vec()
                 };
                 let call = format!(
@@ -43,6 +58,12 @@ impl<'a> Codegen<'a> {
                 return Ok(call);
             }
         }
+        if !keywords.is_empty() {
+            return Err(self.error(
+                expr.span,
+                "Keyword arguments are not supported for this call target",
+            ));
+        }
         Ok(format!(
             "{}({})",
             self.gen_expr(func)?,
@@ -50,20 +71,67 @@ impl<'a> Codegen<'a> {
         ))
     }
 
-    /// Fill missing trailing arguments with default globals.
-    pub(crate) fn fill_trailing_defaults(
+    /// Resolve positional/keyword call arguments and fill defaults.
+    pub(crate) fn resolve_call_args(
         &self,
         args: &[Expr],
+        keywords: &[KeywordArg],
         params: &[Param],
         param_types: &[Type],
         class_name: Option<&str>,
         func_name: &str,
+        implicit_first: bool,
     ) -> Result<Vec<Expr>, CompileError> {
-        if args.len() > params.len() {
-            return Ok(args.to_vec());
+        if params.len() != param_types.len() {
+            return Err(self.error(
+                Span::new(0, 0),
+                format!("Internal error: arity mismatch in {func_name}"),
+            ));
         }
-        let mut out = args.to_vec();
-        for (idx, param) in params.iter().enumerate().skip(out.len()) {
+        let mut out: Vec<Option<Expr>> = vec![None; params.len()];
+        let start = if implicit_first { 1 } else { 0 };
+        if implicit_first {
+            out[0] = Some(Expr {
+                kind: ExprKind::Literal(Literal::None),
+                span: params[0].span,
+                ty: Some(param_types[0].clone()),
+            });
+        }
+        if args.len() > params.len().saturating_sub(start) {
+            return Err(self.error(
+                params.last().map(|p| p.span).unwrap_or(Span::new(0, 0)),
+                "Argument count mismatch",
+            ));
+        }
+        for (idx, arg) in args.iter().enumerate() {
+            out[start + idx] = Some(arg.clone());
+        }
+        for kw in keywords {
+            let Some(param_idx) = params.iter().position(|p| p.name == kw.name) else {
+                return Err(self.error(
+                    kw.value.span,
+                    format!("Unknown keyword argument `{}`", kw.name),
+                ));
+            };
+            if param_idx < start {
+                return Err(self.error(
+                    kw.value.span,
+                    format!("Unexpected keyword argument `{}`", kw.name),
+                ));
+            }
+            if out[param_idx].is_some() {
+                return Err(self.error(
+                    kw.value.span,
+                    format!("Multiple values for argument `{}`", kw.name),
+                ));
+            }
+            out[param_idx] = Some(kw.value.clone());
+        }
+
+        for (idx, param) in params.iter().enumerate() {
+            if out[idx].is_some() {
+                continue;
+            }
             if param.default.is_none() {
                 return Err(self.error(
                     param.span,
@@ -72,16 +140,16 @@ impl<'a> Codegen<'a> {
             }
             let global_name = self.default_global_name(class_name, func_name, param.name.as_str());
             let mut ty = param_types.get(idx).cloned();
-            if let Some(Type::Ref(inner)) = ty.clone() {
+            if let Some(Type::Ref(inner)) = ty {
                 ty = Some(*inner);
             }
-            out.push(Expr {
+            out[idx] = Some(Expr {
                 kind: ExprKind::Name(global_name),
                 span: param.span,
                 ty,
             });
         }
-        Ok(out)
+        Ok(out.into_iter().flatten().collect())
     }
 
     /// Try to lower a builtin call; return Some(expr) if handled.
@@ -90,7 +158,55 @@ impl<'a> Codegen<'a> {
         expr: &Expr,
         name: &str,
         args: &[Expr],
+        keywords: &[KeywordArg],
     ) -> Result<Option<String>, CompileError> {
+        let is_builtin_name = matches!(
+            name,
+            "print"
+                | "len"
+                | "range"
+                | "round"
+                | "list"
+                | "tuple"
+                | "set"
+                | "dict"
+                | "bytes"
+                | "enumerate"
+                | "zip"
+                | "map"
+                | "filter"
+                | "all"
+                | "any"
+                | "reversed"
+                | "max"
+                | "min"
+                | "abs"
+                | "pow"
+                | "sum"
+                | "int"
+                | "float"
+                | "bool"
+                | "chr"
+                | "ord"
+                | "hash"
+                | "id"
+                | "divmod"
+                | "next"
+                | "bin"
+                | "hex"
+                | "oct"
+                | "repr"
+                | "str"
+                | "isinstance"
+                | "type"
+                | "exit"
+        );
+        if is_builtin_name && !keywords.is_empty() {
+            return Err(self.error(
+                expr.span,
+                format!("Keyword arguments are not supported for {name}()"),
+            ));
+        }
         if name == "print" {
             self.uses.print = true;
             if args.is_empty() {
@@ -1015,12 +1131,14 @@ impl<'a> Codegen<'a> {
                     let param_types: Vec<Type> = init_sig
                         .map(|sig| sig.params.into_iter().skip(1).collect())
                         .unwrap_or_default();
-                    let full_args = self.fill_trailing_defaults(
+                    let full_args = self.resolve_call_args(
                         args,
+                        keywords,
                         &init_def.params[1..],
                         &param_types,
                         Some(name),
                         "__init__",
+                        false,
                     )?;
                     format!(
                         "{}::new({})",
@@ -1028,7 +1146,7 @@ impl<'a> Codegen<'a> {
                         self.gen_call_args_for_sig(&param_types, &full_args)?
                     )
                 } else {
-                    if !args.is_empty() {
+                    if !args.is_empty() || !keywords.is_empty() {
                         return Err(
                             self.error(expr.span, format!("Class {name} takes no arguments"))
                         );
@@ -1036,6 +1154,12 @@ impl<'a> Codegen<'a> {
                     format!("{}::new()", name)
                 }
             } else {
+                if !keywords.is_empty() {
+                    return Err(self.error(
+                        expr.span,
+                        "Keyword arguments require a known class signature",
+                    ));
+                }
                 format!("{}::new({})", name, self.gen_args(args)?)
             };
             if let Some(Type::Union(union_name)) = expr.ty.as_ref() {
@@ -1052,9 +1176,13 @@ impl<'a> Codegen<'a> {
         value: &Expr,
         attr: &str,
         args: &[Expr],
+        keywords: &[KeywordArg],
     ) -> Result<String, CompileError> {
         if attr == "upper" {
             if let Some(Type::Str) = value.ty.as_ref() {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
                 if !args.is_empty() {
                     return Err(self.error(value.span, "str.upper() expects no arguments"));
                 }
@@ -1064,6 +1192,9 @@ impl<'a> Codegen<'a> {
         }
         if attr == "append" {
             if let Some(Type::List(_)) = value.ty.as_ref() {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
                 let target = if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
                         format!(
@@ -1089,6 +1220,9 @@ impl<'a> Codegen<'a> {
         }
         if attr == "extend" {
             if let Some(Type::List(_)) = value.ty.as_ref() {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
                 let mut target = None;
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
@@ -1144,6 +1278,9 @@ impl<'a> Codegen<'a> {
         }
         if attr == "pop" {
             if let Some(Type::List(_)) = value.ty.as_ref() {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
                 if args.len() > 1 {
                     return Err(self.error(value.span, "list.pop() expects zero or one argument"));
                 }
@@ -2006,6 +2143,9 @@ impl<'a> Codegen<'a> {
         }
         if attr == "format" {
             if let ExprKind::Literal(Literal::Str(fmt)) = &value.kind {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
                 let fmt_lit = format!("{fmt:?}");
                 if args.is_empty() {
                     return Ok(format!("{}.to_string()", fmt_lit));
@@ -2057,12 +2197,14 @@ impl<'a> Codegen<'a> {
                                 .skip(1)
                                 .map(|t| self.to_borrowed_param_type(t))
                                 .collect();
-                            let full_args = self.fill_trailing_defaults(
+                            let full_args = self.resolve_call_args(
                                 args,
+                                keywords,
                                 &method_def.params[1..],
                                 &param_types,
                                 Some(class_name),
                                 attr,
+                                false,
                             )?;
                             let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
                             if self.method_is_mutating(&method_def) {
@@ -2087,12 +2229,14 @@ impl<'a> Codegen<'a> {
                                 .iter()
                                 .map(|t| self.to_borrowed_param_type(t))
                                 .collect();
-                            let full_args = self.fill_trailing_defaults(
+                            let full_args = self.resolve_call_args(
                                 args,
+                                keywords,
                                 &method_def.params,
                                 &param_types,
                                 Some(class_name),
                                 attr,
+                                false,
                             )?;
                             let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
                             format!("{}::{}({})", class_name, attr, call_args)
@@ -2103,20 +2247,14 @@ impl<'a> Codegen<'a> {
                                 .iter()
                                 .map(|t| self.to_borrowed_param_type(t))
                                 .collect();
-                            let mut args_with_cls = Vec::with_capacity(args.len() + 1);
-                            // cls parameter is unit type () in Rust
-                            args_with_cls.push(Expr {
-                                kind: ExprKind::Literal(Literal::None),
-                                span: value.span,
-                                ty: Some(Type::None),
-                            });
-                            args_with_cls.extend_from_slice(args);
-                            let full_args = self.fill_trailing_defaults(
-                                &args_with_cls,
+                            let full_args = self.resolve_call_args(
+                                args,
+                                keywords,
                                 &method_def.params,
                                 &param_types,
                                 Some(class_name),
                                 attr,
+                                true,
                             )?;
                             let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
                             format!("{}::{}({})", class_name, attr, call_args)
@@ -2132,6 +2270,12 @@ impl<'a> Codegen<'a> {
         // Handle method calls on Union types by generating match expression.
         if let Some(Type::Union(union_name)) = value.ty.as_ref() {
             if let Some(union_info) = self.ctx.unions.get(union_name) {
+                if !keywords.is_empty() {
+                    return Err(self.error(
+                        value.span,
+                        "Keyword arguments are not supported for union method calls",
+                    ));
+                }
                 // Get method signature from first variant to check if it can throw.
                 let can_throw = union_info.variants.first().and_then(|v| {
                     self.ctx
@@ -2155,6 +2299,12 @@ impl<'a> Codegen<'a> {
                 }
                 return Ok(call);
             }
+        }
+        if !keywords.is_empty() {
+            return Err(self.error(
+                value.span,
+                "Keyword arguments are not supported for this method call",
+            ));
         }
         Ok(format!(
             "{}.{}({})",

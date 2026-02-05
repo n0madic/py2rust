@@ -32,6 +32,7 @@ impl<'a> TypeChecker<'a> {
                 self.ctx.functions.insert(
                     func.name.clone(),
                     FunctionSig {
+                        param_names: func.params.iter().map(|p| p.name.clone()).collect(),
                         params,
                         ret,
                         span: func.span,
@@ -113,6 +114,7 @@ impl<'a> TypeChecker<'a> {
                     let ret = self.resolve_type_ref(&method.ret, method.span)?;
                     let defaults = method.params.iter().filter(|p| p.default.is_some()).count();
                     let sig = FunctionSig {
+                        param_names: method.params.iter().map(|p| p.name.clone()).collect(),
                         params,
                         ret: ret.clone(),
                         span: method.span,

@@ -662,9 +662,14 @@ impl<'a> Codegen<'a> {
             ));
         }
         // Optimize list(iterable) calls for immediate consumption - no Arc<Mutex> needed.
-        if let ExprKind::Call { func, args } = &expr.kind {
+        if let ExprKind::Call {
+            func,
+            args,
+            keywords,
+        } = &expr.kind
+        {
             if let ExprKind::Name(name) = &func.kind {
-                if name == "list" && args.len() == 1 {
+                if name == "list" && args.len() == 1 && keywords.is_empty() {
                     let tmp = self.new_tmp();
                     let iter_src = self.gen_iter_source(&args[0])?;
                     let list_expr = format!("({}).collect::<Vec<_>>()", iter_src.expr);

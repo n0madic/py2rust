@@ -309,7 +309,11 @@ impl ThrowAnalyzer {
     fn expr_calls_throwing_function(&self, expr: &Expr) -> bool {
         match &expr.kind {
             // Function call - check if the function throws
-            ExprKind::Call { func, args } => {
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
                 if let ExprKind::Name(name) = &func.kind {
                     if self.builtin_call_can_throw(name, args) {
                         return true;
@@ -333,6 +337,11 @@ impl ThrowAnalyzer {
                 // Check arguments recursively
                 for arg in args {
                     if self.expr_calls_throwing_function(arg) {
+                        return true;
+                    }
+                }
+                for kw in keywords {
+                    if self.expr_calls_throwing_function(&kw.value) {
                         return true;
                     }
                 }

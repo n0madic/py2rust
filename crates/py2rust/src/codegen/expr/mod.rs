@@ -30,7 +30,11 @@ impl<'a> Codegen<'a> {
             ExprKind::Literal(lit) => self.gen_literal_expr(expr, lit),
             ExprKind::Name(name) => self.gen_name_expr(name),
             ExprKind::Attr { value, attr } => self.gen_attr_expr(value, attr),
-            ExprKind::Call { func, args } => self.gen_call_expr(expr, func, args),
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => self.gen_call_expr(expr, func, args, keywords),
             ExprKind::Binary { op, left, right } => self.gen_binary_expr(expr, op, left, right),
             ExprKind::Unary { op, expr: inner } => self.gen_unary_expr(op, inner),
             ExprKind::Compare { op, left, right } => self.gen_compare_expr(expr, op, left, right),

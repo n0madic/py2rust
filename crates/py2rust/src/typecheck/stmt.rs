@@ -625,7 +625,12 @@ impl<'a> TypeChecker<'a> {
             StmtKind::Raise { exc, cause } => {
                 if let Some(exc_expr) = exc {
                     // Special handling for built-in exception constructors
-                    if let ExprKind::Call { func, args } = &mut exc_expr.kind {
+                    if let ExprKind::Call {
+                        func,
+                        args,
+                        keywords: _,
+                    } = &mut exc_expr.kind
+                    {
                         if let ExprKind::Name(exc_name) = &func.kind {
                             if self.is_builtin_exception(exc_name) {
                                 // Validate arguments (should be string message)
@@ -653,7 +658,12 @@ impl<'a> TypeChecker<'a> {
 
                     if let Some(cause_expr) = cause {
                         // Similar handling for cause
-                        if let ExprKind::Call { func, args } = &mut cause_expr.kind {
+                        if let ExprKind::Call {
+                            func,
+                            args,
+                            keywords: _,
+                        } = &mut cause_expr.kind
+                        {
                             if let ExprKind::Name(exc_name) = &func.kind {
                                 if self.is_builtin_exception(exc_name) {
                                     if !args.is_empty() {

@@ -183,9 +183,14 @@ impl<'a> Codegen<'a> {
             }
         }
         if attr == "__name__" {
-            if let ExprKind::Call { func, args } = &value.kind {
+            if let ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } = &value.kind
+            {
                 if let ExprKind::Name(name) = &func.kind {
-                    if name == "type" && args.len() == 1 {
+                    if name == "type" && args.len() == 1 && keywords.is_empty() {
                         if let Some(ty) = args[0].ty.as_ref() {
                             if let Some(name) = self.python_type_name(ty) {
                                 return Ok(format!("{:?}.to_string()", name));

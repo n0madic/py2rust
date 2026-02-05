@@ -144,11 +144,18 @@ impl<'a> Codegen<'a> {
                 ExprKind::Literal(_) => false,
                 ExprKind::Lambda { .. } => false,
                 ExprKind::Block { .. } => false,
-                ExprKind::Call { func, args } => {
+                ExprKind::Call {
+                    func,
+                    args,
+                    keywords,
+                } => {
                     expr_uses_outer(func, locals, globals, outers)
                         || args
                             .iter()
                             .any(|arg| expr_uses_outer(arg, locals, globals, outers))
+                        || keywords
+                            .iter()
+                            .any(|kw| expr_uses_outer(&kw.value, locals, globals, outers))
                 }
                 ExprKind::Attr { value, .. } => expr_uses_outer(value, locals, globals, outers),
                 ExprKind::Binary { left, right, .. } => {

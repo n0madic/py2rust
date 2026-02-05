@@ -155,10 +155,13 @@ impl<'a> Codegen<'a> {
                         continue;
                     }
                     let super_args = match &expr.kind {
-                        ExprKind::Call { func, args } => {
+                        ExprKind::Call { func, args, .. } => {
                             if let ExprKind::Attr { value, attr } = &func.kind {
                                 if attr == "__init__" {
-                                    if let ExprKind::Call { func, args: s_args } = &value.kind {
+                                    if let ExprKind::Call {
+                                        func, args: s_args, ..
+                                    } = &value.kind
+                                    {
                                         if matches!(&func.kind, ExprKind::Name(n) if n == "super")
                                             && s_args.is_empty()
                                         {
@@ -206,12 +209,14 @@ impl<'a> Codegen<'a> {
                                 base_sig.params.into_iter().skip(1).collect();
                             (base_init, param_types)
                         };
-                        let full_args = self.fill_trailing_defaults(
+                        let full_args = self.resolve_call_args(
                             args,
+                            &[],
                             &base_init.params[1..],
                             &param_types,
                             Some(base),
                             "__init__",
+                            false,
                         )?;
                         let mut bindings = Vec::new();
                         for (idx, arg) in full_args.iter().enumerate() {

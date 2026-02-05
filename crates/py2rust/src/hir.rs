@@ -309,6 +309,15 @@ pub struct Expr {
     pub ty: Option<Type>,
 }
 
+/// Keyword argument in a call expression.
+///
+/// Python: `f(x=1)` has one keyword argument with `name="x"` and `value=1`.
+#[derive(Debug, Clone)]
+pub struct KeywordArg {
+    pub name: String,
+    pub value: Expr,
+}
+
 /// Expression kinds supported by the transpiler.
 ///
 /// Design notes:
@@ -330,6 +339,7 @@ pub enum ExprKind {
     Call {
         func: Box<Expr>,
         args: Vec<Expr>,
+        keywords: Vec<KeywordArg>,
     },
     Attr {
         value: Box<Expr>,

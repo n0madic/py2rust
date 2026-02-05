@@ -93,15 +93,19 @@ def bad[T](x: T) -> T:
 }
 
 #[test]
-fn rejects_keyword_arguments() {
+fn rejects_unknown_keyword_arguments() {
     let source = r#"
-def good(x: int) -> int:
-    return x
+def good(x: int, y: int) -> int:
+    return x + y
 
-y: int = good(x=5)
+z: int = good(x=5, unknown=1)
 "#;
     let error = expect_error(source);
-    assert!(error.contains("Keyword arguments"), "Error: {}", error);
+    assert!(
+        error.contains("Unknown keyword argument"),
+        "Error: {}",
+        error
+    );
 }
 
 #[test]

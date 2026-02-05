@@ -23,12 +23,23 @@ impl<'a> TypeChecker<'a> {
     pub(super) fn check_call(
         &mut self,
         func: &mut Expr,
-        args: &mut [Expr],
+        args: &mut Vec<Expr>,
+        keywords: &mut Vec<KeywordArg>,
         expected: Option<&Type>,
         span: Span,
     ) -> Result<Type, CompileError> {
         match &mut func.kind {
             ExprKind::Name(name) => {
+                if !keywords.is_empty()
+                    && !self.ctx.functions.contains_key(name)
+                    && !self.ctx.classes.contains_key(name)
+                    && !matches!(self.lookup_var(name), Some(Type::Lambda { .. }))
+                {
+                    return Err(self.error(
+                        span,
+                        format!("Keyword arguments are not supported for {name}()"),
+                    ));
+                }
                 if name == "print" {
                     for arg in args {
                         self.check_expr(arg, None)?;
@@ -512,14 +523,14 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Some(class_info) = self.ctx.classes.get(name) {
                     if let Some(init_sig) = class_info.init.clone() {
-                        self.check_call_args(&init_sig, args, span, true)?;
+                        self.check_call_args(&init_sig, args, keywords, span, true)?;
                     } else {
                         if !class_info.fields.is_empty() {
                             return Err(
                                 self.error(span, format!("Class {name} is missing __init__"))
                             );
                         }
-                        if !args.is_empty() {
+                        if !args.is_empty() || !keywords.is_empty() {
                             return Err(
                                 self.error(span, format!("Class {name} takes no arguments"))
                             );
@@ -542,7 +553,7 @@ impl<'a> TypeChecker<'a> {
                     return Ok(Type::Custom(name.clone()));
                 }
                 if let Some(sig) = self.ctx.functions.get(name).cloned() {
-                    self.check_call_args(&sig, args, span, false)?;
+                    self.check_call_args(&sig, args, keywords, span, false)?;
                     return Ok(sig.ret.clone());
                 }
                 if let Some(var_ty) = self.lookup_var(name) {
@@ -989,6 +1000,7 @@ impl<'a> TypeChecker<'a> {
                                         ty: Some(Type::Str),
                                     }),
                                     args: vec![inner],
+                                    keywords: Vec::new(),
                                 },
                                 span: arg.span,
                                 ty: Some(Type::Str),
@@ -1011,10 +1023,10 @@ impl<'a> TypeChecker<'a> {
                             .unwrap_or(MethodKind::Instance);
                         match kind {
                             MethodKind::Static => {
-                                self.check_call_args(&sig, args, span, false)?;
+                                self.check_call_args(&sig, args, keywords, span, false)?;
                             }
                             MethodKind::Class => {
-                                self.check_call_args(&sig, args, span, true)?;
+                                self.check_call_args(&sig, args, keywords, span, true)?;
                             }
                             MethodKind::Instance => {
                                 if matches!(&value.kind, ExprKind::Name(n) if n == class_name) {
@@ -1022,7 +1034,7 @@ impl<'a> TypeChecker<'a> {
                                         self.error(span, "Instance methods require an instance")
                                     );
                                 }
-                                self.check_call_args(&sig, args, span, true)?;
+                                self.check_call_args(&sig, args, keywords, span, true)?;
                             }
                         }
                         return Ok(sig.ret.clone());
@@ -1051,7 +1063,7 @@ impl<'a> TypeChecker<'a> {
                         }
                         if all_have_method {
                             if let Some(sig) = found_sig {
-                                self.check_call_args(&sig, args, span, true)?;
+                                self.check_call_args(&sig, args, keywords, span, true)?;
                                 return Ok(sig.ret.clone());
                             }
                         }
@@ -1074,24 +1086,71 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         sig: &FunctionSig,
         args: &mut [Expr],
+        keywords: &mut [KeywordArg],
         span: Span,
         allow_self: bool,
     ) -> Result<(), CompileError> {
         let expected_params = sig.params.len();
         let min_params = expected_params.saturating_sub(sig.defaults);
+        let provided_total = args.len() + keywords.len();
         let mut arg_offset = 0;
         if allow_self
             && expected_params > 0
-            && args.len() < expected_params
-            && args.len() + 1 >= min_params
+            && provided_total < expected_params
+            && provided_total + 1 >= min_params
         {
             arg_offset = 1;
         }
-        let provided = args.len() + arg_offset;
-        if provided < min_params || provided > expected_params {
+        let available = expected_params.saturating_sub(arg_offset);
+        if args.len() > available {
             return Err(self.error(span, "Argument count mismatch"));
         }
-        for (arg, param_ty) in args.iter_mut().zip(sig.params.iter().skip(arg_offset)) {
+
+        #[derive(Copy, Clone)]
+        enum BoundArg {
+            Pos(usize),
+            Kw(usize),
+        }
+
+        let mut bound: Vec<Option<BoundArg>> = vec![None; expected_params];
+        for (pos_idx, _) in args.iter().enumerate() {
+            bound[arg_offset + pos_idx] = Some(BoundArg::Pos(pos_idx));
+        }
+
+        for (kw_idx, kw) in keywords.iter().enumerate() {
+            let Some(param_idx) = sig.param_names.iter().position(|name| name == &kw.name) else {
+                return Err(self.error(span, format!("Unknown keyword argument `{}`", kw.name)));
+            };
+            if param_idx < arg_offset {
+                return Err(self.error(span, format!("Unexpected keyword argument `{}`", kw.name)));
+            }
+            if bound[param_idx].is_some() {
+                return Err(self.error(span, format!("Multiple values for argument `{}`", kw.name)));
+            }
+            bound[param_idx] = Some(BoundArg::Kw(kw_idx));
+        }
+
+        let required_end = expected_params.saturating_sub(sig.defaults);
+        for idx in arg_offset..required_end {
+            if bound[idx].is_none() {
+                let name = sig
+                    .param_names
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| format!("arg{idx}"));
+                return Err(self.error(span, format!("Missing required argument `{name}`")));
+            }
+        }
+
+        for idx in arg_offset..expected_params {
+            let Some(source) = bound[idx] else {
+                continue;
+            };
+            let param_ty = &sig.params[idx];
+            let arg = match source {
+                BoundArg::Pos(pos_idx) => &mut args[pos_idx],
+                BoundArg::Kw(kw_idx) => &mut keywords[kw_idx].value,
+            };
             let mut arg_ty = self.check_expr(arg, Some(param_ty))?;
             if matches!(param_ty, Type::Str)
                 && !matches!(arg_ty, Type::Str)
@@ -1106,6 +1165,7 @@ impl<'a> TypeChecker<'a> {
                             ty: Some(Type::Str),
                         }),
                         args: vec![inner],
+                        keywords: Vec::new(),
                     },
                     span: arg.span,
                     ty: Some(Type::Str),

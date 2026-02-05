@@ -92,9 +92,14 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Attr { value, attr } => {
                 // Special case: type(x).__name__ is always a str
                 if attr == "__name__" {
-                    if let ExprKind::Call { func, args } = &mut value.kind {
+                    if let ExprKind::Call {
+                        func,
+                        args,
+                        keywords,
+                    } = &mut value.kind
+                    {
                         if let ExprKind::Name(name) = &func.kind {
-                            if name == "type" && args.len() == 1 {
+                            if name == "type" && args.len() == 1 && keywords.is_empty() {
                                 let _ = self.check_expr(&mut args[0], None)?;
                                 return Ok(Type::Str);
                             }
@@ -152,7 +157,11 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            ExprKind::Call { func, args } => self.check_call(func, args, expected, expr.span)?,
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => self.check_call(func, args, keywords, expected, expr.span)?,
             // Binary operations: +, -, *, /, etc.
             ExprKind::Binary { op, left, right } => {
                 let mut left_ty = self.check_expr(left, None)?;

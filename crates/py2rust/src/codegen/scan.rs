@@ -226,10 +226,17 @@ impl<'a> Codegen<'a> {
                         visit_expr(cmp, ok);
                     }
                 }
-                ExprKind::Call { func, args } => {
+                ExprKind::Call {
+                    func,
+                    args,
+                    keywords,
+                } => {
                     visit_expr(func, ok);
                     for arg in args {
                         visit_expr(arg, ok);
+                    }
+                    for kw in keywords {
+                        visit_expr(&kw.value, ok);
                     }
                 }
                 ExprKind::Attr { value, .. } => visit_expr(value, ok),
@@ -410,7 +417,11 @@ impl<'a> Codegen<'a> {
 
     fn scan_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
         match &expr.kind {
-            ExprKind::Call { func, args } => {
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
                 if let ExprKind::Name(name) = &func.kind {
                     if name == "print" {
                         self.uses.print = true;
@@ -434,6 +445,9 @@ impl<'a> Codegen<'a> {
                 }
                 for arg in args {
                     self.scan_expr(arg)?;
+                }
+                for kw in keywords {
+                    self.scan_expr(&kw.value)?;
                 }
             }
             ExprKind::Dict(_) => {

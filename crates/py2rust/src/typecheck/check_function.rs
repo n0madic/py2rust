@@ -166,10 +166,17 @@ impl<'a> TypeChecker<'a> {
                         collect_names(left, out);
                         collect_names(right, out);
                     }
-                    ExprKind::Call { func, args } => {
+                    ExprKind::Call {
+                        func,
+                        args,
+                        keywords,
+                    } => {
                         collect_names(func, out);
                         for arg in args {
                             collect_names(arg, out);
+                        }
+                        for kw in keywords {
+                            collect_names(&kw.value, out);
                         }
                     }
                     ExprKind::Attr { value, .. } => collect_names(value, out),
@@ -266,10 +273,17 @@ impl<'a> TypeChecker<'a> {
                         visit_expr(left, out);
                         visit_expr(right, out);
                     }
-                    ExprKind::Call { func, args } => {
+                    ExprKind::Call {
+                        func,
+                        args,
+                        keywords,
+                    } => {
                         visit_expr(func, out);
                         for arg in args {
                             visit_expr(arg, out);
+                        }
+                        for kw in keywords {
+                            visit_expr(&kw.value, out);
                         }
                     }
                     ExprKind::Attr { value, .. } => visit_expr(value, out),
@@ -525,6 +539,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let sig = FunctionSig {
+            param_names: func.params.iter().map(|p| p.name.clone()).collect(),
             params: params.clone(),
             ret: ret.clone(),
             span: func.span,

@@ -260,7 +260,11 @@ fn rename_main_calls_in_stmt(stmt: &mut hir::Stmt, new_name: &str) {
 fn rename_main_calls_in_expr(expr: &mut hir::Expr, new_name: &str) {
     match &mut expr.kind {
         // Special handling for Call: check if we're calling main()
-        hir::ExprKind::Call { func, args } => {
+        hir::ExprKind::Call {
+            func,
+            args,
+            keywords,
+        } => {
             if let hir::ExprKind::Name(name) = &mut func.kind {
                 if name == "main" {
                     *name = new_name.to_string();
@@ -269,6 +273,9 @@ fn rename_main_calls_in_expr(expr: &mut hir::Expr, new_name: &str) {
             rename_main_calls_in_expr(func, new_name);
             for arg in args {
                 rename_main_calls_in_expr(arg, new_name);
+            }
+            for kw in keywords {
+                rename_main_calls_in_expr(&mut kw.value, new_name);
             }
         }
         hir::ExprKind::Attr { value, .. } => rename_main_calls_in_expr(value, new_name),

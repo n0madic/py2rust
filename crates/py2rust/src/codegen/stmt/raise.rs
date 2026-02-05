@@ -20,9 +20,19 @@ impl<'a> Codegen<'a> {
 
         if let Some(exc_expr) = exc {
             // Check if it's exception constructor call.
-            if let ExprKind::Call { func, args } = &exc_expr.kind {
+            if let ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } = &exc_expr.kind
+            {
                 if let ExprKind::Name(exc_name) = &func.kind {
-                    let msg = if !args.is_empty() {
+                    let msg = if !keywords.is_empty() {
+                        return Err(self.error(
+                            span,
+                            "Keyword arguments are not supported in raise constructors",
+                        ));
+                    } else if !args.is_empty() {
                         self.gen_expr(&args[0])?
                     } else {
                         "String::new()".to_string()

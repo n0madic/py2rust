@@ -315,7 +315,11 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
     let mut counts = HashMap::new();
     fn visit_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
         match &expr.kind {
-            ExprKind::Call { func, args } => {
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
                 if let ExprKind::Attr { value, attr } = &func.kind {
                     // Mutating collection methods require the receiver to be `mut`.
                     if matches!(
@@ -345,6 +349,9 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                 visit_expr(func, counts);
                 for arg in args {
                     visit_expr(arg, counts);
+                }
+                for kw in keywords {
+                    visit_expr(&kw.value, counts);
                 }
             }
             ExprKind::Attr { value, .. } => visit_expr(value, counts),
