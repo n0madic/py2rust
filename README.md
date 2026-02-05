@@ -81,29 +81,135 @@ The generated Rust injects tiny helper functions only when needed:
 
 ## Example
 
+Here's a comprehensive example showcasing the compiler's capabilities:
+
+**Python input:**
+
 ```python
-class Circle:
-    def __init__(self, r: float) -> None:
-        self.r: float = r
+class Task:
+    """Represents a task with priority and status"""
+    total_tasks: int = 0
 
-class Rect:
-    def __init__(self, w: float, h: float) -> None:
-        self.w: float = w
-        self.h: float = h
+    def __init__(self, title: str, priority: int) -> None:
+        """Initialize a new task"""
+        self.title: str = title
+        self.priority: int = priority
+        self.completed: bool = False
+        Task.total_tasks = Task.total_tasks + 1
 
-Shape = Circle | Rect
+    @property
+    def status(self) -> str:
+        """Get task status"""
+        return "Done" if self.completed else "Pending"
 
-def area(s: Shape) -> float:
-    match s:
-        case Circle(r):
-            return 3.14 * r * r
-        case Rect(w, h):
-            return w * h
+    def complete(self) -> None:
+        """Mark task as completed"""
+        self.completed = True
+
+    @staticmethod
+    def validate_priority(p: int) -> bool:
+        """Check if priority value is valid"""
+        return p >= 1 and p <= 5
+
+# Union types for polymorphism
+class Success:
+    __match_args__ = ('value',)
+    value: int
+    def __init__(self, v: int) -> None:
+        self.value = v
+
+class Failure:
+    __match_args__ = ('error',)
+    error: str
+    def __init__(self, e: str) -> None:
+        self.error = e
+
+TaskResult = Success | Failure
+
+def process_result(r: TaskResult) -> str:
+    """Process result using pattern matching"""
+    match r:
+        case Success(v):
+            return f"Success: {v}"
+        case Failure(e):
+            return f"Error: {e}"
+
+# Main program
+priorities: list[int] = [p for p in range(1, 6) if p % 2 == 1]
+print(f"Odd priorities: {priorities}")
+
+task: Task = Task("Write docs", 3)
+print(f"Task '{task.title}' has priority {task.priority}")
+
+if Task.validate_priority(3):
+    print(f"Total tasks created: {Task.total_tasks}")
+
+results: list[TaskResult] = [Success(42), Failure("timeout")]
+for r in results:
+    print(process_result(r))
+
+numbers: list[int] = [1, 5, 3, 9, 2]
+print(f"Max: {max(numbers)}, Min: {min(numbers)}")
+print(f"Reversed: {list(reversed(numbers))}")
 ```
 
-Transpile and compile:
+**Generated Rust output** (simplified):
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Task {
+    pub title: String,
+    pub priority: i64,
+    pub completed: bool,
+}
+
+impl Task {
+    pub fn new(title: String, priority: i64) -> Result<Task, PyError> {
+        if (priority < 1i64) || (priority > 5i64) {
+            return Err(PyError::TaskError(TaskError::new("Priority must be between 1 and 5".to_string())));
+        }
+        // ... initialization
+        Ok(Task { title, priority, completed: false })
+    }
+
+    pub fn status(&self) -> String {
+        if self.completed { "Done".to_string() } else { "Pending".to_string() }
+    }
+
+    pub fn complete(&mut self) {
+        self.completed = true;
+    }
+
+    pub fn validate_priority(p: i64) -> bool {
+        (p >= 1i64) && (p <= 5i64)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TaskResult {
+    Success(Success),
+    Failure(Failure),
+}
+
+pub fn process_result(r: &TaskResult) -> String {
+    match r {
+        TaskResult::Success(ref _x) => format!("Success: {}", _x.value.to_string()),
+        TaskResult::Failure(ref _x) => format!("Error: {}", _x.error),
+    }
+}
+
+// ... more generated code
+```
+
+**Compile and run:**
 
 ```bash
-cargo run -p py2rust -- input.py -o output.rs
-rustc output.rs
+# Transpile only
+./target/release/py2rust input.py --output output.rs --pretty
+
+# Transpile and compile
+./target/release/py2rust input.py --compile
+
+# Transpile, compile, and run
+./target/release/py2rust input.py --run
 ```

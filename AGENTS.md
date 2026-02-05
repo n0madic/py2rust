@@ -2,6 +2,9 @@
 
 Project: py2rust - a Rust transpiler for a restricted Python subset.
 
+**Goals:** Native executables, static typing, CPython-compatible behavior, good error diagnostics
+**Non-goals:** Full CPython compatibility, dynamic features (`eval/exec`, metaclasses)
+
 ## Quick Start
 - Build: `cargo build --release`
 - Run transpiler: `./target/release/py2rust <input.py> --output <output.rs>`
