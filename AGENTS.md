@@ -82,6 +82,13 @@ Runtime integration tests are in `crates/py2rust/tests/`:
   - `exceptions.rs` - try/except/finally/raise
 - Each category has one comprehensive test to minimize compilation overhead.
 
+## Testing
+**Best practices for test development:**
+
+- After making changes to test files, run `cargo test` immediately and fix any variable shadowing or return type issues before proceeding to the next task.
+- Verify that generated test code compiles before moving on to the next test case.
+- Keep tests simple and avoid patterns that may conflict with compiler limitations.
+
 ## Development Workflow
 **CRITICAL: Always run tests after making changes!**
 **RECOMMENDED: Run `cargo clippy` and `cargo fmt` before committing changes**
@@ -101,6 +108,13 @@ After completing any code changes:
 - Comment any tricky parts of the code that might not be immediately clear
 - When implementing new features, explain the "why" not just the "what"
 - Keep comments concise but informative
+
+## Rust Code Generation
+**Guidelines for generating correct and maintainable Rust code:**
+
+- **Type Consistency**: Always ensure type consistency with existing code patterns. Check existing type signatures before introducing new types or enums that interact with existing functions. Read the relevant source files first to understand current type usage.
+- **Compiler Constraints**: When refactoring or reorganizing code, verify compiler capability limitations before creating complex patterns. Prefer simpler implementations that work within current toolchain constraints.
+- **Incremental Verification**: After editing Rust source files, run `cargo check` to catch type mismatches and compilation errors early, before they compound across multiple files.
 
 ## Common Pitfalls
 - If you modify HIR, update typeck and codegen in sync.

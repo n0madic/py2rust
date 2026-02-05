@@ -3,3 +3,4 @@ test_*
 CLAUDE.md
 *.log
 *.tmp
+.claude/
