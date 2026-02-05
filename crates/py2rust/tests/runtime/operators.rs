@@ -197,11 +197,189 @@ def test_set_ops() -> None:
     assert "c" in str_inter
     assert len(str_inter) == 2
 
+# Helper classes for augmented assignment tests
+class Counter:
+    count: int
+
+    def __init__(self, start: int) -> None:
+        self.count = start
+
+    def increment(self) -> None:
+        self.count += 1
+
+    def add(self, n_add: int) -> None:
+        self.count += n_add
+
+class Stats:
+    value: int
+
+    def __init__(self, v: int) -> None:
+        self.value = v
+
+# Augmented assignments
+def test_augmented_assignments() -> None:
+    # Integer arithmetic
+    x_aug: int = 10
+    x_aug += 5
+    assert x_aug == 15, "x += 5 failed"
+
+    x_aug -= 3
+    assert x_aug == 12, "x -= 3 failed"
+
+    x_aug *= 2
+    assert x_aug == 24, "x *= 2 failed"
+
+    y_aug: int = 25
+    y_aug //= 3
+    assert y_aug == 8, "y //= 3 failed"
+
+    z_aug: int = 17
+    z_aug %= 5
+    assert z_aug == 2, "z %= 5 failed"
+
+    p_aug: int = 2
+    p_aug **= 3
+    assert p_aug == 8, "p **= 3 failed"
+
+    # Float arithmetic
+    f_aug: float = 10.0
+    f_aug += 2.5
+    assert f_aug == 12.5, "f += 2.5 failed"
+
+    f_aug -= 3.5
+    assert f_aug == 9.0, "f -= 3.5 failed"
+
+    f_aug *= 2.0
+    assert f_aug == 18.0, "f *= 2.0 failed"
+
+    f_aug /= 3.0
+    assert f_aug == 6.0, "f /= 3.0 failed"
+
+    g_aug: float = 17.0
+    g_aug //= 3.0
+    assert g_aug == 5.0, "g //= 3.0 failed"
+
+    h_aug: float = 17.5
+    h_aug %= 5.0
+    assert h_aug == 2.5, "h %= 5.0 failed"
+
+    # Augmented assignment in loops
+    total_aug: int = 0
+    for i_aug in range(1, 6):
+        total_aug += i_aug
+    assert total_aug == 15, "loop += failed (1+2+3+4+5=15)"
+
+    product_aug: int = 1
+    for i_aug in range(1, 5):
+        product_aug *= i_aug
+    assert product_aug == 24, "loop *= failed (1*2*3*4=24)"
+
+    # List indexing
+    nums_aug: list[int] = [10, 20, 30]
+    nums_aug[0] += 5
+    assert nums_aug[0] == 15, "nums[0] += 5 failed"
+
+    nums_aug[1] -= 5
+    assert nums_aug[1] == 15, "nums[1] -= 5 failed"
+
+    nums_aug[2] *= 2
+    assert nums_aug[2] == 60, "nums[2] *= 2 failed"
+
+    idx: int = 1
+    nums_aug[idx] += 10
+    assert nums_aug[1] == 25, "nums[idx] += 10 failed"
+
+    # Negative values
+    neg_aug: int = 5
+    neg_aug += -3
+    assert neg_aug == 2, "neg += -3 failed"
+
+    neg_aug *= -1
+    assert neg_aug == -2, "neg *= -1 failed"
+
+    # Chained augmented operations
+    chain: int = 100
+    chain -= 10
+    chain //= 3
+    chain *= 2
+    assert chain == 60, "chained ops failed (100-10=90, 90//3=30, 30*2=60)"
+
+    # RHS expressions
+    base: int = 10
+    base += 2 * 3
+    assert base == 16, "base += 2 * 3 failed"
+
+    base -= 4 + 2
+    assert base == 10, "base -= 4 + 2 failed"
+
+    # String concatenation and repetition
+    s_aug: str = "Hello"
+    s_aug += " "
+    s_aug += "World"
+    assert s_aug == "Hello World", "string += failed"
+
+    repeat: str = "ab"
+    repeat *= 3
+    assert repeat == "ababab", "string *= failed"
+
+    counter = Counter(0)
+    counter.count += 10
+    assert counter.count == 10, "counter.count += 10 failed"
+
+    counter.increment()
+    assert counter.count == 11, "counter.increment() failed"
+
+    counter.add(5)
+    assert counter.count == 16, "counter.add(5) failed"
+
+    stats = Stats(100)
+    stats.value -= 20
+    assert stats.value == 80, "stats.value -= 20 failed"
+
+    stats.value *= 2
+    assert stats.value == 160, "stats.value *= 2 failed"
+
+    stats.value //= 5
+    assert stats.value == 32, "stats.value //= 5 failed"
+
+# Bitwise operations (int)
+def test_bitwise() -> None:
+    assert (12 & 10) == 8
+    assert (12 | 3) == 15
+    assert (12 ^ 10) == 6
+    assert (1 << 4) == 16
+    assert (64 >> 2) == 16
+
+# Augmented assignment for bitwise and shifts
+def test_augmented_bitwise() -> None:
+    a: int = 12
+    a &= 10
+    assert a == 8
+
+    b: int = 12
+    b |= 3
+    assert b == 15
+
+    c: int = 12
+    c ^= 10
+    assert c == 6
+
+    d: int = 1
+    d <<= 4
+    assert d == 16
+
+    e: int = 64
+    e >>= 2
+    assert e == 16
+
 # Run all tests
 test_arithmetic()
 test_comparison()
 test_boolean()
 test_set_ops()
+test_augmented_assignments()
+test_bitwise()
+test_augmented_bitwise()
 
 print("All operator tests passed!")
 "#,

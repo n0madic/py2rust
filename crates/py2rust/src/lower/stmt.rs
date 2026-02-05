@@ -224,7 +224,7 @@ impl<'a> Lowerer<'a> {
                 let expr = self.lower_expr(&def.value)?;
                 StmtKind::Expr(expr)
             }
-            // Augmented assignment: x += 1, obj.field *= 2, list[0] //= 3
+            // Augmented assignment: x += 1, obj.field *= 2, list[0] //= 3, a <<= 1
             // These are syntactic sugar for x = x + 1, etc.
             // We lower to a regular assignment with binary operation
             ast::Stmt::AugAssign(def) => {
@@ -238,6 +238,11 @@ impl<'a> Lowerer<'a> {
                     ast::Operator::Pow => BinOp::Pow,
                     ast::Operator::Mod => BinOp::Mod,
                     ast::Operator::FloorDiv => BinOp::FloorDiv,
+                    ast::Operator::BitOr => BinOp::BitOr,
+                    ast::Operator::BitAnd => BinOp::BitAnd,
+                    ast::Operator::BitXor => BinOp::BitXor,
+                    ast::Operator::LShift => BinOp::ShiftLeft,
+                    ast::Operator::RShift => BinOp::ShiftRight,
                     _ => return Err(self.error(def.range(), "Unsupported augmented operator")),
                 };
                 let value = Expr {

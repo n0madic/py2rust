@@ -104,10 +104,9 @@ impl<'a> Lowerer<'a> {
                 value: Box::new(self.lower_expr(&attr.value)?),
                 attr: attr.attr.to_string(),
             },
-            // Binary operations: +, -, *, /, %, //, **, |, &, ^
+            // Binary operations: +, -, *, /, %, //, **, |, &, ^, <<, >>
             // We map each Python operator to our HIR operator.
-            // Note: We reject MatMult (@), LShift (<<), RShift (>>) because
-            // they're rarely used and complicate codegen.
+            // Note: We reject MatMult (@) because we don't support matrix ops.
             ast::Expr::BinOp(bin) => {
                 let op = match bin.op {
                     ast::Operator::Add => BinOp::Add,
@@ -120,6 +119,8 @@ impl<'a> Lowerer<'a> {
                     ast::Operator::BitOr => BinOp::BitOr,
                     ast::Operator::BitAnd => BinOp::BitAnd,
                     ast::Operator::BitXor => BinOp::BitXor,
+                    ast::Operator::LShift => BinOp::ShiftLeft,
+                    ast::Operator::RShift => BinOp::ShiftRight,
                     _ => return Err(self.error(expr.range(), "Unsupported binary operator")),
                 };
                 ExprKind::Binary {

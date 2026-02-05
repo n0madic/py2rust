@@ -94,8 +94,34 @@ impl<'a> Codegen<'a> {
                 BinOp::BitXor => "^",
                 _ => unreachable!(),
             };
+            let left_is_set = matches!(left.ty.as_ref(), Some(Type::Set(_)));
+            let right_is_set = matches!(right.ty.as_ref(), Some(Type::Set(_)));
+            if left_is_set && right_is_set {
+                // Set ops borrow both sides to avoid moves.
+                return Ok(format!(
+                    "(&{} {} &{})",
+                    self.gen_expr(left)?,
+                    op_str,
+                    self.gen_expr(right)?
+                ));
+            }
+            // Integer bitwise ops use the plain operator.
             return Ok(format!(
-                "(&{} {} &{})",
+                "({} {} {})",
+                self.gen_expr(left)?,
+                op_str,
+                self.gen_expr(right)?
+            ));
+        }
+        if matches!(op, BinOp::ShiftLeft | BinOp::ShiftRight) {
+            let op_str = match op {
+                BinOp::ShiftLeft => "<<",
+                BinOp::ShiftRight => ">>",
+                _ => unreachable!(),
+            };
+            // Rust shifts expect RHS as u32/u64; cast to keep i64 RHS working.
+            return Ok(format!(
+                "({} {} ({} as u32))",
                 self.gen_expr(left)?,
                 op_str,
                 self.gen_expr(right)?
@@ -189,7 +215,13 @@ impl<'a> Codegen<'a> {
             BinOp::Mul => "*",
             BinOp::Div => "/",
             BinOp::Mod => "%",
-            BinOp::Pow | BinOp::FloorDiv | BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor => {
+            BinOp::Pow
+            | BinOp::FloorDiv
+            | BinOp::BitOr
+            | BinOp::BitAnd
+            | BinOp::BitXor
+            | BinOp::ShiftLeft
+            | BinOp::ShiftRight => {
                 unreachable!()
             }
         };

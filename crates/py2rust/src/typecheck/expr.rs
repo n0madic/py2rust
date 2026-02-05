@@ -178,7 +178,18 @@ impl<'a> TypeChecker<'a> {
                                 None
                             }
                         }
-                        _ => None,
+                        BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor => match other {
+                            Type::Int => Some(Type::Int),
+                            Type::Set(inner) => Some(Type::Set(inner.clone())),
+                            _ => None,
+                        },
+                        BinOp::ShiftLeft | BinOp::ShiftRight => {
+                            if matches!(other, Type::Int) {
+                                Some(Type::Int)
+                            } else {
+                                None
+                            }
+                        }
                     }
                 };
                 if matches!(left_ty, Type::Unknown) && !matches!(right_ty, Type::Unknown) {
@@ -216,6 +227,7 @@ impl<'a> TypeChecker<'a> {
                 match op {
                     // Set operations: | (union), & (intersection), ^ (symmetric difference)
                     // These overlap with bitwise operators but we detect set usage by type
+                    // Bitwise ops are either set operations or integer bitwise.
                     BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor => {
                         if let (Type::Set(left_inner), Type::Set(right_inner)) =
                             (&left_ty, &right_ty)
@@ -233,7 +245,19 @@ impl<'a> TypeChecker<'a> {
                             };
                             return Ok(Type::Set(Box::new(inner)));
                         }
-                        return Err(self.error(expr.span, "Set operation requires set operands"));
+                        if matches!(left_ty, Type::Int) && matches!(right_ty, Type::Int) {
+                            return Ok(Type::Int);
+                        }
+                        return Err(self.error(
+                            expr.span,
+                            "Bitwise operation requires int operands (or set operands)",
+                        ));
+                    }
+                    BinOp::ShiftLeft | BinOp::ShiftRight => {
+                        if matches!(left_ty, Type::Int) && matches!(right_ty, Type::Int) {
+                            return Ok(Type::Int);
+                        }
+                        return Err(self.error(expr.span, "Shift operation requires int operands"));
                     }
                     // Subtraction: numeric or set difference
                     BinOp::Sub => {

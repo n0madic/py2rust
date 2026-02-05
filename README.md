@@ -10,7 +10,9 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Basic types: `int`, `float`, `bool`, `str`, `bytes`, `None`
 - Collections: `list[T]`, `dict[K, V]`, `tuple[...]`, `set[T]`
 - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`
-- Control flow: `if/elif/else`, `while`, `for`, `return`, `break`, `continue`
+- Arithmetic and bitwise ops: `+`, `-`, `*`, `/`, `//`, `%`, `**`, `&`, `|`, `^`, `<<`, `>>` (`int` for bitwise/shifts)
+- Augmented assignment: `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+- Control flow: `if/elif/else`, `x if cond else y`, `while`, `for`, `return`, `break`, `continue`
 - Tuple/list unpacking assignments (including nested)
 - Negative indexing and slicing for lists/tuples (including step)
 - List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`

@@ -440,6 +440,8 @@ pub enum BinOp {
     BitOr,
     BitAnd,
     BitXor,
+    ShiftLeft,
+    ShiftRight,
 }
 
 /// Unary operators.
