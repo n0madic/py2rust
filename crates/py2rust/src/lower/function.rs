@@ -5,18 +5,18 @@ impl<'a> Lowerer<'a> {
     /// Lower a decorated function into multiple HIR items.
     ///
     /// Python decorators are syntactic sugar: `@dec def f(x): ...` means `f = dec(f)`.
-    /// We support simple name decorators on top-level functions, including stacking.
+    /// We support top-level decorator names and simple decorator factories.
     ///
     /// Lowering strategy:
     /// 1. Create `f_impl(x)` with the original function body
-    /// 2. Create a wrapper `f(x)` that calls `dec(f_impl)(x)`
+    /// 2. Create a wrapper `f(x)` that calls the lowered decorator chain with `f_impl`
     ///
     /// This approach avoids needing to understand what decorators do - we just
     /// expand the syntactic sugar and let type checking handle the rest.
     ///
     /// Limitations:
-    /// - Decorator must be a simple name (not @module.decorator or @decorator())
     /// - Only supported on top-level functions (not methods or nested functions)
+    /// - Decorator expression must be a simple name or a call expression
     pub(super) fn lower_decorated_function(
         &self,
         func: &ast::StmtFunctionDef,
@@ -28,16 +28,14 @@ impl<'a> Lowerer<'a> {
             return Err(self.error(func.range(), "Type parameters are not supported"));
         }
 
-        // Extract decorator names (top to bottom)
+        // Extract decorator expressions (top to bottom).
         let mut decorators = Vec::new();
         for dec in &func.decorator_list {
             match dec {
-                ast::Expr::Name(name) => decorators.push(name.id.to_string()),
-                _ => {
-                    return Err(
-                        self.error(func.range(), "Only simple name decorators are supported")
-                    )
+                ast::Expr::Name(_) | ast::Expr::Call(_) => {
+                    decorators.push(self.lower_expr(dec)?);
                 }
+                _ => return Err(self.error(func.range(), "Only simple decorators are supported")),
             }
         }
 
@@ -59,11 +57,7 @@ impl<'a> Lowerer<'a> {
         for decorator in decorators.iter().rev() {
             call_decorator = Expr {
                 kind: ExprKind::Call {
-                    func: Box::new(Expr {
-                        kind: ExprKind::Name(decorator.clone()),
-                        span: Span::from(func.range()),
-                        ty: None,
-                    }),
+                    func: Box::new(decorator.clone()),
                     args: vec![call_decorator],
                     keywords: Vec::new(),
                 },
@@ -144,7 +138,7 @@ impl<'a> Lowerer<'a> {
         }
         let target = &stmt.targets[0];
         let target_name = match target {
-            ast::Expr::Name(name) => name.id.to_string(),
+            ast::Expr::Name(name) => self.ident(name.id.as_str()),
             _ => return Ok(None),
         };
 
@@ -185,7 +179,7 @@ impl<'a> Lowerer<'a> {
                 left_ok && right_ok
             }
             ast::Expr::Name(name) => {
-                out.push(name.id.to_string());
+                out.push(name.id.as_str().to_string());
                 true
             }
             _ => false,
@@ -216,8 +210,6 @@ impl<'a> Lowerer<'a> {
     /// Unsupported features that will error:
     /// - Type parameters (generics)
     /// - Positional-only parameters (/)
-    /// - Keyword-only parameters (*)
-    /// - *args and **kwargs
     ///
     /// Missing type annotations default to TypeRef::Unknown and will be inferred during
     /// type checking if possible.
@@ -231,11 +223,17 @@ impl<'a> Lowerer<'a> {
             return Err(self.error(func.range(), "Type parameters are not supported"));
         }
 
-        // Lower parameters
+        // Positional-only args (`/`) are still outside our supported subset.
+        if !func.args.posonlyargs.is_empty() {
+            return Err(self.error(func.range(), "positional-only args are not supported"));
+        }
+
+        // Lower parameters in Python binding order:
+        // regular args, optional *args, keyword-only args, optional **kwargs.
         let mut params = Vec::new();
         for (idx, arg) in func.args.args.iter().enumerate() {
             let def = &arg.def;
-            let name_str = def.arg.to_string();
+            let name_str = self.ident(def.arg.as_str());
             let default = match &arg.default {
                 Some(expr) => Some(self.lower_expr(expr)?),
                 None => None,
@@ -252,6 +250,7 @@ impl<'a> Lowerer<'a> {
                     };
                     params.push(Param {
                         name: name_str,
+                        kind: ParamKind::PositionalOrKeyword,
                         ann,
                         default: None,
                         span: Span::from(def.range),
@@ -267,21 +266,60 @@ impl<'a> Lowerer<'a> {
             };
             params.push(Param {
                 name: name_str,
+                kind: ParamKind::PositionalOrKeyword,
                 ann,
                 default,
                 span: Span::from(def.range),
             });
         }
 
-        // Validate we don't have unsupported parameter forms
-        if !func.args.posonlyargs.is_empty() || !func.args.kwonlyargs.is_empty() {
-            return Err(self.error(
-                func.range(),
-                "positional-only and keyword-only args are not supported",
-            ));
+        // `*args`
+        if let Some(vararg) = &func.args.vararg {
+            let ann = match &vararg.annotation {
+                Some(expr) => self.lower_type_ref(expr)?,
+                None => TypeRef::Unknown,
+            };
+            params.push(Param {
+                name: self.ident(vararg.arg.as_str()),
+                kind: ParamKind::VarArgs,
+                ann,
+                default: None,
+                span: Span::from(vararg.range),
+            });
         }
-        if func.args.vararg.is_some() || func.args.kwarg.is_some() {
-            return Err(self.error(func.range(), "*args/**kwargs are not supported"));
+
+        // Keyword-only args (including the `*` marker form without a named vararg).
+        for arg in &func.args.kwonlyargs {
+            let ann = match &arg.def.annotation {
+                Some(expr) => self.lower_type_ref(expr)?,
+                None => TypeRef::Unknown,
+            };
+            let default = match &arg.default {
+                Some(expr) => Some(self.lower_expr(expr)?),
+                None => None,
+            };
+            params.push(Param {
+                name: self.ident(arg.def.arg.as_str()),
+                kind: ParamKind::KeywordOnly,
+                ann,
+                default,
+                span: Span::from(arg.def.range),
+            });
+        }
+
+        // `**kwargs`
+        if let Some(kwarg) = &func.args.kwarg {
+            let ann = match &kwarg.annotation {
+                Some(expr) => self.lower_type_ref(expr)?,
+                None => TypeRef::Unknown,
+            };
+            params.push(Param {
+                name: self.ident(kwarg.arg.as_str()),
+                kind: ParamKind::VarKeywords,
+                ann,
+                default: None,
+                span: Span::from(kwarg.range),
+            });
         }
 
         // Lower return type annotation
@@ -297,7 +335,7 @@ impl<'a> Lowerer<'a> {
             body_stmts.push(self.lower_stmt(stmt)?);
         }
         Ok(Function {
-            name: func.name.to_string(),
+            name: self.ident(func.name.as_str()),
             params,
             ret,
             body: body_stmts,
@@ -322,7 +360,7 @@ impl<'a> Lowerer<'a> {
             None
         } else if class.bases.len() == 1 {
             match &class.bases[0] {
-                ast::Expr::Name(name) => Some(name.id.to_string()),
+                ast::Expr::Name(name) => Some(self.ident(name.id.as_str())),
                 _ => {
                     return Err(
                         self.error(class.range(), "Only simple base class names are supported")
@@ -355,7 +393,7 @@ impl<'a> Lowerer<'a> {
                             ast::Expr::Name(name) => match name.id.as_str() {
                                 "property" => {
                                     is_property = true;
-                                    property_name = Some(def.name.to_string());
+                                    property_name = Some(self.ident(def.name.as_str()));
                                 }
                                 "staticmethod" => {
                                     kind = MethodKind::Static;
@@ -373,7 +411,7 @@ impl<'a> Lowerer<'a> {
                                 if let ast::Expr::Name(base_name) = &*attr.value {
                                     if attr.attr.as_str() == "setter" {
                                         is_property_setter = true;
-                                        property_name = Some(base_name.id.to_string());
+                                        property_name = Some(self.ident(base_name.id.as_str()));
                                     } else {
                                         return Err(
                                             self.error(def.range(), "Unsupported method decorator")
@@ -441,14 +479,14 @@ impl<'a> Lowerer<'a> {
                         let ann = self.lower_type_ref(&def.annotation)?;
                         if let Some(value) = &def.value {
                             class_attrs.push(ClassAttrDef {
-                                name: name.id.to_string(),
+                                name: self.ident(name.id.as_str()),
                                 ann: Some(ann),
                                 value: self.lower_expr(value)?,
                                 span: Span::from(def.range()),
                             });
                         } else if !fields.iter().any(|f| f.name == name.id.as_str()) {
                             fields.push(FieldDef {
-                                name: name.id.to_string(),
+                                name: self.ident(name.id.as_str()),
                                 ty: ann,
                                 span: Span::from(def.range()),
                             });
@@ -469,7 +507,7 @@ impl<'a> Lowerer<'a> {
                     }
                     if let ast::Expr::Name(name) = &def.targets[0] {
                         class_attrs.push(ClassAttrDef {
-                            name: name.id.to_string(),
+                            name: self.ident(name.id.as_str()),
                             ann: None,
                             value: self.lower_expr(&def.value)?,
                             span: Span::from(def.range()),
@@ -506,7 +544,7 @@ impl<'a> Lowerer<'a> {
         let match_args = self.extract_match_args_from_ast(&class.body)?;
 
         Ok(ClassDef {
-            name: class.name.to_string(),
+            name: self.ident(class.name.as_str()),
             base,
             fields,
             class_attrs,

@@ -20,6 +20,9 @@ use super::*;
 #[derive(Debug, Clone)]
 pub struct FunctionSig {
     pub param_names: Vec<String>,
+    pub param_kinds: Vec<ParamKind>,
+    /// Per-parameter default marker, aligned with `param_names`.
+    pub has_defaults: Vec<bool>,
     pub params: Vec<Type>,
     pub ret: Type,
     pub span: Span,

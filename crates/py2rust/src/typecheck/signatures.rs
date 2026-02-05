@@ -33,6 +33,8 @@ impl<'a> TypeChecker<'a> {
                     func.name.clone(),
                     FunctionSig {
                         param_names: func.params.iter().map(|p| p.name.clone()).collect(),
+                        param_kinds: func.params.iter().map(|p| p.kind).collect(),
+                        has_defaults: func.params.iter().map(|p| p.default.is_some()).collect(),
                         params,
                         ret,
                         span: func.span,
@@ -115,6 +117,8 @@ impl<'a> TypeChecker<'a> {
                     let defaults = method.params.iter().filter(|p| p.default.is_some()).count();
                     let sig = FunctionSig {
                         param_names: method.params.iter().map(|p| p.name.clone()).collect(),
+                        param_kinds: method.params.iter().map(|p| p.kind).collect(),
+                        has_defaults: method.params.iter().map(|p| p.default.is_some()).collect(),
                         params,
                         ret: ret.clone(),
                         span: method.span,

@@ -37,6 +37,10 @@ impl<'a> Codegen<'a> {
             StmtKind::For { iter, body, .. } => {
                 self.expr_can_throw(iter) || body.iter().any(|s| self.stmt_can_throw(s))
             }
+            StmtKind::Assert { test, msg } => {
+                self.expr_can_throw(test)
+                    || msg.as_ref().is_some_and(|expr| self.expr_can_throw(expr))
+            }
             StmtKind::Match { subject, cases } => {
                 self.expr_can_throw(subject)
                     || cases

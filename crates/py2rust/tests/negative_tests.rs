@@ -6,32 +6,31 @@ fn expect_error(source: &str) -> String {
         .to_string()
 }
 
-#[test]
-fn rejects_star_args() {
-    let source = r#"
-def bad(*args) -> None:
-    pass
-"#;
-    let error = expect_error(source);
-    assert!(
-        error.contains("*args") || error.contains("kwargs"),
-        "Error: {}",
-        error
-    );
+fn expect_success(source: &str) {
+    compile(source, "test.py", &CompileOptions::default()).expect("Expected compilation success");
 }
 
 #[test]
-fn rejects_kwargs() {
+fn supports_star_args() {
     let source = r#"
-def bad(**kwargs) -> None:
-    pass
+def bad(*args: int) -> int:
+    return len(args)
+
+value: int = bad(1, 2, 3)
 "#;
-    let error = expect_error(source);
-    assert!(
-        error.contains("*args") || error.contains("kwargs"),
-        "Error: {}",
-        error
-    );
+    expect_success(source);
+}
+
+#[test]
+fn supports_kwargs() {
+    let source = r#"
+def bad(**kwargs: int) -> int:
+    total: int = 0
+    for key in kwargs:
+        total = total + 1
+    return total
+"#;
+    expect_success(source);
 }
 
 #[test]
@@ -79,7 +78,11 @@ def bad() -> None:
     pass
 "#;
     let error = expect_error(source);
-    assert!(error.contains("decorator"), "Error: {}", error);
+    assert!(
+        error.contains("Unknown call target") || error.contains("decorator"),
+        "Error: {}",
+        error
+    );
 }
 
 #[test]

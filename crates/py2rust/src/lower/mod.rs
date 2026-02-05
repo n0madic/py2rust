@@ -64,7 +64,7 @@ impl<'a> Lowerer<'a> {
                 }
                 ast::Stmt::ClassDef(def) => {
                     items.push(Item::Class(self.lower_class(def)?));
-                    known_classes.insert(def.name.to_string());
+                    known_classes.insert(self.ident(def.name.as_str()));
                 }
                 ast::Stmt::Assign(def) => {
                     // Check if this is a union type alias (e.g., Status = Success | Failure)

@@ -103,17 +103,20 @@ impl<'a> TypeChecker<'a> {
                         None
                     };
                     let ty = self.check_expr(value, expected.as_ref())?;
-                    if let Some(expected) = expected {
+                    let declared = if let Some(expected) = expected {
                         self.ensure_assignable(&ty, &expected, stmt.span)?;
-                        self.insert_var(name, expected, stmt.span)?;
+                        // Keep explicit annotation constraints, but allow inferred lambda
+                        // details to fill Unknown parts from unannotated nested defs.
+                        Self::merge_types(expected, ty.clone())
                     } else {
                         if matches!(ty, Type::Unknown) {
                             return Err(
                                 self.error(stmt.span, "Unable to infer type; add annotation")
                             );
                         }
-                        self.insert_var(name, ty, stmt.span)?;
-                    }
+                        ty
+                    };
+                    self.insert_var(name, declared, stmt.span)?;
                     if !self.in_function() {
                         self.lambda_defs.insert(name.clone(), value.clone());
                     }

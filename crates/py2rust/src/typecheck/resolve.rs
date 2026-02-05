@@ -22,13 +22,27 @@ impl<'a> TypeChecker<'a> {
     pub(super) fn resolve_params(&self, params: &[Param]) -> Result<Vec<Type>, CompileError> {
         let mut out = Vec::new();
         for p in params {
-            let ty = self.resolve_type_ref(&p.ann, p.span)?;
-            if matches!(ty, Type::Iterator(_)) {
-                return Err(self.error(p.span, "Iterator[T] is only allowed as a return type"));
-            }
+            let ty = self.resolve_param_type(p)?;
             out.push(ty);
         }
         Ok(out)
+    }
+
+    /// Resolve a parameter type, applying parameter-kind specific wrapping.
+    ///
+    /// Python annotations on variadic parameters are element/value types:
+    /// - `*args: T` -> `list[T]`
+    /// - `**kwargs: T` -> `dict[str, T]`
+    pub(super) fn resolve_param_type(&self, param: &Param) -> Result<Type, CompileError> {
+        let ty = self.resolve_type_ref(&param.ann, param.span)?;
+        if matches!(ty, Type::Iterator(_)) {
+            return Err(self.error(param.span, "Iterator[T] is only allowed as a return type"));
+        }
+        Ok(match param.kind {
+            ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly => ty,
+            ParamKind::VarArgs => Type::List(Box::new(ty)),
+            ParamKind::VarKeywords => Type::Dict(Box::new(Type::Str), Box::new(ty)),
+        })
     }
 
     /// Resolve a type reference to a concrete type.

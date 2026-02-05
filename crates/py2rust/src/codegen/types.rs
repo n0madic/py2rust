@@ -15,7 +15,7 @@ use super::*;
 /// - Optional[T] -> Option<T>
 ///
 /// Special cases:
-/// - Lambdas: `impl Fn(...) -> ... + 'static` (no boxing for performance)
+/// - Lambdas: `impl Fn(...) -> ... + 'static` at top level, boxed in nested callable positions
 /// - Iterators: `impl Iterator<Item = T>` (no boxing)
 /// - Globals: Need thread-safe wrappers (Arc, Mutex)
 /// - References: &str instead of &String for ergonomics
@@ -26,25 +26,46 @@ impl<'a> Codegen<'a> {
     /// and return types. The generated types are optimized for local use
     /// (e.g., using `impl Trait` for lambdas and iterators).
     pub(crate) fn rust_type(&mut self, ty: &Type) -> String {
+        self.rust_type_with_lambda_depth(ty, 0)
+    }
+
+    /// Render a type for closure parameters where `impl Trait` is not allowed.
+    pub(crate) fn rust_type_for_closure_param(&mut self, ty: &Type) -> String {
+        match ty {
+            Type::Lambda { .. } => self.rust_type_with_lambda_depth(ty, 1),
+            _ => self.rust_type(ty),
+        }
+    }
+
+    /// Render a type while tracking callable nesting depth.
+    ///
+    /// Once we're inside a callable signature, nested callables must be rendered
+    /// as trait objects because Rust forbids nested `impl Trait` in `Fn` bounds.
+    fn rust_type_with_lambda_depth(&mut self, ty: &Type, lambda_depth: usize) -> String {
         match ty {
             Type::Int => "i64".to_string(),
             Type::Float => "f64".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Str => "String".to_string(),
-            // Bytes are represented as a vector of ints (0-255) for Python semantics.
             Type::Bytes => "Vec<i64>".to_string(),
             Type::None => "()".to_string(),
-            Type::List(inner) => format!("Arc<Mutex<Vec<{}>>>", self.rust_type(inner)),
+            Type::List(inner) => format!(
+                "Arc<Mutex<Vec<{}>>>",
+                self.rust_type_with_lambda_depth(inner, lambda_depth)
+            ),
             Type::Dict(k, v) => {
                 self.uses.hash_map = true;
                 format!(
                     "Arc<Mutex<HashMap<{}, {}>>>",
-                    self.rust_type(k),
-                    self.rust_type(v)
+                    self.rust_type_with_lambda_depth(k, lambda_depth),
+                    self.rust_type_with_lambda_depth(v, lambda_depth)
                 )
             }
             Type::Tuple(items) => {
-                let parts: Vec<String> = items.iter().map(|t| self.rust_type(t)).collect();
+                let parts: Vec<String> = items
+                    .iter()
+                    .map(|t| self.rust_type_with_lambda_depth(t, lambda_depth))
+                    .collect();
                 if items.len() == 1 {
                     format!("({},)", parts[0])
                 } else {
@@ -53,12 +74,21 @@ impl<'a> Codegen<'a> {
             }
             Type::Set(inner) => {
                 self.uses.hash_set = true;
-                format!("HashSet<{}>", self.rust_type(inner))
+                format!(
+                    "HashSet<{}>",
+                    self.rust_type_with_lambda_depth(inner, lambda_depth)
+                )
             }
-            Type::Option(inner) => format!("Option<{}>", self.rust_type(inner)),
+            Type::Option(inner) => format!(
+                "Option<{}>",
+                self.rust_type_with_lambda_depth(inner, lambda_depth)
+            ),
             Type::Custom(name) => name.clone(),
             Type::Union(name) => name.clone(),
-            Type::Iterator(inner) => format!("impl Iterator<Item = {}>", self.rust_type(inner)),
+            Type::Iterator(inner) => format!(
+                "impl Iterator<Item = {}>",
+                self.rust_type_with_lambda_depth(inner, lambda_depth)
+            ),
             Type::Lambda { params, ret } => {
                 let args: Vec<String> = params
                     .iter()
@@ -66,30 +96,41 @@ impl<'a> Codegen<'a> {
                         if matches!(t, Type::Unknown) {
                             "()".to_string()
                         } else {
-                            self.rust_type(t)
+                            self.rust_type_with_lambda_depth(t, lambda_depth + 1)
                         }
                     })
                     .collect();
                 let ret_ty = if matches!(ret.as_ref(), Type::Unknown) {
                     "()".to_string()
                 } else {
-                    self.rust_type(ret)
+                    self.rust_type_with_lambda_depth(ret, lambda_depth + 1)
                 };
-                format!("impl Fn({}) -> {} + 'static", args.join(", "), ret_ty)
+                if lambda_depth == 0 {
+                    format!("impl Fn({}) -> {} + 'static", args.join(", "), ret_ty)
+                } else {
+                    format!("Box<dyn Fn({}) -> {} + 'static>", args.join(", "), ret_ty)
+                }
             }
             Type::Ref(inner) => {
-                // Special case: &str instead of &String
                 if matches!(inner.as_ref(), Type::Str) {
                     "&str".to_string()
                 } else {
-                    format!("&{}", self.rust_type(inner))
+                    format!("&{}", self.rust_type_with_lambda_depth(inner, lambda_depth))
                 }
             }
-            Type::MutRef(inner) => format!("&mut {}", self.rust_type(inner)),
-            Type::Slice(inner) => format!("&[{}]", self.rust_type(inner)),
-            Type::Result(ok, err) => {
-                format!("Result<{}, {}>", self.rust_type(ok), self.rust_type(err))
-            }
+            Type::MutRef(inner) => format!(
+                "&mut {}",
+                self.rust_type_with_lambda_depth(inner, lambda_depth)
+            ),
+            Type::Slice(inner) => format!(
+                "&[{}]",
+                self.rust_type_with_lambda_depth(inner, lambda_depth)
+            ),
+            Type::Result(ok, err) => format!(
+                "Result<{}, {}>",
+                self.rust_type_with_lambda_depth(ok, lambda_depth),
+                self.rust_type_with_lambda_depth(err, lambda_depth)
+            ),
             Type::Exception(name) => name.clone(),
             Type::Unknown => "_".to_string(),
         }

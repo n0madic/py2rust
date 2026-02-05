@@ -165,7 +165,7 @@ impl<'a> Codegen<'a> {
         let mut param_types: HashMap<String, String> = HashMap::new();
         let mut generic_idx = 0usize;
         for param in &func.params {
-            let ty = self.resolve_type_ref(&param.ann, param.span)?;
+            let ty = self.resolve_decl_param_type(param)?;
             let ty_str = if matches!(ty, Type::Unknown) {
                 let name = format!("T{}", generic_idx);
                 generic_idx += 1;
@@ -295,7 +295,7 @@ impl<'a> Codegen<'a> {
             }
         }
         for param in iter {
-            let ty = self.resolve_type_ref(&param.ann, param.span)?;
+            let ty = self.resolve_decl_param_type(param)?;
             let ty_str = if matches!(ty, Type::Unknown) {
                 "()".to_string()
             } else {
@@ -316,6 +316,19 @@ impl<'a> Codegen<'a> {
             self.rust_type(&ret_ty)
         };
         Ok(format!("({}) -> {}", params.join(", "), ret_str))
+    }
+
+    /// Resolve a parameter declaration type for Rust signatures.
+    ///
+    /// Variadic annotations are element/value annotations in Python, so we
+    /// wrap them into concrete collection parameter types in Rust.
+    fn resolve_decl_param_type(&self, param: &Param) -> Result<Type, CompileError> {
+        let base = self.resolve_type_ref(&param.ann, param.span)?;
+        Ok(match param.kind {
+            ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly => base,
+            ParamKind::VarArgs => Type::List(Box::new(base)),
+            ParamKind::VarKeywords => Type::Dict(Box::new(Type::Str), Box::new(base)),
+        })
     }
 
     pub(crate) fn method_is_mutating(&self, func: &Function) -> bool {

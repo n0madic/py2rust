@@ -57,9 +57,25 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
+    /// Parameter kind controls call-site binding semantics.
+    pub kind: ParamKind,
     pub ann: TypeRef,
     pub default: Option<Expr>,
     pub span: Span,
+}
+
+/// Function parameter kinds supported by the transpiler.
+///
+/// - PositionalOrKeyword: regular parameter (`def f(x): ...`)
+/// - VarArgs: captures extra positional args (`def f(*args): ...`)
+/// - KeywordOnly: parameter after `*` or `*args` (`def f(*, x): ...`)
+/// - VarKeywords: captures extra keyword args (`def f(**kwargs): ...`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamKind {
+    PositionalOrKeyword,
+    VarArgs,
+    KeywordOnly,
+    VarKeywords,
 }
 
 /// Class definition for data classes only.
@@ -311,10 +327,11 @@ pub struct Expr {
 
 /// Keyword argument in a call expression.
 ///
-/// Python: `f(x=1)` has one keyword argument with `name="x"` and `value=1`.
+/// Python: `f(x=1)` has one keyword argument with `name=Some("x")` and `value=1`.
+/// Python: `f(**m)` has one keyword argument with `name=None` and `value=m`.
 #[derive(Debug, Clone)]
 pub struct KeywordArg {
-    pub name: String,
+    pub name: Option<String>,
     pub value: Expr,
 }
 
@@ -340,6 +357,12 @@ pub enum ExprKind {
         func: Box<Expr>,
         args: Vec<Expr>,
         keywords: Vec<KeywordArg>,
+    },
+    /// Starred positional call argument (`*args` in a call expression).
+    ///
+    /// This node is only valid inside `ExprKind::Call.args`.
+    Starred {
+        value: Box<Expr>,
     },
     Attr {
         value: Box<Expr>,

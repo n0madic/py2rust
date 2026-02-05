@@ -162,6 +162,14 @@ impl<'a> TypeChecker<'a> {
                 args,
                 keywords,
             } => self.check_call(func, args, keywords, expected, expr.span)?,
+            ExprKind::Starred { value } => {
+                let value_ty = self.check_expr(value, None)?;
+                let _ = self.iter_item_type(&value_ty, expr.span)?;
+                return Err(self.error(
+                    expr.span,
+                    "Starred argument is only valid directly inside a call expression",
+                ));
+            }
             // Binary operations: +, -, *, /, etc.
             ExprKind::Binary { op, left, right } => {
                 let mut left_ty = self.check_expr(left, None)?;

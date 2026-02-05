@@ -35,6 +35,10 @@ impl<'a> Codegen<'a> {
                 args,
                 keywords,
             } => self.gen_call_expr(expr, func, args, keywords),
+            ExprKind::Starred { .. } => Err(self.error(
+                expr.span,
+                "Starred arguments are only valid directly inside call expressions",
+            )),
             ExprKind::Binary { op, left, right } => self.gen_binary_expr(expr, op, left, right),
             ExprKind::Unary { op, expr: inner } => self.gen_unary_expr(op, inner),
             ExprKind::Compare { op, left, right } => self.gen_compare_expr(expr, op, left, right),

@@ -239,6 +239,7 @@ impl<'a> Codegen<'a> {
                         visit_expr(&kw.value, ok);
                     }
                 }
+                ExprKind::Starred { value } => visit_expr(value, ok),
                 ExprKind::Attr { value, .. } => visit_expr(value, ok),
                 ExprKind::Binary { left, right, .. } => {
                     visit_expr(left, ok);
@@ -450,6 +451,7 @@ impl<'a> Codegen<'a> {
                     self.scan_expr(&kw.value)?;
                 }
             }
+            ExprKind::Starred { value } => self.scan_expr(value)?,
             ExprKind::Dict(_) => {
                 self.uses.hash_map = true;
             }

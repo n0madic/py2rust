@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 /// Function call type checking.
 ///
@@ -24,13 +25,15 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         func: &mut Expr,
         args: &mut Vec<Expr>,
-        keywords: &mut Vec<KeywordArg>,
+        keywords: &mut [KeywordArg],
         expected: Option<&Type>,
         span: Span,
     ) -> Result<Type, CompileError> {
         match &mut func.kind {
             ExprKind::Name(name) => {
+                let builtin_accepts_keywords = matches!(name.as_str(), "print");
                 if !keywords.is_empty()
+                    && !builtin_accepts_keywords
                     && !self.ctx.functions.contains_key(name)
                     && !self.ctx.classes.contains_key(name)
                     && !matches!(self.lookup_var(name), Some(Type::Lambda { .. }))
@@ -43,6 +46,29 @@ impl<'a> TypeChecker<'a> {
                 if name == "print" {
                     for arg in args {
                         self.check_expr(arg, None)?;
+                    }
+                    let mut seen_sep = false;
+                    for kw in keywords.iter_mut() {
+                        let Some(kw_name) = kw.name.as_deref() else {
+                            return Err(self.error(
+                                span,
+                                "Call-site **kwargs unpacking is not supported for print()",
+                            ));
+                        };
+                        if kw_name != "sep" {
+                            return Err(self.error(
+                                span,
+                                format!("Unknown keyword argument `{kw_name}` for print()"),
+                            ));
+                        }
+                        if seen_sep {
+                            return Err(
+                                self.error(span, "Multiple values for keyword argument `sep`")
+                            );
+                        }
+                        seen_sep = true;
+                        let kw_ty = self.check_expr(&mut kw.value, Some(&Type::Str))?;
+                        self.ensure_assignable(&kw_ty, &Type::Str, span)?;
                     }
                     return Ok(Type::None);
                 }
@@ -561,15 +587,50 @@ impl<'a> TypeChecker<'a> {
                         if params.len() != args.len() && !params.is_empty() {
                             return Err(self.error(span, "Argument count mismatch"));
                         }
-                        for (arg, param_ty) in args.iter_mut().zip(params.iter()) {
+                        let mut refined_params = params.clone();
+                        for (idx, (arg, param_ty)) in args.iter_mut().zip(params.iter()).enumerate()
+                        {
                             if !matches!(param_ty, Type::Unknown) {
                                 let arg_ty = self.check_expr(arg, Some(param_ty))?;
                                 self.ensure_assignable(&arg_ty, param_ty, span)?;
                             } else {
-                                let _ = self.check_expr(arg, None)?;
+                                let arg_ty = self.check_expr(arg, None)?;
+                                if idx < refined_params.len() {
+                                    refined_params[idx] = arg_ty;
+                                }
                             }
                         }
-                        return Ok(*ret);
+                        let mut refined_ret = *ret.clone();
+                        if matches!(refined_ret, Type::Unknown) {
+                            if let Some(expected_ty) = expected {
+                                if !matches!(expected_ty, Type::Unknown) {
+                                    // Assignment/return context can constrain callable return type.
+                                    refined_ret = expected_ty.clone();
+                                }
+                            }
+                        }
+                        if matches!(refined_ret, Type::Unknown) {
+                            if let Some(lambda_expr) = self.lambda_defs.get(name).cloned() {
+                                let expected = Type::Lambda {
+                                    params: refined_params.clone(),
+                                    ret: Box::new(Type::Unknown),
+                                };
+                                let mut expr_clone = lambda_expr;
+                                let inferred = self.check_expr(&mut expr_clone, Some(&expected))?;
+                                if let Type::Lambda { params, ret } = inferred {
+                                    refined_params = params;
+                                    refined_ret = *ret;
+                                }
+                            }
+                        }
+                        self.set_var_type(
+                            name,
+                            Type::Lambda {
+                                params: refined_params,
+                                ret: Box::new(refined_ret.clone()),
+                            },
+                        );
+                        return Ok(refined_ret);
                     }
                     if matches!(var_ty, Type::Unknown) {
                         let mut param_tys = Vec::new();
@@ -577,9 +638,13 @@ impl<'a> TypeChecker<'a> {
                             let arg_ty = self.check_expr(arg, None)?;
                             param_tys.push(arg_ty);
                         }
+                        let inferred_ret = expected
+                            .filter(|ty| !matches!(ty, Type::Unknown))
+                            .cloned()
+                            .unwrap_or(Type::Unknown);
                         let lambda = Type::Lambda {
                             params: param_tys,
-                            ret: Box::new(Type::Unknown),
+                            ret: Box::new(inferred_ret),
                         };
                         self.set_var_type(name, lambda);
                         return Ok(Type::Unknown);
@@ -1078,7 +1143,29 @@ impl<'a> TypeChecker<'a> {
                 }
                 Err(self.error(span, "Unsupported method call"))
             }
-            _ => Err(self.error(span, "Unsupported call target")),
+            _ => {
+                let callable_ty = self.check_expr(func, None)?;
+                if let Type::Lambda { params, ret } = callable_ty {
+                    if !keywords.is_empty() {
+                        return Err(self.error(
+                            span,
+                            "Keyword arguments are not supported for this callable",
+                        ));
+                    }
+                    if args.len() != params.len() {
+                        return Err(self.error(span, "Argument count mismatch"));
+                    }
+                    for (arg, expected) in args.iter_mut().zip(params.iter()) {
+                        let arg_ty = self.check_expr(arg, Some(expected))?;
+                        if !matches!(expected, Type::Unknown) {
+                            self.ensure_assignable(&arg_ty, expected, span)?;
+                        }
+                    }
+                    Ok(*ret)
+                } else {
+                    Err(self.error(span, "Unsupported call target"))
+                }
+            }
         }
     }
 
@@ -1090,20 +1177,18 @@ impl<'a> TypeChecker<'a> {
         span: Span,
         allow_self: bool,
     ) -> Result<(), CompileError> {
-        let expected_params = sig.params.len();
-        let min_params = expected_params.saturating_sub(sig.defaults);
-        let provided_total = args.len() + keywords.len();
-        let mut arg_offset = 0;
-        if allow_self
-            && expected_params > 0
-            && provided_total < expected_params
-            && provided_total + 1 >= min_params
+        if sig.param_names.len() != sig.params.len()
+            || sig.param_kinds.len() != sig.params.len()
+            || sig.has_defaults.len() != sig.params.len()
         {
-            arg_offset = 1;
+            return Err(self.error(span, "Internal error: malformed function signature"));
         }
-        let available = expected_params.saturating_sub(arg_offset);
-        if args.len() > available {
-            return Err(self.error(span, "Argument count mismatch"));
+        let has_unpacking = args
+            .iter()
+            .any(|arg| matches!(arg.kind, ExprKind::Starred { .. }))
+            || keywords.iter().any(|kw| kw.name.is_none());
+        if has_unpacking {
+            return self.check_call_args_with_unpacking(sig, args, keywords, span, allow_self);
         }
 
         #[derive(Copy, Clone)]
@@ -1112,38 +1197,106 @@ impl<'a> TypeChecker<'a> {
             Kw(usize),
         }
 
-        let mut bound: Vec<Option<BoundArg>> = vec![None; expected_params];
-        for (pos_idx, _) in args.iter().enumerate() {
-            bound[arg_offset + pos_idx] = Some(BoundArg::Pos(pos_idx));
+        let mut positional_params = Vec::new();
+        let mut vararg_idx = None;
+        let mut varkw_idx = None;
+        for (idx, kind) in sig.param_kinds.iter().enumerate() {
+            match kind {
+                ParamKind::PositionalOrKeyword => positional_params.push(idx),
+                ParamKind::VarArgs => vararg_idx = Some(idx),
+                ParamKind::KeywordOnly => {}
+                ParamKind::VarKeywords => varkw_idx = Some(idx),
+            }
         }
 
+        let mut bound: Vec<Option<BoundArg>> = vec![None; sig.params.len()];
+        let mut positional_cursor = 0usize;
+        if allow_self && !positional_params.is_empty() && positional_params[0] == 0 {
+            positional_cursor = 1;
+        }
+        let mut vararg_positional = Vec::new();
+        for (pos_idx, arg) in args.iter().enumerate() {
+            if matches!(arg.kind, ExprKind::Starred { .. }) {
+                return Err(self.error(
+                    arg.span,
+                    "Call-site *args unpacking is not supported in this context yet",
+                ));
+            }
+            if positional_cursor < positional_params.len() {
+                let param_idx = positional_params[positional_cursor];
+                bound[param_idx] = Some(BoundArg::Pos(pos_idx));
+                positional_cursor += 1;
+            } else if vararg_idx.is_some() {
+                vararg_positional.push(pos_idx);
+            } else {
+                return Err(self.error(span, "Argument count mismatch"));
+            }
+        }
+
+        let mut varkw_keywords = Vec::new();
+        let mut seen_kw = HashSet::new();
         for (kw_idx, kw) in keywords.iter().enumerate() {
-            let Some(param_idx) = sig.param_names.iter().position(|name| name == &kw.name) else {
-                return Err(self.error(span, format!("Unknown keyword argument `{}`", kw.name)));
+            let Some(kw_name) = kw.name.as_deref() else {
+                return Err(self.error(
+                    span,
+                    "Call-site **kwargs unpacking is not supported in this context yet",
+                ));
             };
-            if param_idx < arg_offset {
-                return Err(self.error(span, format!("Unexpected keyword argument `{}`", kw.name)));
+            if !seen_kw.insert(kw_name.to_string()) {
+                return Err(self.error(span, format!("Multiple values for argument `{kw_name}`")));
             }
-            if bound[param_idx].is_some() {
-                return Err(self.error(span, format!("Multiple values for argument `{}`", kw.name)));
+            let direct_param = sig
+                .param_names
+                .iter()
+                .enumerate()
+                .find(|(idx, name)| {
+                    **name == kw_name
+                        && matches!(
+                            sig.param_kinds[*idx],
+                            ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly
+                        )
+                })
+                .map(|(idx, _)| idx);
+            if let Some(param_idx) = direct_param {
+                if allow_self && param_idx == 0 && positional_params.first() == Some(&0) {
+                    return Err(
+                        self.error(span, format!("Unexpected keyword argument `{kw_name}`"))
+                    );
+                }
+                if bound[param_idx].is_some() {
+                    return Err(
+                        self.error(span, format!("Multiple values for argument `{kw_name}`"))
+                    );
+                }
+                bound[param_idx] = Some(BoundArg::Kw(kw_idx));
+            } else if varkw_idx.is_some() {
+                varkw_keywords.push(kw_idx);
+            } else {
+                return Err(self.error(span, format!("Unknown keyword argument `{kw_name}`")));
             }
-            bound[param_idx] = Some(BoundArg::Kw(kw_idx));
         }
 
-        let required_end = expected_params.saturating_sub(sig.defaults);
-        for idx in arg_offset..required_end {
-            if bound[idx].is_none() {
-                let name = sig
-                    .param_names
-                    .get(idx)
-                    .cloned()
-                    .unwrap_or_else(|| format!("arg{idx}"));
-                return Err(self.error(span, format!("Missing required argument `{name}`")));
+        for (idx, maybe_bound) in bound.iter().enumerate().take(sig.params.len()) {
+            match sig.param_kinds[idx] {
+                ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly => {
+                    if allow_self && idx == 0 && positional_params.first() == Some(&0) {
+                        continue;
+                    }
+                    if maybe_bound.is_none() && !sig.has_defaults[idx] {
+                        let name = sig
+                            .param_names
+                            .get(idx)
+                            .cloned()
+                            .unwrap_or_else(|| format!("arg{idx}"));
+                        return Err(self.error(span, format!("Missing required argument `{name}`")));
+                    }
+                }
+                ParamKind::VarArgs | ParamKind::VarKeywords => {}
             }
         }
 
-        for idx in arg_offset..expected_params {
-            let Some(source) = bound[idx] else {
+        for (idx, maybe_source) in bound.iter().copied().enumerate().take(sig.params.len()) {
+            let Some(source) = maybe_source else {
                 continue;
             };
             let param_ty = &sig.params[idx];
@@ -1173,6 +1326,129 @@ impl<'a> TypeChecker<'a> {
                 arg_ty = Type::Str;
             }
             self.ensure_assignable(&arg_ty, param_ty, span)?;
+        }
+
+        if let Some(vararg_idx) = vararg_idx {
+            let Some(Type::List(inner_ty)) = sig.params.get(vararg_idx) else {
+                return Err(self.error(span, "Internal error: *args parameter must be list type"));
+            };
+            for pos_idx in vararg_positional {
+                let arg_ty = self.check_expr(&mut args[pos_idx], Some(inner_ty.as_ref()))?;
+                self.ensure_assignable(&arg_ty, inner_ty.as_ref(), span)?;
+            }
+        } else if !vararg_positional.is_empty() {
+            return Err(self.error(span, "Argument count mismatch"));
+        }
+
+        if let Some(varkw_idx) = varkw_idx {
+            let Some(Type::Dict(_, value_ty)) = sig.params.get(varkw_idx) else {
+                return Err(
+                    self.error(span, "Internal error: **kwargs parameter must be dict type")
+                );
+            };
+            for kw_idx in varkw_keywords {
+                let arg_ty =
+                    self.check_expr(&mut keywords[kw_idx].value, Some(value_ty.as_ref()))?;
+                self.ensure_assignable(&arg_ty, value_ty.as_ref(), span)?;
+            }
+        } else if !varkw_keywords.is_empty() {
+            return Err(self.error(span, "Unknown keyword argument"));
+        }
+        Ok(())
+    }
+
+    /// Type check calls that use `*args`/`**kwargs` unpacking.
+    ///
+    /// We intentionally keep this path permissive: exact argument cardinality can depend on
+    /// runtime container sizes, so we validate value kinds and type compatibility where known.
+    fn check_call_args_with_unpacking(
+        &mut self,
+        sig: &FunctionSig,
+        args: &mut [Expr],
+        keywords: &mut [KeywordArg],
+        span: Span,
+        allow_self: bool,
+    ) -> Result<(), CompileError> {
+        let mut seen_keywords = HashSet::new();
+        let mut varkw_value_ty: Option<&Type> = None;
+        for (idx, kind) in sig.param_kinds.iter().enumerate() {
+            if matches!(kind, ParamKind::VarKeywords) {
+                if let Some(Type::Dict(_, value_ty)) = sig.params.get(idx) {
+                    varkw_value_ty = Some(value_ty.as_ref());
+                }
+            }
+        }
+
+        for arg in args.iter_mut() {
+            if let ExprKind::Starred { value } = &mut arg.kind {
+                let iter_ty = self.check_expr(value, None)?;
+                let _ = self.iter_item_type(&iter_ty, span)?;
+            } else {
+                self.check_expr(arg, None)?;
+            }
+        }
+
+        for kw in keywords.iter_mut() {
+            if let Some(name) = kw.name.as_deref() {
+                if !seen_keywords.insert(name.to_string()) {
+                    return Err(self.error(span, format!("Multiple values for argument `{name}`")));
+                }
+                let direct_param = sig
+                    .param_names
+                    .iter()
+                    .enumerate()
+                    .find(|(idx, param_name)| {
+                        **param_name == name
+                            && matches!(
+                                sig.param_kinds[*idx],
+                                ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly
+                            )
+                    })
+                    .map(|(idx, _)| idx);
+                if let Some(param_idx) = direct_param {
+                    if allow_self
+                        && param_idx == 0
+                        && sig.param_kinds.first() == Some(&ParamKind::PositionalOrKeyword)
+                    {
+                        return Err(
+                            self.error(span, format!("Unexpected keyword argument `{name}`"))
+                        );
+                    }
+                    let expected = sig.params.get(param_idx);
+                    let value_ty = self.check_expr(&mut kw.value, expected)?;
+                    if let Some(expected) = expected {
+                        if !matches!(expected, Type::Unknown) {
+                            self.ensure_assignable(&value_ty, expected, span)?;
+                        }
+                    }
+                } else if let Some(value_ty_expected) = varkw_value_ty {
+                    let value_ty = self.check_expr(&mut kw.value, Some(value_ty_expected))?;
+                    if !matches!(value_ty_expected, Type::Unknown) {
+                        self.ensure_assignable(&value_ty, value_ty_expected, span)?;
+                    }
+                } else {
+                    return Err(self.error(span, format!("Unknown keyword argument `{name}`")));
+                }
+            } else {
+                let unpack_ty = self.check_expr(&mut kw.value, None)?;
+                match unpack_ty {
+                    Type::Dict(key_ty, _) => {
+                        if !matches!(key_ty.as_ref(), Type::Str | Type::Unknown) {
+                            return Err(self.error(
+                                span,
+                                "Call-site **kwargs unpacking requires dict[str, T]",
+                            ));
+                        }
+                    }
+                    Type::Unknown => {}
+                    _ => {
+                        return Err(self.error(
+                            span,
+                            "Call-site **kwargs unpacking expects a dict expression",
+                        ));
+                    }
+                }
+            }
         }
         Ok(())
     }

@@ -208,6 +208,8 @@ pub struct Codegen<'a> {
     pub(crate) global_overrides: Vec<(String, String)>,
     /// Track nested lambda emission to disable Result propagation inside closures.
     pub(crate) lambda_depth: usize,
+    /// Expected return types for lambdas currently being emitted (innermost last).
+    pub(crate) lambda_return_types: Vec<Option<Type>>,
     /// Map of class definitions for codegen lookups (defaults, super).
     pub(crate) class_defs: HashMap<String, ClassDef>,
     /// Map of top-level function definitions for default arguments.
@@ -251,6 +253,7 @@ impl<'a> Codegen<'a> {
             shared_globals: HashSet::new(),
             global_overrides: Vec::new(),
             lambda_depth: 0,
+            lambda_return_types: Vec::new(),
             class_defs: HashMap::new(),
             function_defs: HashMap::new(),
             name_overrides: Vec::new(),
@@ -906,6 +909,16 @@ impl<'a> Codegen<'a> {
                     );
                 }
             }
+            ExprKind::Starred { value } => {
+                self.collect_used_globals_in_expr(
+                    value,
+                    locals,
+                    outers,
+                    globals,
+                    module_vars,
+                    used,
+                );
+            }
             ExprKind::Attr { value, .. } => {
                 self.collect_used_globals_in_expr(
                     value,
@@ -1294,6 +1307,9 @@ impl<'a> Codegen<'a> {
                     self.collect_list_elem_types_in_expr(&kw.value, inferred);
                 }
             }
+            ExprKind::Starred { value } => {
+                self.collect_list_elem_types_in_expr(value, inferred);
+            }
             ExprKind::Attr { value, .. } => {
                 self.collect_list_elem_types_in_expr(value, inferred);
             }
@@ -1628,6 +1644,14 @@ impl<'a> Codegen<'a> {
                 for kw in keywords {
                     self.collect_list_storage_in_expr(&kw.value, arg_ctx, shared_globals, storage);
                 }
+            }
+            ExprKind::Starred { value } => {
+                self.collect_list_storage_in_expr(
+                    value,
+                    ListUseContext::Value,
+                    shared_globals,
+                    storage,
+                );
             }
             ExprKind::Attr { value, .. } => {
                 self.collect_list_storage_in_expr(
@@ -2180,6 +2204,14 @@ impl<'a> Codegen<'a> {
                     self.collect_dict_storage_in_expr(&kw.value, arg_ctx, shared_globals, storage);
                 }
             }
+            ExprKind::Starred { value } => {
+                self.collect_dict_storage_in_expr(
+                    value,
+                    DictUseContext::Value,
+                    shared_globals,
+                    storage,
+                );
+            }
             ExprKind::Attr { value, .. } => {
                 self.collect_dict_storage_in_expr(
                     value,
@@ -2623,8 +2655,6 @@ impl<'a> Codegen<'a> {
                         for name in info.unresolved {
                             if locals.contains(&name) {
                                 cell_locals.insert(name);
-                            } else if !globals.contains(&name) && !nonlocals.contains(&name) {
-                                unresolved.insert(name);
                             } else {
                                 unresolved.insert(name);
                             }
@@ -2667,6 +2697,17 @@ impl<'a> Codegen<'a> {
                             unresolved,
                         );
                     }
+                }
+                ExprKind::Starred { value } => {
+                    visit_expr_for_lambdas(
+                        this,
+                        value,
+                        locals,
+                        nonlocals,
+                        globals,
+                        cell_locals,
+                        unresolved,
+                    );
                 }
                 ExprKind::Attr { value, .. } => {
                     visit_expr_for_lambdas(

@@ -7,6 +7,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 
 ## Features (MVP)
 - Functions with required type annotations
+- Function signatures with defaults, keyword arguments, `*args`, keyword-only params, and `**kwargs`
 - Basic types: `int`, `float`, `bool`, `str`, `bytes`, `None`
 - Collections: `list[T]`, `dict[K, V]`, `tuple[...]`, `set[T]`
 - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, chained comparisons
@@ -26,6 +27,8 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - `match/case` on union variants with `__match_args__` support
 - Custom iterators via `__iter__` and `next`
 - Simple list and set comprehensions
+- Call-site unpacking via `*args` and `**kwargs` (including mixed call forms)
+- Nested functions with closure capture and `nonlocal` writes
 - Builtins: `abs`, `all`, `any`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `str`, `sum`, `tuple`, `type`, `zip`
 
 ## Usage
@@ -58,9 +61,12 @@ cargo test -p py2rust
 ```
 
 Runtime integration coverage lives in `crates/py2rust/tests/runtime/`:
+- `functions.rs` covers function calls, recursion, closures/nonlocal, variadics, call unpacking, and full `functions.py` regression.
 - `collections.rs` covers lists, tuples, dicts, sets, bytes.
 - `builtins.rs` covers builtin functions.
-and others.
+- other files cover classes, control flow, operators, comprehensions, IO, assertions, and exceptions.
+
+Negative/compile-fail coverage lives in `crates/py2rust/tests/negative_tests.rs`.
 
 ## Runtime helpers
 The generated Rust injects tiny helper functions only when needed:
@@ -73,7 +79,11 @@ The generated Rust injects tiny helper functions only when needed:
 - `self` can be unannotated in methods; other parameters require annotations.
 - `Union[A, B]` and `A | B` are allowed only for enum-like class unions.
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
-- Keyword arguments are supported only for `dict()`; other keyword args are rejected.
+- Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
+- Builtins are mostly positional-only; keyword arguments are currently supported only for `print(sep=...)`.
+- Call-site `**kwargs` unpacking requires a `dict[str, T]` expression.
+- Positional-only parameters (`/`) are not supported.
+- Nested `def` lowering currently rejects advanced parameter forms (`*args`, keyword-only, `**kwargs`) inside nested local functions.
 - `__init__` is treated as a constructor; it must only assign `self` fields.
 - Class decorators and decorator calls are rejected (e.g. `@decorator()` or `@dataclass`).
 - Function decorators are limited to simple names on top-level functions.

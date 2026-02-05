@@ -354,6 +354,7 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                     visit_expr(&kw.value, counts);
                 }
             }
+            ExprKind::Starred { value } => visit_expr(value, counts),
             ExprKind::Attr { value, .. } => visit_expr(value, counts),
             ExprKind::Binary { left, right, .. } => {
                 visit_expr(left, counts);

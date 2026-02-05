@@ -214,8 +214,7 @@ impl<'a> Codegen<'a> {
                             &[],
                             &base_init.params[1..],
                             &param_types,
-                            Some(base),
-                            "__init__",
+                            (Some(base), "__init__"),
                             false,
                         )?;
                         let mut bindings = Vec::new();

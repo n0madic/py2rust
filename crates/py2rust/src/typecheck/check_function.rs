@@ -49,18 +49,18 @@ impl<'a> TypeChecker<'a> {
             }
         }
         for param in func.params.iter().skip(if require_self { 1 } else { 0 }) {
-            let ty = self.resolve_type_ref(&param.ann, param.span)?;
+            let ty = self.resolve_param_type(param)?;
             self.insert_var(&param.name, ty, param.span)?;
         }
 
         // Type check default argument expressions.
-        for (idx, param) in func.params.iter_mut().enumerate() {
-            if let Some(default) = &mut param.default {
-                let expected = if require_self && idx == 0 {
-                    None
-                } else {
-                    Some(self.resolve_type_ref(&param.ann, param.span)?)
-                };
+        for idx in 0..func.params.len() {
+            let expected = if require_self && idx == 0 {
+                None
+            } else {
+                Some(self.resolve_param_type(&func.params[idx])?)
+            };
+            if let Some(default) = &mut func.params[idx].default {
                 let ty = self.check_expr(default, expected.as_ref())?;
                 if let Some(expected) = expected {
                     if !matches!(ty, Type::Unknown) && !matches!(expected, Type::Unknown) {
@@ -179,6 +179,7 @@ impl<'a> TypeChecker<'a> {
                             collect_names(&kw.value, out);
                         }
                     }
+                    ExprKind::Starred { value } => collect_names(value, out),
                     ExprKind::Attr { value, .. } => collect_names(value, out),
                     ExprKind::Compare { left, right, .. } => {
                         collect_names(left, out);
@@ -286,6 +287,7 @@ impl<'a> TypeChecker<'a> {
                             visit_expr(&kw.value, out);
                         }
                     }
+                    ExprKind::Starred { value } => visit_expr(value, out),
                     ExprKind::Attr { value, .. } => visit_expr(value, out),
                     ExprKind::Compare { left, right, .. } => {
                         visit_expr(left, out);
@@ -540,6 +542,8 @@ impl<'a> TypeChecker<'a> {
         }
         let sig = FunctionSig {
             param_names: func.params.iter().map(|p| p.name.clone()).collect(),
+            param_kinds: func.params.iter().map(|p| p.kind).collect(),
+            has_defaults: func.params.iter().map(|p| p.default.is_some()).collect(),
             params: params.clone(),
             ret: ret.clone(),
             span: func.span,

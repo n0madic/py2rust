@@ -10,12 +10,12 @@ impl<'a> Codegen<'a> {
         params: &[String],
         body: &Expr,
     ) -> Result<String, CompileError> {
-        let param_types = if let Some(Type::Lambda { params, .. }) = expr.ty.as_ref() {
-            Some(params.as_slice())
+        let (param_types, ret_type) = if let Some(Type::Lambda { params, ret }) = expr.ty.as_ref() {
+            (Some(params.as_slice()), Some(ret.as_ref()))
         } else {
-            None
+            (None, None)
         };
-        self.gen_lambda_with_param_types(params, body, param_types)
+        self.gen_lambda_with_param_types(params, body, param_types, ret_type)
     }
 
     /// Render a lambda while applying expected parameter types when available.
@@ -24,6 +24,7 @@ impl<'a> Codegen<'a> {
         params: &[String],
         body: &Expr,
         param_types: Option<&[Type]>,
+        ret_type: Option<&Type>,
     ) -> Result<String, CompileError> {
         let mut param_parts = Vec::new();
         let mut lambda_param_types: Vec<Type> = Vec::new();
@@ -34,7 +35,11 @@ impl<'a> Codegen<'a> {
                     param_parts.push(name.clone());
                 } else {
                     lambda_param_types.push(ty.clone());
-                    param_parts.push(format!("{}: {}", name, self.rust_type(ty)));
+                    param_parts.push(format!(
+                        "{}: {}",
+                        name,
+                        self.rust_type_for_closure_param(ty)
+                    ));
                 }
             }
         } else {
@@ -48,6 +53,7 @@ impl<'a> Codegen<'a> {
         }
         self.local_vars = Some(scoped_locals);
         self.lambda_depth += 1;
+        self.lambda_return_types.push(ret_type.cloned());
         let saved_nonlocals = self.nonlocal_decls.clone();
         let saved_cells = self.cell_locals.clone();
         if let ExprKind::Block { stmts } = &body.kind {
@@ -60,6 +66,7 @@ impl<'a> Codegen<'a> {
         }
         let body_expr = self.gen_expr(body);
         self.lambda_depth -= 1;
+        self.lambda_return_types.pop();
         let body_expr = body_expr?;
         self.nonlocal_decls = saved_nonlocals;
         self.cell_locals = saved_cells;

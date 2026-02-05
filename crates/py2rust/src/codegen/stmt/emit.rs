@@ -719,16 +719,208 @@ impl<'a> Codegen<'a> {
                 }
                 if let ExprKind::Lambda { params, body } = &value.kind {
                     if let ExprKind::Block { stmts } = &body.kind {
+                        fn expr_mentions_name(expr: &Expr, target: &str) -> bool {
+                            match &expr.kind {
+                                ExprKind::Name(name) => name == target,
+                                ExprKind::Call {
+                                    func,
+                                    args,
+                                    keywords,
+                                } => {
+                                    expr_mentions_name(func, target)
+                                        || args.iter().any(|arg| expr_mentions_name(arg, target))
+                                        || keywords
+                                            .iter()
+                                            .any(|kw| expr_mentions_name(&kw.value, target))
+                                }
+                                ExprKind::Starred { value } => expr_mentions_name(value, target),
+                                ExprKind::Attr { value, .. } => expr_mentions_name(value, target),
+                                ExprKind::Binary { left, right, .. }
+                                | ExprKind::Compare { left, right, .. } => {
+                                    expr_mentions_name(left, target)
+                                        || expr_mentions_name(right, target)
+                                }
+                                ExprKind::CompareChain {
+                                    left, comparators, ..
+                                } => {
+                                    expr_mentions_name(left, target)
+                                        || comparators
+                                            .iter()
+                                            .any(|expr| expr_mentions_name(expr, target))
+                                }
+                                ExprKind::Unary { expr, .. } => expr_mentions_name(expr, target),
+                                ExprKind::BoolOp { values, .. }
+                                | ExprKind::List(values)
+                                | ExprKind::Tuple(values)
+                                | ExprKind::Set(values) => {
+                                    values.iter().any(|expr| expr_mentions_name(expr, target))
+                                }
+                                ExprKind::Dict(items) => items.iter().any(|(k, v)| {
+                                    expr_mentions_name(k, target) || expr_mentions_name(v, target)
+                                }),
+                                ExprKind::Index { value, index } => {
+                                    expr_mentions_name(value, target)
+                                        || expr_mentions_name(index, target)
+                                }
+                                ExprKind::Slice {
+                                    value,
+                                    start,
+                                    end,
+                                    step,
+                                } => {
+                                    expr_mentions_name(value, target)
+                                        || start
+                                            .as_deref()
+                                            .is_some_and(|e| expr_mentions_name(e, target))
+                                        || end
+                                            .as_deref()
+                                            .is_some_and(|e| expr_mentions_name(e, target))
+                                        || step
+                                            .as_deref()
+                                            .is_some_and(|e| expr_mentions_name(e, target))
+                                }
+                                ExprKind::ListComp { elt, iter, ifs, .. }
+                                | ExprKind::SetComp { elt, iter, ifs, .. } => {
+                                    expr_mentions_name(elt, target)
+                                        || expr_mentions_name(iter, target)
+                                        || ifs.iter().any(|e| expr_mentions_name(e, target))
+                                }
+                                ExprKind::UnionCtor { inner, .. } => {
+                                    expr_mentions_name(inner, target)
+                                }
+                                ExprKind::Lambda { .. } => false,
+                                ExprKind::IfExpr { test, body, orelse } => {
+                                    expr_mentions_name(test, target)
+                                        || expr_mentions_name(body, target)
+                                        || expr_mentions_name(orelse, target)
+                                }
+                                ExprKind::Block { stmts } => {
+                                    stmts.iter().any(|stmt| stmt_mentions_name(stmt, target))
+                                }
+                                ExprKind::Literal(_) => false,
+                            }
+                        }
+
+                        fn stmt_mentions_name(stmt: &Stmt, target: &str) -> bool {
+                            match &stmt.kind {
+                                StmtKind::Let { value, .. } | StmtKind::Expr(value) => {
+                                    expr_mentions_name(value, target)
+                                }
+                                StmtKind::Assign { value, .. } => expr_mentions_name(value, target),
+                                StmtKind::Return { value } => value
+                                    .as_ref()
+                                    .is_some_and(|expr| expr_mentions_name(expr, target)),
+                                StmtKind::If { test, body, orelse } => {
+                                    expr_mentions_name(test, target)
+                                        || body.iter().any(|s| stmt_mentions_name(s, target))
+                                        || orelse.iter().any(|s| stmt_mentions_name(s, target))
+                                }
+                                StmtKind::While { test, body } => {
+                                    expr_mentions_name(test, target)
+                                        || body.iter().any(|s| stmt_mentions_name(s, target))
+                                }
+                                StmtKind::For { iter, body, .. } => {
+                                    expr_mentions_name(iter, target)
+                                        || body.iter().any(|s| stmt_mentions_name(s, target))
+                                }
+                                StmtKind::Assert { test, msg } => {
+                                    expr_mentions_name(test, target)
+                                        || msg
+                                            .as_ref()
+                                            .is_some_and(|expr| expr_mentions_name(expr, target))
+                                }
+                                StmtKind::Match { subject, cases } => {
+                                    expr_mentions_name(subject, target)
+                                        || cases.iter().any(|case| {
+                                            case.body
+                                                .iter()
+                                                .any(|stmt| stmt_mentions_name(stmt, target))
+                                        })
+                                }
+                                StmtKind::Try {
+                                    body,
+                                    handlers,
+                                    orelse,
+                                    finalbody,
+                                } => {
+                                    body.iter().any(|s| stmt_mentions_name(s, target))
+                                        || handlers.iter().any(|h| {
+                                            h.body
+                                                .iter()
+                                                .any(|stmt| stmt_mentions_name(stmt, target))
+                                        })
+                                        || orelse.iter().any(|s| stmt_mentions_name(s, target))
+                                        || finalbody.iter().any(|s| stmt_mentions_name(s, target))
+                                }
+                                StmtKind::Raise { exc, cause } => {
+                                    exc.as_ref()
+                                        .is_some_and(|expr| expr_mentions_name(expr, target))
+                                        || cause
+                                            .as_ref()
+                                            .is_some_and(|expr| expr_mentions_name(expr, target))
+                                }
+                                StmtKind::Global { .. }
+                                | StmtKind::Nonlocal { .. }
+                                | StmtKind::Break
+                                | StmtKind::Continue => false,
+                            }
+                        }
+
+                        fn contains_nonlocal_decl(stmt: &Stmt) -> bool {
+                            match &stmt.kind {
+                                StmtKind::Nonlocal { .. } => true,
+                                StmtKind::If { body, orelse, .. } => {
+                                    body.iter().any(contains_nonlocal_decl)
+                                        || orelse.iter().any(contains_nonlocal_decl)
+                                }
+                                StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+                                    body.iter().any(contains_nonlocal_decl)
+                                }
+                                StmtKind::Match { cases, .. } => cases
+                                    .iter()
+                                    .any(|case| case.body.iter().any(contains_nonlocal_decl)),
+                                StmtKind::Try {
+                                    body,
+                                    handlers,
+                                    orelse,
+                                    finalbody,
+                                } => {
+                                    body.iter().any(contains_nonlocal_decl)
+                                        || handlers
+                                            .iter()
+                                            .any(|h| h.body.iter().any(contains_nonlocal_decl))
+                                        || orelse.iter().any(contains_nonlocal_decl)
+                                        || finalbody.iter().any(contains_nonlocal_decl)
+                                }
+                                _ => false,
+                            }
+                        }
+
+                        let has_nonlocal_decl = stmts.iter().any(contains_nonlocal_decl);
+                        let has_unknown_sig = matches!(
+                            value.ty.as_ref(),
+                            Some(Type::Lambda { params, ret })
+                                if params.iter().any(|ty| matches!(ty, Type::Unknown))
+                                    || matches!(ret.as_ref(), Type::Unknown)
+                        );
+                        let is_recursive_nested =
+                            stmts.iter().any(|stmt| stmt_mentions_name(stmt, name));
                         // Nested def: inside a function, emit a closure to allow captures.
-                        if self.current_function.is_some()
-                            && self.lambda_captures_outer(name, params, body)
-                        {
+                        if self.current_function.is_some() && !is_recursive_nested {
                             let expected = if let Some(ann) = ann {
                                 Some(self.resolve_type_ref(ann, stmt.span)?)
                             } else {
                                 None
                             };
-                            let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                            let _ = has_unknown_sig;
+                            let mut expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                            if has_nonlocal_decl {
+                                // `nonlocal` closures must borrow outer cells instead of moving them,
+                                // otherwise the outer binding is moved and becomes unusable afterwards.
+                                if let Some(stripped) = expr.strip_prefix("move ") {
+                                    expr = stripped.to_string();
+                                }
+                            }
                             let mut_kw = mut_kw_for_name(name, mut_counts);
                             self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                             if let Some(ty) = expected.or_else(|| value.ty.clone()) {
@@ -844,14 +1036,30 @@ impl<'a> Codegen<'a> {
                 let wrap_in_ok = in_throwing_fn || in_try_with_value;
 
                 if let Some(expr) = value {
-                    let expected = self.current_function_ret.as_ref().map(|ty| {
-                        if let Some((ok, _)) = ty.unwrap_result() {
-                            ok.clone()
-                        } else {
-                            ty.clone()
+                    let expected = if let Some(lambda_ret) =
+                        self.lambda_return_types.last().and_then(|ret| ret.as_ref())
+                    {
+                        Some(lambda_ret.clone())
+                    } else {
+                        self.current_function_ret.as_ref().map(|ty| {
+                            if let Some((ok, _)) = ty.unwrap_result() {
+                                ok.clone()
+                            } else {
+                                ty.clone()
+                            }
+                        })
+                    };
+                    let mut expr_str = self.gen_expr_with_expected(expr, expected.as_ref())?;
+                    if matches!(expr.ty.as_ref(), Some(Type::Lambda { .. })) {
+                        if let Some(expected_ty) = expected.as_ref() {
+                            if matches!(expected_ty, Type::Lambda { .. }) {
+                                // Closure returns inside higher-order contexts need explicit
+                                // boxing and trait-object coercion.
+                                let boxed_ty = self.rust_type_for_closure_param(expected_ty);
+                                expr_str = format!("(Box::new({}) as {})", expr_str, boxed_ty);
+                            }
                         }
-                    });
-                    let expr_str = self.gen_expr_with_expected(expr, expected.as_ref())?;
+                    }
                     if wrap_in_ok {
                         self.push_line(&format!("return Ok({});", expr_str));
                     } else {

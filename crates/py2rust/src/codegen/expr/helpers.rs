@@ -18,13 +18,65 @@ impl<'a> Codegen<'a> {
         expr: &Expr,
         expected: Option<&Type>,
     ) -> Result<String, CompileError> {
-        if let Some(Type::Lambda { params, .. }) = expected {
-            if let ExprKind::Lambda {
-                params: names,
-                body,
-            } = &expr.kind
-            {
-                return self.gen_lambda_with_param_types(names, body, Some(params.as_slice()));
+        if let ExprKind::Lambda {
+            params: names,
+            body,
+        } = &expr.kind
+        {
+            let expected_params = match expected {
+                Some(Type::Lambda { params, .. }) => Some(params.as_slice()),
+                _ => None,
+            };
+            let expected_ret = match expected {
+                Some(Type::Lambda { ret, .. }) => Some(ret.as_ref()),
+                _ => None,
+            };
+            let inferred_params = match expr.ty.as_ref() {
+                Some(Type::Lambda { params, .. }) => Some(params.as_slice()),
+                _ => None,
+            };
+            let inferred_ret = match expr.ty.as_ref() {
+                Some(Type::Lambda { ret, .. }) => Some(ret.as_ref()),
+                _ => None,
+            };
+            let ret_hint = match (expected_ret, inferred_ret) {
+                (Some(exp), Some(inf)) => {
+                    if matches!(exp, Type::Unknown) {
+                        Some(inf)
+                    } else {
+                        Some(exp)
+                    }
+                }
+                (Some(exp), None) => Some(exp),
+                (None, Some(inf)) => Some(inf),
+                (None, None) => None,
+            };
+            if let Some(exp) = expected_params {
+                if let Some(inferred) = inferred_params {
+                    if exp.len() == inferred.len() {
+                        let merged: Vec<Type> = exp
+                            .iter()
+                            .zip(inferred.iter())
+                            .map(|(left, right)| {
+                                if matches!(left, Type::Unknown) {
+                                    right.clone()
+                                } else {
+                                    left.clone()
+                                }
+                            })
+                            .collect();
+                        return self.gen_lambda_with_param_types(
+                            names,
+                            body,
+                            Some(merged.as_slice()),
+                            ret_hint,
+                        );
+                    }
+                }
+                return self.gen_lambda_with_param_types(names, body, Some(exp), ret_hint);
+            }
+            if let Some(inferred) = inferred_params {
+                return self.gen_lambda_with_param_types(names, body, Some(inferred), ret_hint);
             }
         }
         if let Some(Type::Option(_)) = expected {
@@ -77,7 +129,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Check if we need to add & when passing an argument.
-    fn needs_borrow(&self, arg_ty: Option<&Type>, param_ty: &Type) -> bool {
+    pub(super) fn needs_borrow(&self, arg_ty: Option<&Type>, param_ty: &Type) -> bool {
         match param_ty {
             // Parameter expects a slice, argument is a list.
             Type::Slice(_) => {

@@ -51,7 +51,7 @@ impl<'a> Lowerer<'a> {
                 let mut params = Vec::new();
                 let mut param_types = Vec::new();
                 for arg in &def.args.args {
-                    params.push(arg.def.arg.to_string());
+                    params.push(self.ident(arg.def.arg.as_str()));
                     let ann = match &arg.def.annotation {
                         Some(expr) => self.lower_type_ref(expr)?,
                         None => TypeRef::Unknown,
@@ -81,7 +81,7 @@ impl<'a> Lowerer<'a> {
                     ty: None,
                 };
                 StmtKind::Let {
-                    name: def.name.to_string(),
+                    name: self.ident(def.name.as_str()),
                     ann: Some(TypeRef::Lambda {
                         params: param_types,
                         ret: Box::new(ret),
@@ -97,7 +97,7 @@ impl<'a> Lowerer<'a> {
                 let value = self.lower_expr(value)?;
                 match &*def.target {
                     ast::Expr::Name(name) => StmtKind::Let {
-                        name: name.id.to_string(),
+                        name: self.ident(name.id.as_str()),
                         ann: Some(ann),
                         value,
                     },
@@ -180,13 +180,13 @@ impl<'a> Lowerer<'a> {
             ast::Stmt::For(def) => {
                 let iter = self.lower_expr(&def.iter)?;
                 let target = match &*def.target {
-                    ast::Expr::Name(name) => ForTarget::Name(name.id.to_string()),
+                    ast::Expr::Name(name) => ForTarget::Name(self.ident(name.id.as_str())),
                     ast::Expr::Tuple(tuple) => {
                         // Extract simple names from tuple elements for pattern matching.
                         let mut names = Vec::new();
                         for elt in &tuple.elts {
                             if let ast::Expr::Name(name) = elt {
-                                names.push(name.id.to_string());
+                                names.push(self.ident(name.id.as_str()));
                             } else {
                                 return Err(self.error(
                                     def.target.range(),
@@ -424,7 +424,7 @@ impl<'a> Lowerer<'a> {
         match handler {
             ast::ExceptHandler::ExceptHandler(eh) => {
                 let exc_type = match eh.type_.as_deref() {
-                    Some(ast::Expr::Name(name)) => Some(name.id.to_string()),
+                    Some(ast::Expr::Name(name)) => Some(self.ident(name.id.as_str())),
                     Some(_) => {
                         return Err(
                             self.error(handler.range(), "Exception type must be a simple name")
@@ -433,7 +433,7 @@ impl<'a> Lowerer<'a> {
                     None => None,
                 };
 
-                let name = eh.name.as_ref().map(|id| id.to_string());
+                let name = eh.name.as_ref().map(|id| self.ident(id.as_str()));
                 let body = eh
                     .body
                     .iter()
@@ -470,7 +470,7 @@ impl<'a> Lowerer<'a> {
                     return Err(self.error(pattern.range(), "Keyword patterns are not supported"));
                 }
                 let variant = match &*cls_pat.cls {
-                    ast::Expr::Name(name) => name.id.to_string(),
+                    ast::Expr::Name(name) => self.ident(name.id.as_str()),
                     _ => {
                         return Err(self.error(
                             pattern.range(),
@@ -490,7 +490,7 @@ impl<'a> Lowerer<'a> {
                             let name = as_pat.name.as_ref().ok_or_else(|| {
                                 self.error(pat.range(), "Unnamed bindings are not supported")
                             })?;
-                            bindings.push(name.to_string());
+                            bindings.push(self.ident(name.as_str()));
                         }
                         _ => {
                             return Err(
@@ -520,7 +520,7 @@ impl<'a> Lowerer<'a> {
         expr: &ast::Expr,
     ) -> Result<AssignTarget, CompileError> {
         match expr {
-            ast::Expr::Name(name) => Ok(AssignTarget::Name(name.id.to_string())),
+            ast::Expr::Name(name) => Ok(AssignTarget::Name(self.ident(name.id.as_str()))),
             ast::Expr::Attribute(attr) => {
                 let value_expr = self.lower_expr(&attr.value)?;
                 Ok(AssignTarget::Attr {

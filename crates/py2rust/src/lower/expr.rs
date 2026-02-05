@@ -24,7 +24,7 @@ impl<'a> Lowerer<'a> {
         let span = Span::from(expr.range());
         let kind = match expr {
             // Simple name reference (variable, function name, etc.)
-            ast::Expr::Name(name) => ExprKind::Name(name.id.to_string()),
+            ast::Expr::Name(name) => ExprKind::Name(self.ident(name.id.as_str())),
 
             // Constant literals (int, float, bool, str, None)
             ast::Expr::Constant(cons) => match &cons.value {
@@ -47,6 +47,19 @@ impl<'a> Lowerer<'a> {
             },
             // Function call expression
             ast::Expr::Call(call) => {
+                let lower_call_arg = |arg: &ast::Expr| -> Result<Expr, CompileError> {
+                    if let ast::Expr::Starred(star) = arg {
+                        Ok(Expr {
+                            kind: ExprKind::Starred {
+                                value: Box::new(self.lower_expr(&star.value)?),
+                            },
+                            span: Span::from(arg.range()),
+                            ty: None,
+                        })
+                    } else {
+                        self.lower_expr(arg)
+                    }
+                };
                 // Special case: dict(a=1, b=2) constructor syntax
                 // This is more ergonomic in Python than {"a": 1, "b": 2}
                 // We convert it to literal dict syntax in HIR
@@ -63,7 +76,7 @@ impl<'a> Lowerer<'a> {
                                     span,
                                     ty: None,
                                 },
-                                // **kwargs syntax is not yet supported.
+                                // Keep dict() constructor lowering strict: only named pairs.
                                 None => {
                                     return Err(self
                                         .error(expr.range(), "dict() does not support **kwargs"))
@@ -77,18 +90,12 @@ impl<'a> Lowerer<'a> {
                         let func = Box::new(self.lower_expr(&call.func)?);
                         let mut lowered_args = Vec::new();
                         for arg in &call.args {
-                            lowered_args.push(self.lower_expr(arg)?);
+                            lowered_args.push(lower_call_arg(arg)?);
                         }
                         let mut lowered_keywords = Vec::new();
                         for kw in &call.keywords {
-                            let Some(name) = &kw.arg else {
-                                return Err(self.error(
-                                    expr.range(),
-                                    "Call-site **kwargs unpacking is not supported",
-                                ));
-                            };
                             lowered_keywords.push(KeywordArg {
-                                name: name.to_string(),
+                                name: kw.arg.as_ref().map(|name| self.ident(name.as_str())),
                                 value: self.lower_expr(&kw.value)?,
                             });
                         }
@@ -105,7 +112,7 @@ impl<'a> Lowerer<'a> {
                     let func = Box::new(self.lower_expr(&call.func)?);
                     let mut lowered_args = Vec::new();
                     for arg in &call.args {
-                        lowered_args.push(self.lower_expr(arg)?);
+                        lowered_args.push(lower_call_arg(arg)?);
                     }
                     ExprKind::Call {
                         func,
@@ -303,7 +310,7 @@ impl<'a> Lowerer<'a> {
                     return Err(self.error(expr.range(), "Async comprehensions are not supported"));
                 }
                 let target = match &gen.target {
-                    ast::Expr::Name(name) => name.id.to_string(),
+                    ast::Expr::Name(name) => self.ident(name.id.as_str()),
                     _ => {
                         return Err(self.error(
                             gen.target.range(),
@@ -337,7 +344,7 @@ impl<'a> Lowerer<'a> {
                     return Err(self.error(expr.range(), "Async comprehensions are not supported"));
                 }
                 let target = match &gen.target {
-                    ast::Expr::Name(name) => name.id.to_string(),
+                    ast::Expr::Name(name) => self.ident(name.id.as_str()),
                     _ => {
                         return Err(self.error(
                             gen.target.range(),
@@ -463,7 +470,7 @@ impl<'a> Lowerer<'a> {
                     if arg.default.is_some() {
                         return Err(self.error(expr.range(), "Lambda defaults not supported"));
                     }
-                    params.push(arg.def.arg.to_string());
+                    params.push(self.ident(arg.def.arg.as_str()));
                 }
                 ExprKind::Lambda {
                     params,
@@ -482,7 +489,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn assign_target_expr(&self, expr: &ast::Expr) -> Result<Expr, CompileError> {
         let span = Span::from(expr.range());
         let kind = match expr {
-            ast::Expr::Name(name) => ExprKind::Name(name.id.to_string()),
+            ast::Expr::Name(name) => ExprKind::Name(self.ident(name.id.as_str())),
             ast::Expr::Attribute(attr) => ExprKind::Attr {
                 value: Box::new(self.lower_expr(&attr.value)?),
                 attr: attr.attr.to_string(),
