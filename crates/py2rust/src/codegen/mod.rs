@@ -70,6 +70,21 @@ pub(crate) enum ListStorage {
     Shared,
 }
 
+/// Iterator consumption context for optimization decisions.
+///
+/// Determines whether an iterator from Arc<Mutex<Vec<T>>> should acquire
+/// the lock once for the entire iteration (ImmediateConsumption) or per-item
+/// (DeferredCapture) to enable returning/storing the iterator.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub(crate) enum IterContext {
+    /// Iterator is immediately consumed (for loops, enumerate, zip, all/any).
+    /// Can hold the lock for the entire iteration.
+    ImmediateConsumption,
+    /// Iterator may be returned or stored (map/filter result, general expressions).
+    /// Must lock per-iteration to avoid lifetime issues.
+    DeferredCapture,
+}
+
 /// Iterator source plus any setup lines required to keep borrows/locks alive.
 pub(crate) struct IterSource {
     /// Setup statements that must run before the iterator is consumed.
@@ -378,7 +393,9 @@ impl<'a> Codegen<'a> {
                 record_target(target, vars);
             }
             StmtKind::For { target, body, .. } => {
-                vars.insert(target.clone());
+                for name in target.names() {
+                    vars.insert(name.to_string());
+                }
                 for stmt in body {
                     self.collect_module_vars_from_stmt(stmt, vars);
                 }
@@ -478,8 +495,10 @@ impl<'a> Codegen<'a> {
                     record_target(target, locals, globals);
                 }
                 StmtKind::For { target, body, .. } => {
-                    if !globals.contains(target) {
-                        locals.insert(target.clone());
+                    for name in target.names() {
+                        if !globals.contains(name) {
+                            locals.insert(name.to_string());
+                        }
                     }
                     self.collect_scope_locals(body, locals, globals);
                 }

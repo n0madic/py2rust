@@ -117,6 +117,22 @@ impl<'a> Codegen<'a> {
 
     /// Build an iterator source expression that matches Python iteration semantics.
     pub(crate) fn gen_iter_source(&mut self, expr: &Expr) -> Result<IterSource, CompileError> {
+        // Optimize literal lists - generate local Vec without Arc<Mutex<>> overhead.
+        if let ExprKind::List(items) = &expr.kind {
+            if let Some(Type::List(inner)) = expr.ty.as_ref() {
+                let list_expr = self.gen_list_expr_with_storage(expr, items, ListStorage::Local)?;
+                let iter_expr = if self.is_copy_type(inner) {
+                    format!("{}.iter().copied()", list_expr)
+                } else {
+                    format!("{}.iter().cloned()", list_expr)
+                };
+                return Ok(IterSource {
+                    setup: Vec::new(),
+                    expr: iter_expr,
+                });
+            }
+        }
+
         let rendered = self.gen_expr(expr)?;
         let use_owned = match &expr.kind {
             ExprKind::Name(name) => self.is_global(name),
@@ -265,7 +281,15 @@ impl<'a> Codegen<'a> {
     }
 
     /// Build an iterator expression that can be returned or stored safely.
-    pub(crate) fn gen_iter_source_owned(&mut self, expr: &Expr) -> Result<String, CompileError> {
+    ///
+    /// The `context` parameter determines the locking strategy:
+    /// - ImmediateConsumption: Single lock for entire iteration (for loops, builtins)
+    /// - DeferredCapture: Per-iteration locking (when iterator is returned/stored)
+    pub(crate) fn gen_iter_source_owned(
+        &mut self,
+        expr: &Expr,
+        context: IterContext,
+    ) -> Result<String, CompileError> {
         let rendered = self.gen_expr(expr)?;
         match expr.ty.as_ref() {
             // Lists need a guard that lives inside the returned iterator.
@@ -287,6 +311,18 @@ impl<'a> Codegen<'a> {
                         item = item_expr
                     ));
                 }
+
+                // Optimize for immediate consumption: single lock for entire iteration
+                if context == IterContext::ImmediateConsumption {
+                    let iter_method = if self.is_copy_type(inner) {
+                        ".iter().copied()"
+                    } else {
+                        ".iter().cloned()"
+                    };
+                    return Ok(format!("{}.lock().unwrap(){}", rendered, iter_method));
+                }
+
+                // Deferred capture: lock per-iteration to enable storing/returning
                 let tmp = self.new_tmp();
                 let idx = self.new_tmp();
                 let guard = self.new_tmp();
@@ -526,6 +562,22 @@ impl<'a> Codegen<'a> {
                 tmp = tmp,
                 list = list_expr
             ));
+        }
+        // Optimize list(iterable) calls for immediate consumption - no Arc<Mutex> needed.
+        if let ExprKind::Call { func, args } = &expr.kind {
+            if let ExprKind::Name(name) = &func.kind {
+                if name == "list" && args.len() == 1 {
+                    let tmp = self.new_tmp();
+                    let iter_src = self.gen_iter_source(&args[0])?;
+                    let list_expr = format!("({}).collect::<Vec<_>>()", iter_src.expr);
+                    let body = format!(
+                        "{{ let {tmp} = {list}; py_list_str_vec(&{tmp}) }}",
+                        tmp = tmp,
+                        list = list_expr
+                    );
+                    return Ok(iter_src.wrap(body));
+                }
+            }
         }
         let rendered = self.gen_expr(expr)?;
         if matches!(self.list_storage_for_expr(expr), ListStorage::Local) {

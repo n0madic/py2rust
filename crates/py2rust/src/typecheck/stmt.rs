@@ -359,25 +359,80 @@ impl<'a> TypeChecker<'a> {
             StmtKind::For { target, iter, body } => {
                 let iter_ty = self.check_expr(iter, None)?;
                 let item_ty = self.iter_item_type(&iter_ty, stmt.span)?;
-                if self.in_function() && self.is_declared_global(target) {
-                    let global_ty = self.ctx.globals.get(target).cloned().ok_or_else(|| {
-                        self.error(
-                            stmt.span,
-                            format!("global `{target}` is not defined at module scope"),
-                        )
-                    })?;
-                    self.ensure_assignable(&item_ty, &global_ty, stmt.span)?;
-                } else if self.in_function() {
-                    if let Some(existing) = self.lookup_local_var(target) {
-                        self.ensure_assignable(&item_ty, &existing, stmt.span)?;
-                    } else {
-                        self.insert_var(target, item_ty, stmt.span)?;
+
+                // Handle different target patterns.
+                match target {
+                    ForTarget::Name(name) => {
+                        if self.in_function() && self.is_declared_global(name) {
+                            let global_ty =
+                                self.ctx.globals.get(name).cloned().ok_or_else(|| {
+                                    self.error(
+                                        stmt.span,
+                                        format!("global `{name}` is not defined at module scope"),
+                                    )
+                                })?;
+                            self.ensure_assignable(&item_ty, &global_ty, stmt.span)?;
+                        } else if self.in_function() {
+                            if let Some(existing) = self.lookup_local_var(name) {
+                                self.ensure_assignable(&item_ty, &existing, stmt.span)?;
+                            } else {
+                                self.insert_var(name, item_ty, stmt.span)?;
+                            }
+                        } else if let Some(existing) = self.lookup_var(name) {
+                            self.ensure_assignable(&item_ty, &existing, stmt.span)?;
+                        } else {
+                            self.insert_var(name, item_ty, stmt.span)?;
+                        }
                     }
-                } else if let Some(existing) = self.lookup_var(target) {
-                    self.ensure_assignable(&item_ty, &existing, stmt.span)?;
-                } else {
-                    self.insert_var(target, item_ty, stmt.span)?;
+                    ForTarget::Tuple(names) => {
+                        // Extract element types from tuple item type.
+                        let elem_types = if let Type::Tuple(items) = &item_ty {
+                            if items.len() != names.len() {
+                                return Err(self.error(
+                                    stmt.span,
+                                    format!(
+                                        "For loop unpacking expected {} values, got {}",
+                                        names.len(),
+                                        items.len()
+                                    ),
+                                ));
+                            }
+                            items.clone()
+                        } else {
+                            return Err(self.error(
+                                stmt.span,
+                                "For loop tuple unpacking requires iterable of tuples",
+                            ));
+                        };
+
+                        // Bind each name to its corresponding element type.
+                        for (name, ty) in names.iter().zip(elem_types.iter()) {
+                            if self.in_function() && self.is_declared_global(name) {
+                                let global_ty =
+                                    self.ctx.globals.get(name).cloned().ok_or_else(|| {
+                                        self.error(
+                                            stmt.span,
+                                            format!(
+                                                "global `{name}` is not defined at module scope"
+                                            ),
+                                        )
+                                    })?;
+                                self.ensure_assignable(ty, &global_ty, stmt.span)?;
+                            } else if self.in_function() {
+                                if let Some(existing) = self.lookup_local_var(name) {
+                                    self.ensure_assignable(ty, &existing, stmt.span)?;
+                                } else {
+                                    self.insert_var(name, ty.clone(), stmt.span)?;
+                                }
+                            } else if let Some(existing) = self.lookup_var(name) {
+                                self.ensure_assignable(ty, &existing, stmt.span)?;
+                            } else {
+                                self.insert_var(name, ty.clone(), stmt.span)?;
+                            }
+                        }
+                    }
                 }
+
                 for stmt in body {
                     self.check_stmt(stmt, expected_ret)?;
                 }

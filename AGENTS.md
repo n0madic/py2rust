@@ -50,7 +50,15 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 ## Codegen Notes
 - Numeric literals are emitted with suffixes (`i64`/`f64`) to avoid ambiguity.
 - Mixed int/float arithmetic casts ints to f64 when result is float.
-- Tuple concatenation clones elements to avoid move errors.
+- Tuple concatenation:
+  - Literal tuples are inlined directly: `tup + (1, 2)` → `(tup.0.clone(), tup.1.clone(), 1, 2)`
+  - Variables use temporary bindings to avoid redundant clones
+- For loop tuple unpacking generates direct pattern matching:
+  - `for (a, b) in pairs:` → `for (a, b) in pairs.iter().cloned() {`
+  - Supports nested unpacking in HIR via `ForTarget` enum
+- Iterator generation for `Arc<Mutex<Vec<T>>>`:
+  - `IterContext::ImmediateConsumption` holds lock once for entire iteration (for loops, builtins)
+  - `IterContext::DeferredCapture` locks per-iteration when iterator is returned/stored (map/filter results)
 - List/set iteration for builtins uses `.iter().cloned()` to avoid moves.
 - Set ops map to `&set1 | &set2`, `&set1 & &set2`, `&set1 - &set2`, `&set1 ^ &set2`.
 - Exception handling uses `Result<T, PyError>` with closures for try blocks.

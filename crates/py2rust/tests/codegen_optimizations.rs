@@ -13,7 +13,8 @@ print([1, 2, 3])
         "Expected Vec-based list repr"
     );
     assert!(
-        !out.rust.contains("Arc::new(Mutex::new(vec![1i64, 2i64, 3i64])"),
+        !out.rust
+            .contains("Arc::new(Mutex::new(vec![1i64, 2i64, 3i64])"),
         "List literal should not be wrapped in Arc<Mutex<..>>"
     );
 }
@@ -65,7 +66,8 @@ def f() -> int:
         "Expected index-based reverse iterator"
     );
     assert!(
-        !out.rust.contains("iter().rev().cloned().collect::<Vec<_>>()"),
+        !out.rust
+            .contains("iter().rev().cloned().collect::<Vec<_>>()"),
         "Should not collect reversed list into a new Vec"
     );
 }

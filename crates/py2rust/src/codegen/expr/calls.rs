@@ -369,7 +369,7 @@ impl<'a> Codegen<'a> {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "enumerate() expects one argument"));
             }
-            let iter_expr = self.gen_iter_source_owned(&args[0])?;
+            let iter_expr = self.gen_iter_source_owned(&args[0], IterContext::DeferredCapture)?;
             return Ok(Some(format!(
                 "({}).enumerate().map(|(i, v)| (i as i64, v))",
                 iter_expr
@@ -381,20 +381,21 @@ impl<'a> Codegen<'a> {
             }
             if let (ExprKind::Name(left), ExprKind::Name(right)) = (&args[0].kind, &args[1].kind) {
                 if left == right && matches!(args[0].ty.as_ref(), Some(Type::List(_))) {
-                    let iter_expr = self.gen_iter_source_owned(&args[0])?;
+                    let iter_expr =
+                        self.gen_iter_source_owned(&args[0], IterContext::DeferredCapture)?;
                     // Use a single list iterator to avoid double-locking the same list.
                     return Ok(Some(format!("({}).map(|x| (x.clone(), x))", iter_expr)));
                 }
             }
-            let left_iter = self.gen_iter_source_owned(&args[0])?;
-            let right_iter = self.gen_iter_source_owned(&args[1])?;
+            let left_iter = self.gen_iter_source_owned(&args[0], IterContext::DeferredCapture)?;
+            let right_iter = self.gen_iter_source_owned(&args[1], IterContext::DeferredCapture)?;
             return Ok(Some(format!("({}).zip({})", left_iter, right_iter)));
         }
         if name == "map" {
             if args.len() != 2 {
                 return Err(self.error(expr.span, "map() expects two arguments"));
             }
-            let iter_expr = self.gen_iter_source_owned(&args[1])?;
+            let iter_expr = self.gen_iter_source_owned(&args[1], IterContext::DeferredCapture)?;
             let (func_expr, inline_closure) = match &args[0].kind {
                 ExprKind::Name(n) if n == "str" => ("|x| x.to_string()".to_string(), true),
                 ExprKind::Lambda { .. } => (self.gen_expr(&args[0])?, true),
@@ -403,9 +404,10 @@ impl<'a> Codegen<'a> {
             if inline_closure {
                 return Ok(Some(format!("({}).map({})", iter_expr, func_expr)));
             }
+            // Use cleaner function call syntax: func(x) instead of (func)(x)
             let tmp = self.new_tmp();
             return Ok(Some(format!(
-                "{{ let {} = {}; ({}).map(move |x| ({})(x)) }}",
+                "{{ let {} = {}; ({}).map(move |x| {}(x)) }}",
                 tmp, func_expr, iter_expr, tmp
             )));
         }
@@ -413,20 +415,22 @@ impl<'a> Codegen<'a> {
             if args.len() != 2 {
                 return Err(self.error(expr.span, "filter() expects two arguments"));
             }
-            let iter_expr = self.gen_iter_source_owned(&args[1])?;
+            let iter_expr = self.gen_iter_source_owned(&args[1], IterContext::DeferredCapture)?;
+            let item_ty = args[1]
+                .ty
+                .as_ref()
+                .and_then(|ty| self.iter_item_type_hint(ty));
+            let item_is_copy = item_ty
+                .as_ref()
+                .map(|ty| self.is_copy_type(ty))
+                .unwrap_or(false);
+
+            // filter(None, iter) - truthiness filter
             if matches!(args[0].kind, ExprKind::Literal(Literal::None)) {
-                let item_ty = args[1]
-                    .ty
-                    .as_ref()
-                    .and_then(|ty| self.iter_item_type_hint(ty));
                 let truthy = match item_ty.as_ref() {
                     Some(ty) => self.truthy_expr_for_type("x", ty),
                     None => "true".to_string(),
                 };
-                let item_is_copy = item_ty
-                    .as_ref()
-                    .map(|ty| self.is_copy_type(ty))
-                    .unwrap_or(false);
                 let bind = if item_is_copy {
                     "let x = *x;"
                 } else {
@@ -437,23 +441,34 @@ impl<'a> Codegen<'a> {
                     iter_expr, bind, truthy
                 )));
             }
+
+            // filter(lambda, iter) - inline lambda directly
+            if let ExprKind::Lambda { params, body } = &args[0].kind {
+                if params.len() == 1 {
+                    let param = &params[0];
+                    let lambda_body = self.gen_expr(body)?;
+                    let bind = if item_is_copy {
+                        format!("let {} = *x;", param)
+                    } else {
+                        format!("let {} = x.clone();", param)
+                    };
+                    return Ok(Some(format!(
+                        "({}).filter(|x| {{ {} {} }})",
+                        iter_expr, bind, lambda_body
+                    )));
+                }
+            }
+
+            // filter(func, iter) - use predicate function directly
             let pred_expr = self.gen_expr(&args[0])?;
             let tmp = self.new_tmp();
-            let item_ty = args[1]
-                .ty
-                .as_ref()
-                .and_then(|ty| self.iter_item_type_hint(ty));
-            let item_is_copy = item_ty
-                .as_ref()
-                .map(|ty| self.is_copy_type(ty))
-                .unwrap_or(false);
             let bind = if item_is_copy {
                 "let x = *x;"
             } else {
                 "let x = x.clone();"
             };
             return Ok(Some(format!(
-                "{{ let {} = {}; ({}).filter(move |x| {{ {} ({}) (x) }}) }}",
+                "{{ let {} = {}; ({}).filter(move |x| {{ {} {}(x) }}) }}",
                 tmp, pred_expr, iter_expr, bind, tmp
             )));
         }
@@ -573,7 +588,7 @@ impl<'a> Codegen<'a> {
                 };
                 return Ok(Some(body));
             }
-            let iter_expr = self.gen_iter_source_owned(&args[0])?;
+            let iter_expr = self.gen_iter_source_owned(&args[0], IterContext::DeferredCapture)?;
             return Ok(Some(format!("({}).rev()", iter_expr)));
         }
         if name == "max" {

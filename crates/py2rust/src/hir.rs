@@ -160,7 +160,7 @@ pub enum StmtKind {
         body: Vec<Stmt>,
     },
     For {
-        target: String,
+        target: ForTarget,
         iter: Expr,
         body: Vec<Stmt>,
     },
@@ -223,6 +223,37 @@ pub struct ExceptHandler {
     pub name: Option<String>,
     pub body: Vec<Stmt>,
     pub span: Span,
+}
+
+/// For loop iteration target.
+///
+/// Represents what variables are bound on each iteration:
+/// - Name: Simple variable binding (`for x in items`)
+/// - Tuple: Tuple unpacking (`for (a, b) in pairs`)
+#[derive(Debug, Clone)]
+pub enum ForTarget {
+    /// Simple variable name.
+    Name(String),
+    /// Tuple unpacking pattern (supports nesting).
+    Tuple(Vec<String>),
+}
+
+impl ForTarget {
+    /// Get all variable names bound by this target.
+    pub fn names(&self) -> Vec<&str> {
+        match self {
+            ForTarget::Name(name) => vec![name.as_str()],
+            ForTarget::Tuple(names) => names.iter().map(|s| s.as_str()).collect(),
+        }
+    }
+
+    /// Returns true if this target contains the given variable name.
+    pub fn contains_name(&self, search: &str) -> bool {
+        match self {
+            ForTarget::Name(name) => name == search,
+            ForTarget::Tuple(names) => names.iter().any(|n| n == search),
+        }
+    }
 }
 
 /// Targets for assignment operations.

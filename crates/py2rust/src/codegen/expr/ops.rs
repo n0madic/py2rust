@@ -133,23 +133,54 @@ impl<'a> Codegen<'a> {
             if let (Some(Type::Tuple(left_items)), Some(Type::Tuple(right_items))) =
                 (left.ty.as_ref(), right.ty.as_ref())
             {
-                let left_tmp = self.new_tmp();
-                let right_tmp = self.new_tmp();
+                // Optimize tuple concatenation by inlining literal tuple elements.
                 let mut elems = Vec::new();
-                for idx in 0..left_items.len() {
-                    elems.push(format!("{}.{}.clone()", left_tmp, idx));
+                let mut setup = Vec::new();
+                let mut needs_block = false;
+
+                // Generate left elements.
+                if let ExprKind::Tuple(items) = &left.kind {
+                    // Left is a literal tuple - inline its elements directly.
+                    for item in items {
+                        elems.push(self.gen_expr(item)?);
+                    }
+                } else {
+                    // Left is a variable or complex expression - use a temporary.
+                    let left_tmp = self.new_tmp();
+                    let left_expr = self.gen_expr(left)?;
+                    setup.push(format!("let {} = &{}", left_tmp, left_expr));
+                    needs_block = true;
+                    for idx in 0..left_items.len() {
+                        elems.push(format!("{}.{}.clone()", left_tmp, idx));
+                    }
                 }
-                for idx in 0..right_items.len() {
-                    elems.push(format!("{}.{}.clone()", right_tmp, idx));
+
+                // Generate right elements.
+                if let ExprKind::Tuple(items) = &right.kind {
+                    // Right is a literal tuple - inline its elements directly.
+                    for item in items {
+                        elems.push(self.gen_expr(item)?);
+                    }
+                } else {
+                    // Right is a variable or complex expression - use a temporary.
+                    let right_tmp = self.new_tmp();
+                    let right_expr = self.gen_expr(right)?;
+                    setup.push(format!("let {} = &{}", right_tmp, right_expr));
+                    needs_block = true;
+                    for idx in 0..right_items.len() {
+                        elems.push(format!("{}.{}.clone()", right_tmp, idx));
+                    }
                 }
-                return Ok(format!(
-                    "{{ let {} = &{}; let {} = &{}; ({}) }}",
-                    left_tmp,
-                    self.gen_expr(left)?,
-                    right_tmp,
-                    self.gen_expr(right)?,
-                    elems.join(", ")
-                ));
+
+                if needs_block {
+                    return Ok(format!(
+                        "{{ {}; ({}) }}",
+                        setup.join("; "),
+                        elems.join(", ")
+                    ));
+                } else {
+                    return Ok(format!("({})", elems.join(", ")));
+                }
             }
         }
         let op_str = match op {

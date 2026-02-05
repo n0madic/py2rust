@@ -60,7 +60,9 @@ impl<'a> Codegen<'a> {
                         record_target(target, locals);
                     }
                     StmtKind::For { target, body, .. } => {
-                        locals.insert(target.clone());
+                        for name in target.names() {
+                            locals.insert(name.to_string());
+                        }
                         collect_local_defs(body, locals, globals);
                     }
                     StmtKind::If { body, orelse, .. } => {

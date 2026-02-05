@@ -4,6 +4,40 @@ use super::super::util::collect_assign_counts;
 use super::super::*;
 
 impl<'a> Codegen<'a> {
+    /// Generate a Rust pattern for a for loop target.
+    fn gen_for_target(&self, target: &ForTarget) -> String {
+        match target {
+            ForTarget::Name(name) => name.clone(),
+            ForTarget::Tuple(names) => format!("({})", names.join(", ")),
+        }
+    }
+
+    /// Update local variable types for a for loop target.
+    fn insert_for_target_vars(
+        &mut self,
+        target: &ForTarget,
+        item_ty: &Type,
+        scoped_locals: &mut HashMap<String, Type>,
+    ) {
+        match target {
+            ForTarget::Name(name) => {
+                scoped_locals.insert(name.clone(), item_ty.clone());
+            }
+            ForTarget::Tuple(names) => {
+                if let Type::Tuple(elem_types) = item_ty {
+                    for (name, ty) in names.iter().zip(elem_types.iter()) {
+                        scoped_locals.insert(name.clone(), ty.clone());
+                    }
+                } else {
+                    // Fallback: insert Unknown for all names.
+                    for name in names {
+                        scoped_locals.insert(name.clone(), Type::Unknown);
+                    }
+                }
+            }
+        }
+    }
+
     /// Emit default argument and class attribute initializers at the top of main.
     pub(crate) fn emit_pre_main_inits(&mut self, program: &Program) -> Result<(), CompileError> {
         let mut_counts = HashMap::new();
@@ -372,15 +406,12 @@ impl<'a> Codegen<'a> {
                         if self.is_local_list_name(name) {
                             let idx_raw = self.gen_expr(index)?;
                             self.uses.py_index = true;
+                            // Need to capture len first to avoid borrow conflict with mutable index
                             let len_tmp = self.new_tmp();
-                            let idx_tmp = self.new_tmp();
                             self.push_line(&format!("let {} = {}.len();", len_tmp, name));
-                            self.push_line(&format!(
-                                "let {} = {};",
-                                idx_tmp,
-                                self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp))
-                            ));
-                            self.push_line(&format!("{}[{}] = {};", name, idx_tmp, val_expr));
+                            let idx_expr =
+                                self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp));
+                            self.push_line(&format!("{}[{}] = {};", name, idx_expr, val_expr));
                             return Ok(());
                         }
                     }
@@ -776,8 +807,18 @@ impl<'a> Codegen<'a> {
                 self.push_line("}");
             }
             StmtKind::For { target, iter, body } => {
-                if let Some(Type::List(inner)) = iter.ty.as_ref() {
-                    if matches!(self.list_storage_for_expr(iter), ListStorage::Local) {
+                let target_pattern = self.gen_for_target(target);
+                let item_ty = iter
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| self.iter_item_type_hint(ty))
+                    .unwrap_or(Type::Unknown);
+
+                // Optimize local Vec iteration with while loop for simple name targets.
+                if matches!(target, ForTarget::Name(_))
+                    && matches!(iter.ty.as_ref(), Some(Type::List(inner)) if matches!(self.list_storage_for_expr(iter), ListStorage::Local))
+                {
+                    if let Some(Type::List(inner)) = iter.ty.as_ref() {
                         let iter_expr = self.gen_expr(iter)?;
                         let idx = self.new_tmp();
                         let item_expr = if self.is_copy_type(inner) {
@@ -788,16 +829,11 @@ impl<'a> Codegen<'a> {
                         self.push_line(&format!("let mut {}: usize = 0;", idx));
                         self.push_line(&format!("while {} < {}.len() {{", idx, iter_expr));
                         self.indent += 1;
-                        self.push_line(&format!("let {} = {};", target, item_expr));
+                        self.push_line(&format!("let {} = {};", target_pattern, item_expr));
                         self.push_line(&format!("{} += 1;", idx));
                         let saved_locals = self.local_vars.clone();
                         let mut scoped_locals = saved_locals.clone().unwrap_or_default();
-                        let item_ty = iter
-                            .ty
-                            .as_ref()
-                            .and_then(|ty| self.iter_item_type_hint(ty))
-                            .unwrap_or(Type::Unknown);
-                        scoped_locals.insert(target.clone(), item_ty);
+                        self.insert_for_target_vars(target, &item_ty, &mut scoped_locals);
                         self.local_vars = Some(scoped_locals);
                         for stmt in body {
                             self.emit_stmt(stmt, mut_counts)?;
@@ -805,66 +841,34 @@ impl<'a> Codegen<'a> {
                         self.local_vars = saved_locals;
                         self.indent -= 1;
                         self.push_line("}");
-                    } else {
-                        let iter_expr = self.gen_expr(iter)?;
-                        let iter_src = if let Some(Type::Dict(_, _)) = iter.ty.as_ref() {
-                            format!("{}.into_iter().map(|(k, _)| k)", iter_expr)
-                        } else {
-                            let IterSource { setup, expr } = self.gen_iter_source(iter)?;
-                            // Keep list lock guards alive for the duration of the loop body.
-                            for line in setup {
-                                self.push_line(&format!("{};", line));
-                            }
-                            expr
-                        };
-                        self.push_line(&format!("for {} in {} {{", target, iter_src));
-                        self.indent += 1;
-                        let saved_locals = self.local_vars.clone();
-                        let mut scoped_locals = saved_locals.clone().unwrap_or_default();
-                        let item_ty = iter
-                            .ty
-                            .as_ref()
-                            .and_then(|ty| self.iter_item_type_hint(ty))
-                            .unwrap_or(Type::Unknown);
-                        scoped_locals.insert(target.clone(), item_ty);
-                        self.local_vars = Some(scoped_locals);
-                        for stmt in body {
-                            self.emit_stmt(stmt, mut_counts)?;
-                        }
-                        self.local_vars = saved_locals;
-                        self.indent -= 1;
-                        self.push_line("}");
+                        return Ok(());
                     }
-                } else {
-                    let iter_expr = self.gen_expr(iter)?;
-                    let iter_src = if let Some(Type::Dict(_, _)) = iter.ty.as_ref() {
-                        format!("{}.into_iter().map(|(k, _)| k)", iter_expr)
-                    } else {
-                        let IterSource { setup, expr } = self.gen_iter_source(iter)?;
-                        // Keep list lock guards alive for the duration of the loop body.
-                        for line in setup {
-                            self.push_line(&format!("{};", line));
-                        }
-                        expr
-                    };
-                    self.push_line(&format!("for {} in {} {{", target, iter_src));
-                    self.indent += 1;
-                    let saved_locals = self.local_vars.clone();
-                    let mut scoped_locals = saved_locals.clone().unwrap_or_default();
-                    let item_ty = iter
-                        .ty
-                        .as_ref()
-                        .and_then(|ty| self.iter_item_type_hint(ty))
-                        .unwrap_or(Type::Unknown);
-                    scoped_locals.insert(target.clone(), item_ty);
-                    self.local_vars = Some(scoped_locals);
-                    for stmt in body {
-                        self.emit_stmt(stmt, mut_counts)?;
-                    }
-                    self.local_vars = saved_locals;
-                    self.indent -= 1;
-                    self.push_line("}");
                 }
+
+                // General for loop with iterator.
+                let iter_expr = self.gen_expr(iter)?;
+                let iter_src = if let Some(Type::Dict(_, _)) = iter.ty.as_ref() {
+                    format!("{}.into_iter().map(|(k, _)| k)", iter_expr)
+                } else {
+                    let IterSource { setup, expr } = self.gen_iter_source(iter)?;
+                    // Keep list lock guards alive for the duration of the loop body.
+                    for line in setup {
+                        self.push_line(&format!("{};", line));
+                    }
+                    expr
+                };
+                self.push_line(&format!("for {} in {} {{", target_pattern, iter_src));
+                self.indent += 1;
+                let saved_locals = self.local_vars.clone();
+                let mut scoped_locals = saved_locals.clone().unwrap_or_default();
+                self.insert_for_target_vars(target, &item_ty, &mut scoped_locals);
+                self.local_vars = Some(scoped_locals);
+                for stmt in body {
+                    self.emit_stmt(stmt, mut_counts)?;
+                }
+                self.local_vars = saved_locals;
+                self.indent -= 1;
+                self.push_line("}");
             }
             StmtKind::Global { .. } => {}
             StmtKind::Break => self.push_line("break;"),

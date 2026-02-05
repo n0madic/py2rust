@@ -173,34 +173,39 @@ impl<'a> Lowerer<'a> {
             // For loop: for target in iter: body
             // We support:
             // - Simple name target: for x in items:
-            // - Tuple/list unpacking: for (a, b) in pairs:
-            // Unpacking is lowered to assignment on a temporary variable
+            // - Tuple unpacking: for (a, b) in pairs:
             ast::Stmt::For(def) => {
                 let iter = self.lower_expr(&def.iter)?;
-                let mut body_stmts = Vec::new();
-                let target_name = match &*def.target {
-                    ast::Expr::Name(name) => name.id.to_string(),
+                let target = match &*def.target {
+                    ast::Expr::Name(name) => ForTarget::Name(name.id.to_string()),
+                    ast::Expr::Tuple(tuple) => {
+                        // Extract simple names from tuple elements for pattern matching.
+                        let mut names = Vec::new();
+                        for elt in &tuple.elts {
+                            if let ast::Expr::Name(name) = elt {
+                                names.push(name.id.to_string());
+                            } else {
+                                return Err(self.error(
+                                    def.target.range(),
+                                    "For loop tuple unpacking only supports simple names",
+                                ));
+                            }
+                        }
+                        ForTarget::Tuple(names)
+                    }
                     _ => {
-                        let tmp_name = format!("_iter{}_tmp", usize::from(def.range().start()));
-                        let target = self.lower_assign_target(&def.target)?;
-                        let value = Expr {
-                            kind: ExprKind::Name(tmp_name.clone()),
-                            span: Span::from(def.target.range()),
-                            ty: None,
-                        };
-                        // Insert unpacking/assignment at the top of the loop body.
-                        body_stmts.push(Stmt {
-                            kind: StmtKind::Assign { target, value },
-                            span: Span::from(def.target.range()),
-                        });
-                        tmp_name
+                        return Err(self.error(
+                            def.target.range(),
+                            "For loop target must be a name or tuple of names",
+                        ));
                     }
                 };
+                let mut body_stmts = Vec::new();
                 for stmt in &def.body {
                     body_stmts.push(self.lower_stmt(stmt)?);
                 }
                 StmtKind::For {
-                    target: target_name,
+                    target,
                     iter,
                     body: body_stmts,
                 }
