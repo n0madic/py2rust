@@ -147,7 +147,8 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 StmtKind::Expr(expr) => {
-                    if matches!(expr.kind, ExprKind::Literal(Literal::None)) {
+                    // Allow None literals and docstrings (string literals).
+                    if matches!(expr.kind, ExprKind::Literal(Literal::None | Literal::Str(_))) {
                         continue;
                     }
                     let super_args = match &expr.kind {
@@ -260,7 +261,8 @@ impl<'a> Codegen<'a> {
                                     }
                                 }
                                 StmtKind::Expr(expr) => {
-                                    if matches!(expr.kind, ExprKind::Literal(Literal::None)) {
+                                    // Allow None literals and docstrings (string literals).
+                                    if matches!(expr.kind, ExprKind::Literal(Literal::None | Literal::Str(_))) {
                                         continue;
                                     }
                                     return Err(self.error(

@@ -473,6 +473,17 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 ast::Stmt::Pass(_) => {}
+                ast::Stmt::Expr(expr_stmt) => {
+                    // Allow docstrings (string literal expressions) in class bodies.
+                    let is_docstring = matches!(&*expr_stmt.value, ast::Expr::Constant(cons) if matches!(cons.value, ast::Constant::Str(_)));
+                    if !is_docstring {
+                        return Err(self.error(
+                            item.range(),
+                            "Only method definitions are allowed inside classes",
+                        ));
+                    }
+                    // Ignore docstrings.
+                }
                 _ => {
                     return Err(self.error(
                         item.range(),

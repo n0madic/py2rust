@@ -14,17 +14,21 @@ from typing import Any
 # ===== SECTION: Class definitions and __init__ =====
 
 class Point:
+    """A point in 2D space"""
     x: int
     y: int
 
     def __init__(self, x: int, y: int):
+        """Initialize a point with x and y coordinates"""
         self.x = x
         self.y = y
 
     def distance_squared(self) -> int:
+        """Calculate squared distance from origin"""
         return self.x * self.x + self.y * self.y
 
     def add(self, other_x: int, other_y: int) -> int:
+        """Add other coordinates to this point"""
         return self.x + other_x + self.y + other_y
 
 # Create instance via constructor
