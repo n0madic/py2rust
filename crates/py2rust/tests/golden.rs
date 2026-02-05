@@ -28,6 +28,38 @@ def area(s: Shape) -> float:
 }
 
 #[test]
+fn emits_union_method_call() {
+    let source = r#"
+class Circle:
+    r: float
+    def __init__(self, r: float) -> None:
+        self.r = r
+    def describe(self) -> str:
+        return "Circle"
+
+class Rect:
+    w: float
+    h: float
+    def __init__(self, w: float, h: float) -> None:
+        self.w = w
+        self.h = h
+    def describe(self) -> str:
+        return "Rect"
+
+Shape = Circle | Rect
+
+def print_shape(s: Shape) -> str:
+    return s.describe()
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    // Union method calls should generate match expression with ref patterns.
+    assert!(out.rust.contains("match s"));
+    assert!(out.rust.contains("Shape::Circle(ref _x) => _x.describe()"));
+    assert!(out.rust.contains("Shape::Rect(ref _x) => _x.describe()"));
+}
+
+#[test]
 fn emits_iterator() {
     let source = r#"
 class CountTo:

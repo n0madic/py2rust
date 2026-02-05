@@ -367,6 +367,105 @@ finally:
     top_level_finally = True
 assert top_level_finally, "Top-level finally should execute"
 
+# Exception type narrowing - ValueError should not be caught by TypeError handler
+def test_exception_narrowing() -> None:
+    caught_value: bool = False
+    caught_type: bool = False
+
+    # ValueError should only be caught by ValueError handler
+    try:
+        raise ValueError("value error")
+    except TypeError:
+        caught_type = True
+    except ValueError:
+        caught_value = True
+
+    assert caught_value, "ValueError should be caught by ValueError handler"
+    assert not caught_type, "ValueError should NOT be caught by TypeError handler"
+
+    # Reset and test that TypeError is caught correctly
+    caught_value = False
+    caught_type = False
+    try:
+        raise TypeError("type error")
+    except ValueError:
+        caught_value = True
+    except TypeError:
+        caught_type = True
+
+    assert caught_type, "TypeError should be caught by TypeError handler"
+    assert not caught_value, "TypeError should NOT be caught by ValueError handler"
+
+test_exception_narrowing()
+
+# Try/else with multiple variables declared in try block
+def test_try_else_multiple_vars() -> None:
+    else_executed: bool = False
+    try:
+        x: int = 10
+        y: int = 20
+        z: int = 30
+    except ValueError:
+        assert False, "Should not catch"
+    else:
+        # All variables from try block should be accessible in else
+        else_executed = True
+        assert x == 10, "x should be 10"
+        assert y == 20, "y should be 20"
+        assert z == 30, "z should be 30"
+        total: int = x + y + z
+        assert total == 60, "total should be 60"
+
+    assert else_executed, "Else block should execute"
+
+test_try_else_multiple_vars()
+
+# Try/else with computation in try block
+def test_try_else_computation() -> None:
+    result: int = 0
+    try:
+        a: int = 5
+        b: int = a * 2
+        c: int = b + 3
+    except RuntimeError:
+        result = -1
+    else:
+        result = c
+
+    assert result == 13, "Result should be 13 (5*2+3)"
+
+test_try_else_computation()
+
+# Exception propagation with specific types
+def raises_value_error() -> int:
+    raise ValueError("from function")
+
+def raises_type_error() -> int:
+    raise TypeError("from function")
+
+def test_propagation_narrowing() -> None:
+    # Only ValueError should be caught
+    caught: bool = False
+    try:
+        raises_value_error()
+    except ValueError:
+        caught = True
+    except TypeError:
+        assert False, "Should not catch TypeError"
+    assert caught, "Should catch propagated ValueError"
+
+    # Only TypeError should be caught
+    caught = False
+    try:
+        raises_type_error()
+    except ValueError:
+        assert False, "Should not catch ValueError"
+    except TypeError:
+        caught = True
+    assert caught, "Should catch propagated TypeError"
+
+test_propagation_narrowing()
+
 print("All exception tests passed!")
 "#,
         Some("All exception tests passed!"),

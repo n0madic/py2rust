@@ -1,6 +1,6 @@
 // Main statement emission logic.
 
-use super::super::util::collect_assign_counts;
+use super::super::util::{collect_assign_counts, mut_kw_for_name};
 use super::super::*;
 
 impl<'a> Codegen<'a> {
@@ -164,21 +164,13 @@ impl<'a> Codegen<'a> {
 
                 if allow_let && self.local_var_type(name).is_none() {
                     if let Some((expr, elem_ty)) = self.gen_empty_list_with_hint(name, value)? {
-                        let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
-                            "mut "
-                        } else {
-                            ""
-                        };
+                        let mut_kw = mut_kw_for_name(name, mut_counts);
                         self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                         self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
                         return Ok(());
                     }
                     if let Some(expr) = self.gen_list_assignment_expr(name, value)? {
-                        let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
-                            "mut "
-                        } else {
-                            ""
-                        };
+                        let mut_kw = mut_kw_for_name(name, mut_counts);
                         self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                         if let Some(ty) = value.ty.clone() {
                             self.set_local_var_type(name, ty);
@@ -187,11 +179,7 @@ impl<'a> Codegen<'a> {
                     }
                     let expr = self.gen_expr(value)?;
                     let expr = self.maybe_clone_list_expr(expr, value.ty.as_ref(), None);
-                    let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
-                        "mut "
-                    } else {
-                        ""
-                    };
+                    let mut_kw = mut_kw_for_name(name, mut_counts);
                     self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                     if let Some(ty) = value.ty.clone() {
                         self.set_local_var_type(name, ty);
@@ -366,7 +354,7 @@ impl<'a> Codegen<'a> {
                             let len_tmp = self.new_tmp();
                             let idx_tmp = self.new_tmp();
                             self.push_line(&format!(
-                                "let mut {} = {}.lock().unwrap();",
+                                "let mut {} = {}.lock().expect(\"list mutex poisoned\");",
                                 inner, guard
                             ));
                             self.push_line(&format!("let {} = {}.len();", len_tmp, inner));
@@ -424,7 +412,7 @@ impl<'a> Codegen<'a> {
                     self.push_line("{");
                     self.indent += 1;
                     self.push_line(&format!(
-                        "let mut {} = {}.lock().unwrap();",
+                        "let mut {} = {}.lock().expect(\"list mutex poisoned\");",
                         guard, cont_expr
                     ));
                     self.push_line(&format!("let {} = {}.len();", len_tmp, guard));
@@ -575,11 +563,7 @@ impl<'a> Codegen<'a> {
                 }
                 if ann.is_none() {
                     if let Some((expr, elem_ty)) = self.gen_empty_list_with_hint(name, value)? {
-                        let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
-                            "mut "
-                        } else {
-                            ""
-                        };
+                        let mut_kw = mut_kw_for_name(name, mut_counts);
                         self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                         self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
                         return Ok(());
@@ -597,11 +581,7 @@ impl<'a> Codegen<'a> {
                                 None
                             };
                             let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                            let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
-                                "mut "
-                            } else {
-                                ""
-                            };
+                            let mut_kw = mut_kw_for_name(name, mut_counts);
                             self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                             if let Some(ty) = expected.or_else(|| value.ty.clone()) {
                                 self.set_local_var_type(name, ty);
@@ -674,11 +654,7 @@ impl<'a> Codegen<'a> {
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                     self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref())
                 };
-                let mut_kw = if mut_counts.get(name).copied().unwrap_or(0) > 1 {
-                    "mut "
-                } else {
-                    ""
-                };
+                let mut_kw = mut_kw_for_name(name, mut_counts);
                 if ann.is_some() {
                     let ty = declared.expect("resolved above");
                     let storage = self.list_storage_for_name(name);
@@ -750,11 +726,7 @@ impl<'a> Codegen<'a> {
                             let test_expr = self.gen_expr(test)?;
                             let left_expr = self.gen_expr(&val_left)?;
                             let right_expr = self.gen_expr(&val_right)?;
-                            let mut_kw = if mut_counts.get(&name_left).copied().unwrap_or(0) > 1 {
-                                "mut "
-                            } else {
-                                ""
-                            };
+                            let mut_kw = mut_kw_for_name(&name_left, mut_counts);
                             let ann = ann_left.or(ann_right);
                             if let Some(ann) = ann {
                                 let ty = self.resolve_type_ref(&ann, stmt.span)?;

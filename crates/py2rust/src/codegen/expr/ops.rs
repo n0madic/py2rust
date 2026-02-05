@@ -252,7 +252,10 @@ impl<'a> Codegen<'a> {
                     if matches!(self.list_storage_for_expr(right), ListStorage::Local) {
                         format!("{}.contains(&{})", right_expr, left_expr)
                     } else {
-                        format!("{}.lock().unwrap().contains(&{})", right_expr, left_expr)
+                        format!(
+                            "{}.lock().expect(\"list mutex poisoned\").contains(&{})",
+                            right_expr, left_expr
+                        )
                     }
                 }
                 Some(Type::Set(_)) | Some(Type::Slice(_)) => {
@@ -361,7 +364,7 @@ impl<'a> Codegen<'a> {
                     let right_tmp = self.new_tmp();
                     let right_guard = self.new_tmp();
                     format!(
-                        "{{ let {right_tmp} = {right_expr}.clone(); let {right_guard} = {right_tmp}.lock().unwrap(); {left}.iter().eq({right_guard}.iter()) }}",
+                        "{{ let {right_tmp} = {right_expr}.clone(); let {right_guard} = {right_tmp}.lock().expect(\"list mutex poisoned\"); {left}.iter().eq({right_guard}.iter()) }}",
                         right_tmp = right_tmp,
                         right_guard = right_guard,
                         right_expr = right_expr,
@@ -371,7 +374,7 @@ impl<'a> Codegen<'a> {
                     let left_tmp = self.new_tmp();
                     let left_guard = self.new_tmp();
                     format!(
-                        "{{ let {left_tmp} = {left_expr}.clone(); let {left_guard} = {left_tmp}.lock().unwrap(); {left_guard}.iter().eq({right}.iter()) }}",
+                        "{{ let {left_tmp} = {left_expr}.clone(); let {left_guard} = {left_tmp}.lock().expect(\"list mutex poisoned\"); {left_guard}.iter().eq({right}.iter()) }}",
                         left_tmp = left_tmp,
                         left_guard = left_guard,
                         left_expr = left_expr,
@@ -384,7 +387,7 @@ impl<'a> Codegen<'a> {
                     let right_guard = self.new_tmp();
                     format!(
                         // Clone the Arcs to avoid moving list values out of scope.
-                        "{{ let {left_tmp} = {left_expr}.clone(); let {right_tmp} = {right_expr}.clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().unwrap(); let {right_guard} = {right_tmp}.lock().unwrap(); {left_guard}.iter().eq({right_guard}.iter()) }} }}",
+                        "{{ let {left_tmp} = {left_expr}.clone(); let {right_tmp} = {right_expr}.clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().expect(\"list mutex poisoned\"); let {right_guard} = {right_tmp}.lock().expect(\"list mutex poisoned\"); {left_guard}.iter().eq({right_guard}.iter()) }} }}",
                         left_tmp = left_tmp,
                         right_tmp = right_tmp,
                         left_guard = left_guard,

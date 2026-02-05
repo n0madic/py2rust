@@ -550,3 +550,128 @@ print("@classmethod tests passed!")
         Some("@classmethod tests passed!"),
     );
 }
+
+#[test]
+fn runtime_union_method_calls() {
+    run_py(
+        "union_methods",
+        r#"
+# Union method calls - methods shared across all variants
+
+class CircleU:
+    r: float
+    def __init__(self, r: float) -> None:
+        self.r = r
+    def describe(self) -> str:
+        return "CircleU"
+    def area(self) -> float:
+        return 3.14 * self.r * self.r
+    def scale(self, factor: float) -> float:
+        return self.area() * factor
+
+class RectU:
+    w: float
+    h: float
+    def __init__(self, w: float, h: float) -> None:
+        self.w = w
+        self.h = h
+    def describe(self) -> str:
+        return "RectU"
+    def area(self) -> float:
+        return self.w * self.h
+    def scale(self, factor: float) -> float:
+        return self.area() * factor
+
+ShapeU = CircleU | RectU
+
+def get_description(s: ShapeU) -> str:
+    return s.describe()
+
+def get_area(s: ShapeU) -> float:
+    return s.area()
+
+# Test with CircleU variant
+c: ShapeU = CircleU(2.0)
+assert get_description(c) == "CircleU", "CircleU description"
+assert get_area(c) == 12.56, "CircleU area"
+
+# Test with RectU variant
+r: ShapeU = RectU(3.0, 4.0)
+assert get_description(r) == "RectU", "RectU description"
+assert get_area(r) == 12.0, "RectU area"
+
+# Test method call in f-string
+def format_shape(s: ShapeU) -> str:
+    a: float = s.area()
+    return f"{s.describe()}: {a}"
+
+assert format_shape(c) == "CircleU: 12.56", "f-string with CircleU method"
+assert format_shape(r) == "RectU: 12", "f-string with RectU method"
+
+# Test direct method calls (not through function)
+circle_direct: ShapeU = CircleU(5.0)
+rect_direct: ShapeU = RectU(2.0, 3.0)
+assert circle_direct.describe() == "CircleU", "direct CircleU method"
+assert rect_direct.describe() == "RectU", "direct RectU method"
+assert circle_direct.area() == 78.5, "direct CircleU area"
+assert rect_direct.area() == 6.0, "direct RectU area"
+
+# Test methods with parameters
+def scale_shape(s: ShapeU, f: float) -> float:
+    return s.scale(f)
+
+c_scale: ShapeU = CircleU(2.0)
+r_scale: ShapeU = RectU(3.0, 4.0)
+assert scale_shape(c_scale, 2.0) == 25.12, "CircleU scale via function"
+assert scale_shape(r_scale, 3.0) == 36.0, "RectU scale via function"
+assert c_scale.scale(0.5) == 6.28, "CircleU scale direct"
+assert r_scale.scale(0.5) == 6.0, "RectU scale direct"
+
+# Test methods returning different types
+class StatusOk:
+    code: int
+    def __init__(self, c: int) -> None:
+        self.code = c
+    def is_success(self) -> bool:
+        return True
+    def get_code(self) -> int:
+        return self.code
+
+class StatusErr:
+    code: int
+    def __init__(self, c: int) -> None:
+        self.code = c
+    def is_success(self) -> bool:
+        return False
+    def get_code(self) -> int:
+        return self.code
+
+Status = StatusOk | StatusErr
+
+ok: Status = StatusOk(200)
+err: Status = StatusErr(404)
+
+assert ok.is_success() == True, "StatusOk is_success"
+assert err.is_success() == False, "StatusErr is_success"
+assert ok.get_code() == 200, "StatusOk get_code"
+assert err.get_code() == 404, "StatusErr get_code"
+
+# Test method calls in expressions
+total: int = ok.get_code() + err.get_code()
+assert total == 604, "Union method in expression"
+
+# Test method calls in conditionals
+def check_status(s: Status) -> str:
+    if s.is_success():
+        return "OK"
+    else:
+        return "ERROR"
+
+assert check_status(ok) == "OK", "StatusOk in conditional"
+assert check_status(err) == "ERROR", "StatusErr in conditional"
+
+print("Union method tests passed!")
+"#,
+        Some("Union method tests passed!"),
+    );
+}

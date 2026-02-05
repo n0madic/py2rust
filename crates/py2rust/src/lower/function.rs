@@ -383,9 +383,11 @@ impl<'a> Lowerer<'a> {
                     }
                     let func = self.lower_method(def, class.name.as_ref())?;
                     if is_property_setter {
+                        // Use as_ref().map() to avoid cloning until needed.
                         let prop_name = property_name
-                            .clone()
-                            .expect("setter must include property name");
+                            .as_ref()
+                            .expect("setter must include property name")
+                            .clone();
                         let setter_name = format!("__set_{}", prop_name);
                         let mut setter_func = func;
                         setter_func.name = setter_name.clone();
@@ -400,7 +402,10 @@ impl<'a> Lowerer<'a> {
                         continue;
                     }
                     if is_property {
-                        let prop_name = property_name.clone().expect("property must have a name");
+                        let prop_name = property_name
+                            .as_ref()
+                            .expect("property must have a name")
+                            .clone();
                         properties.push(PropertyDef {
                             name: prop_name,
                             getter: func.name.clone(),

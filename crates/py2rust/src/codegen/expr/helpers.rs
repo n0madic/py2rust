@@ -48,12 +48,14 @@ impl<'a> Codegen<'a> {
     ) -> Result<String, CompileError> {
         let mut parts = Vec::new();
         for (idx, arg) in args.iter().enumerate() {
-            let rendered = if let Some(param_ty) = param_types.get(idx) {
-                self.gen_expr_with_expected(arg, Some(param_ty))?
+            // Cache the parameter type lookup to avoid duplicate .get() calls.
+            let param_ty = param_types.get(idx);
+            let rendered = if let Some(ty) = param_ty {
+                self.gen_expr_with_expected(arg, Some(ty))?
             } else {
                 self.gen_expr(arg)?
             };
-            if let Some(param_ty) = param_types.get(idx) {
+            if let Some(param_ty) = param_ty {
                 // Lists are shared (Arc<Mutex<...>>); clone to avoid moves.
                 if matches!(param_ty, Type::List(_)) {
                     parts.push(format!("{}.clone()", rendered));
@@ -168,7 +170,10 @@ impl<'a> Codegen<'a> {
                     // Clone the Arc to avoid moving out of the source expression.
                     setup: vec![
                         format!("let {} = {}.clone()", tmp, rendered),
-                        format!("let {} = {}.lock().unwrap()", guard, tmp),
+                        format!(
+                            "let {} = {}.lock().expect(\"list mutex poisoned\")",
+                            guard, tmp
+                        ),
                     ],
                     expr: iter_expr,
                 })
@@ -328,7 +333,10 @@ impl<'a> Codegen<'a> {
                     } else {
                         ".iter().cloned()"
                     };
-                    return Ok(format!("{}.lock().unwrap(){}", rendered, iter_method));
+                    return Ok(format!(
+                        "{}.lock().expect(\"list mutex poisoned\"){}",
+                        rendered, iter_method
+                    ));
                 }
 
                 // Deferred capture: lock per-iteration to enable storing/returning
@@ -342,7 +350,7 @@ impl<'a> Codegen<'a> {
                 };
                 // Lock the list per-iteration to avoid holding a guard across expression boundaries.
                 Ok(format!(
-                    "{{ let {tmp} = {expr}.clone(); let mut {idx}: usize = 0; std::iter::from_fn(move || {{ let {guard} = {tmp}.lock().unwrap(); if {idx} < {guard}.len() {{ let item = {item}; {idx} += 1; Some(item) }} else {{ None }} }}) }}",
+                    "{{ let {tmp} = {expr}.clone(); let mut {idx}: usize = 0; std::iter::from_fn(move || {{ let {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); if {idx} < {guard}.len() {{ let item = {item}; {idx} += 1; Some(item) }} else {{ None }} }}) }}",
                     tmp = tmp,
                     expr = rendered,
                     guard = guard,
@@ -537,7 +545,10 @@ impl<'a> Codegen<'a> {
             if matches!(self.list_storage_for_expr(expr), ListStorage::Local) {
                 return Ok(format!("&{}", rendered));
             }
-            return Ok(format!("{}.lock().unwrap()", rendered));
+            return Ok(format!(
+                "{}.lock().expect(\"list mutex poisoned\")",
+                rendered
+            ));
         }
         Ok(rendered)
     }

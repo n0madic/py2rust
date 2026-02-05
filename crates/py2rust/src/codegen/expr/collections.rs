@@ -183,7 +183,7 @@ impl<'a> Codegen<'a> {
                 let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
                     format!("&{}", base)
                 } else {
-                    format!("&{}.lock().unwrap()", base)
+                    format!("&{}.lock().expect(\"list mutex poisoned\")", base)
                 };
                 return Ok(self.wrap_result(format!("py_list_get({}, {})", list_ref, idx_expr)));
             }
@@ -339,7 +339,7 @@ impl<'a> Codegen<'a> {
                         if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
                             format!("&{}", base)
                         } else {
-                            format!("&{}.lock().unwrap()", base)
+                            format!("&{}.lock().expect(\"list mutex poisoned\")", base)
                         };
                     self.wrap_result(format!(
                         "py_list_slice_step({}, {}, {}, {})",
@@ -362,7 +362,7 @@ impl<'a> Codegen<'a> {
                 let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
                     format!("&{}", base)
                 } else {
-                    format!("&{}.lock().unwrap()", base)
+                    format!("&{}.lock().expect(\"list mutex poisoned\")", base)
                 };
                 self.wrap_result(format!(
                     "py_list_slice_step({}, {}, {}, 1i64)",

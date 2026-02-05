@@ -990,9 +990,9 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Ok(Type::Str);
                 }
-                if let Type::Custom(class_name) = obj_ty {
+                if let Type::Custom(ref class_name) = obj_ty {
                     let class_info =
-                        self.ctx.classes.get(&class_name).ok_or_else(|| {
+                        self.ctx.classes.get(class_name).ok_or_else(|| {
                             self.error(span, format!("Unknown class: {class_name}"))
                         })?;
                     let sig = class_info.methods.get(attr).cloned();
@@ -1010,7 +1010,7 @@ impl<'a> TypeChecker<'a> {
                                 self.check_call_args(&sig, args, span, true)?;
                             }
                             MethodKind::Instance => {
-                                if matches!(&value.kind, ExprKind::Name(n) if n == &class_name) {
+                                if matches!(&value.kind, ExprKind::Name(n) if n == class_name) {
                                     return Err(
                                         self.error(span, "Instance methods require an instance")
                                     );
@@ -1019,6 +1019,42 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         return Ok(sig.ret.clone());
+                    }
+                }
+                // Handle method calls on Union types by checking all variants have the method.
+                if let Type::Union(ref union_name) = obj_ty {
+                    if let Some(union_info) = self.ctx.unions.get(union_name) {
+                        // Find the method signature from the first variant that has it.
+                        let mut found_sig: Option<FunctionSig> = None;
+                        let mut all_have_method = true;
+                        for variant in &union_info.variants {
+                            if let Some(class_info) = self.ctx.classes.get(variant) {
+                                if let Some(sig) = class_info.methods.get(attr) {
+                                    if found_sig.is_none() {
+                                        found_sig = Some(sig.clone());
+                                    }
+                                } else {
+                                    all_have_method = false;
+                                    break;
+                                }
+                            } else {
+                                all_have_method = false;
+                                break;
+                            }
+                        }
+                        if all_have_method {
+                            if let Some(sig) = found_sig {
+                                self.check_call_args(&sig, args, span, true)?;
+                                return Ok(sig.ret.clone());
+                            }
+                        }
+                        return Err(self.error(
+                            span,
+                            format!(
+                                "Method '{}' not available on all variants of union '{}'",
+                                attr, union_name
+                            ),
+                        ));
                     }
                 }
                 Err(self.error(span, "Unsupported method call"))
