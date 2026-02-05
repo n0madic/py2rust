@@ -13,6 +13,8 @@ mod builtins;
 mod classes;
 #[path = "runtime/collections.rs"]
 mod collections;
+#[path = "runtime/comprehensions.rs"]
+mod comprehensions;
 #[path = "runtime/control_flow.rs"]
 mod control_flow;
 #[path = "runtime/exceptions.rs"]

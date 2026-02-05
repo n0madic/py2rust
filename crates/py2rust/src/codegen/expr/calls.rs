@@ -369,7 +369,9 @@ impl<'a> Codegen<'a> {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "enumerate() expects one argument"));
             }
-            let iter_expr = self.gen_iter_source_owned(&args[0], IterContext::DeferredCapture)?;
+            // enumerate() consumes the iterator immediately, so use single-lock pattern
+            let iter_expr =
+                self.gen_iter_source_owned(&args[0], IterContext::ImmediateConsumption)?;
             return Ok(Some(format!(
                 "({}).enumerate().map(|(i, v)| (i as i64, v))",
                 iter_expr

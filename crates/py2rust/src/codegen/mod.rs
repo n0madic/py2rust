@@ -60,13 +60,28 @@ pub(crate) struct Uses {
 
 /// Storage strategy for list values in generated Rust.
 ///
-/// Local lists are represented as Vec<T> for zero-cost mutation,
-/// while shared lists use Arc<Mutex<Vec<T>>> to preserve Python aliasing.
+/// Local lists are represented as `Vec<T>` for zero-cost mutation,
+/// while shared lists use `Arc<Mutex<Vec<T>>>` to preserve Python aliasing.
+///
+/// # Decision Strategy
+///
+/// A list is stored locally (`Vec<T>`) when:
+/// - It's declared and used only within a single function scope
+/// - It's not passed to functions that might store a reference
+/// - It's not returned from functions
+/// - It's not assigned to another variable that could alias it
+///
+/// A list uses shared storage (`Arc<Mutex<Vec<T>>>`) when:
+/// - It's a global variable (accessed from multiple scopes)
+/// - It escapes via return, function argument, or aliased assignment
+/// - The escape analysis cannot prove it's safe to use local storage
+///
+/// See `ListStorageAnalyzer` in `analysis.rs` for the escape analysis implementation.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) enum ListStorage {
-    /// Non-escaping list that can stay as Vec<T>.
+    /// Non-escaping list stored as `Vec<T>`. Zero mutex overhead.
     Local,
-    /// Potentially shared list that must use Arc<Mutex<Vec<T>>>.
+    /// Potentially shared list stored as `Arc<Mutex<Vec<T>>>`.
     Shared,
 }
 

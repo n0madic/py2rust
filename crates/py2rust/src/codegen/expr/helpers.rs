@@ -282,9 +282,18 @@ impl<'a> Codegen<'a> {
 
     /// Build an iterator expression that can be returned or stored safely.
     ///
-    /// The `context` parameter determines the locking strategy:
-    /// - ImmediateConsumption: Single lock for entire iteration (for loops, builtins)
-    /// - DeferredCapture: Per-iteration locking (when iterator is returned/stored)
+    /// The `context` parameter determines the locking strategy for `Arc<Mutex<Vec<T>>>`:
+    /// - `ImmediateConsumption`: Holds the mutex lock for the entire iteration.
+    ///   Use for: for loops, enumerate, zip, all/any, sum, and other builtins that
+    ///   consume the iterator immediately in the same scope.
+    ///   Generated pattern: `list.lock().unwrap().iter().cloned()`
+    /// - `DeferredCapture`: Acquires/releases the lock on each iteration.
+    ///   Use for: map/filter results that may be returned or stored, or when the
+    ///   iterator escapes the current scope.
+    ///   Generated pattern: `std::iter::from_fn(move || { list.lock().unwrap().get(i)... })`
+    ///
+    /// For `ListStorage::Local` (non-escaping Vec<T>), the context is ignored and
+    /// a simple index-based iterator is generated without mutex overhead.
     pub(crate) fn gen_iter_source_owned(
         &mut self,
         expr: &Expr,

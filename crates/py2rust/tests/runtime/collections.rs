@@ -641,12 +641,82 @@ def test_dicts() -> None:
     assert copied["a"] == 10
     assert copied["b"] == 2
 
+# For-loop tuple unpacking
+def test_for_tuple_unpacking() -> None:
+    # Basic tuple unpacking in for loop
+    pairs: list[tuple[int, int]] = [(1, 2), (3, 4), (5, 6)]
+    total_a: int = 0
+    total_b: int = 0
+    for a, b in pairs:
+        total_a = total_a + a
+        total_b = total_b + b
+    assert total_a == 9   # 1+3+5
+    assert total_b == 12  # 2+4+6
+
+    # Tuple unpacking with enumerate
+    indexed: list[tuple[int, str]] = []
+    words: list[str] = ["foo", "bar", "baz"]
+    for i, word in enumerate(words):
+        indexed.append((i, word))
+    assert indexed == [(0, "foo"), (1, "bar"), (2, "baz")]
+
+    # Triple unpacking
+    triples: list[tuple[int, int, int]] = [(1, 2, 3), (4, 5, 6)]
+    sum_first: int = 0
+    sum_second: int = 0
+    sum_third: int = 0
+    for x, y, z in triples:
+        sum_first = sum_first + x
+        sum_second = sum_second + y
+        sum_third = sum_third + z
+    assert sum_first == 5
+    assert sum_second == 7
+    assert sum_third == 9
+
+    # Mixed type tuple unpacking
+    mixed: list[tuple[str, int]] = [("a", 1), ("b", 2), ("c", 3)]
+    keys: list[str] = []
+    vals: list[int] = []
+    for k, v in mixed:
+        keys.append(k)
+        vals.append(v)
+    assert keys == ["a", "b", "c"]
+    assert vals == [1, 2, 3]
+
+    # Empty iteration
+    empty_pairs: list[tuple[int, int]] = []
+    count: int = 0
+    for p, q in empty_pairs:
+        count = count + 1
+    assert count == 0
+
+    # Single element iteration
+    single_pair: list[tuple[int, int]] = [(10, 20)]
+    for s1, s2 in single_pair:
+        assert s1 == 10
+        assert s2 == 20
+
+    # Build collection with tuple unpacking
+    source: list[tuple[int, int]] = [(1, 10), (2, 20), (3, 30)]
+    products: list[int] = []
+    for m, n in source:
+        products.append(m * n)
+    assert products == [10, 40, 90]
+
+    # Tuple unpacking with condition
+    filtered_sum: int = 0
+    for aa, bb in [(1, 2), (3, 4), (5, 6), (7, 8)]:
+        if aa > 2:
+            filtered_sum = filtered_sum + bb
+    assert filtered_sum == 18  # 4+6+8
+
 # Run all tests
 test_lists()
 test_strings()
 test_tuples()
 test_printing()
 test_dicts()
+test_for_tuple_unpacking()
 
 print("All collection tests passed!")
 "#,
