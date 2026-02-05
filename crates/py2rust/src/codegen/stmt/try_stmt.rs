@@ -62,9 +62,17 @@ impl<'a> Codegen<'a> {
         }
 
         // Generate try body as closure returning Result.
+        // Value-returning try blocks are emitted in one of two modes:
+        // - `Result<T, PyError>` when every non-exceptional path returns a value.
+        // - `Result<Option<T>, PyError>` when fall-through is possible.
+        let try_returns_option = has_value_return && !self.try_body_always_returns_value(body);
         let result_type = if let Some(ref ty) = try_return_type {
             let ty_str = self.rust_type(ty);
-            format!("Result<{}, PyError>", ty_str)
+            if try_returns_option {
+                format!("Result<Option<{}>, PyError>", ty_str)
+            } else {
+                format!("Result<{}, PyError>", ty_str)
+            }
         } else {
             "Result<(), PyError>".to_string()
         };
@@ -74,7 +82,9 @@ impl<'a> Codegen<'a> {
 
         // Track that we're inside a try block with value return.
         let prev_try_return_type = self.try_block_return_type.take();
+        let prev_try_returns_option = self.try_block_returns_option;
         self.try_block_return_type = try_return_type.clone();
+        self.try_block_returns_option = try_returns_option;
 
         // Emit try body, but if we have else block, wrap Let statements.
         if has_orelse && !try_vars.is_empty() {
@@ -89,11 +99,14 @@ impl<'a> Codegen<'a> {
 
         // Restore previous try return type.
         self.try_block_return_type = prev_try_return_type;
+        self.try_block_returns_option = prev_try_returns_option;
 
         if has_value_return {
-            // If try has value returns, we need unreachable at the end
-            // (since all paths should return).
-            self.push_line("unreachable!()");
+            if try_returns_option {
+                self.push_line("Ok(None)");
+            } else {
+                self.push_line("unreachable!()");
+            }
         } else {
             self.push_line("Ok(())");
         }
@@ -105,13 +118,47 @@ impl<'a> Codegen<'a> {
             self.push_line("match _try_result {");
             self.indent += 1;
 
-            if has_value_return {
+            if has_value_return && !try_returns_option {
+                self.push_line("Ok(_v) => {");
+                self.indent += 1;
                 // If the enclosing function throws, wrap in Ok; otherwise return directly.
                 if in_throwing_fn {
-                    self.push_line("Ok(_v) => return Ok(_v),");
+                    self.push_line("return Ok(_v);");
                 } else {
-                    self.push_line("Ok(_v) => return _v,");
+                    self.push_line("return _v;");
                 }
+                self.indent -= 1;
+                self.push_line("}");
+            } else if has_value_return {
+                self.push_line("Ok(Some(_v)) => {");
+                self.indent += 1;
+                // If the enclosing function throws, wrap in Ok; otherwise return directly.
+                if in_throwing_fn {
+                    self.push_line("return Ok(_v);");
+                } else {
+                    self.push_line("return _v;");
+                }
+                self.indent -= 1;
+                self.push_line("}");
+                self.push_line("Ok(None) => {");
+                self.indent += 1;
+
+                // Unwrap variables from try block for use in else.
+                if has_orelse && !try_vars.is_empty() {
+                    for (name, ty) in &try_vars {
+                        let ty_str = self.rust_type(ty);
+                        self.push_line(&format!(
+                            "let {}: {} = _try_{}.expect(\"try block did not initialize {}\");",
+                            name, ty_str, name, name
+                        ));
+                    }
+                }
+
+                for stmt in orelse {
+                    self.emit_stmt(stmt, mut_counts)?;
+                }
+                self.indent -= 1;
+                self.push_line("}");
             } else {
                 self.push_line("Ok(_) => {");
                 self.indent += 1;
@@ -154,7 +201,35 @@ impl<'a> Codegen<'a> {
         } else {
             // No exception handlers.
             if has_value_return {
-                if in_throwing_fn {
+                if try_returns_option {
+                    self.push_line("match _try_result {");
+                    self.indent += 1;
+                    if in_throwing_fn {
+                        self.push_line("Ok(Some(_v)) => return Ok(_v),");
+                        self.push_line("Err(e) => return Err(e),");
+                    } else {
+                        self.push_line("Ok(Some(_v)) => return _v,");
+                        self.push_line("Err(e) => panic!(\"Unhandled exception: {}\", e),");
+                    }
+                    self.push_line("Ok(None) => {}");
+                    self.indent -= 1;
+                    self.push_line("}");
+
+                    // Unwrap variables from try block for use in else.
+                    if has_orelse && !try_vars.is_empty() {
+                        for (name, ty) in &try_vars {
+                            let ty_str = self.rust_type(ty);
+                            self.push_line(&format!(
+                                "let {}: {} = _try_{}.expect(\"try block did not initialize {}\");",
+                                name, ty_str, name, name
+                            ));
+                        }
+                    }
+
+                    for stmt in orelse {
+                        self.emit_stmt(stmt, mut_counts)?;
+                    }
+                } else if in_throwing_fn {
                     self.push_line("return _try_result;");
                 } else {
                     self.push_line(
@@ -225,6 +300,35 @@ impl<'a> Codegen<'a> {
             }
         }
         None
+    }
+
+    /// Return true when control flow cannot leave this block without returning a value.
+    fn try_body_always_returns_value(&self, stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            if self.stmt_always_returns_value(stmt) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Conservative all-paths-return analysis for value-returning statements.
+    fn stmt_always_returns_value(&self, stmt: &Stmt) -> bool {
+        match &stmt.kind {
+            StmtKind::Return { value: Some(_) } => true,
+            StmtKind::If { body, orelse, .. } => {
+                !orelse.is_empty()
+                    && self.try_body_always_returns_value(body)
+                    && self.try_body_always_returns_value(orelse)
+            }
+            StmtKind::Match { cases, .. } => {
+                !cases.is_empty()
+                    && cases
+                        .iter()
+                        .all(|case| self.try_body_always_returns_value(&case.body))
+            }
+            _ => false,
+        }
     }
 
     /// Collect variables declared in try block (Let statements).

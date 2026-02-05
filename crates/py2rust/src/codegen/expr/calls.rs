@@ -431,6 +431,9 @@ impl<'a> Codegen<'a> {
         }
 
         lines.push(format!("let mut {pos_idx}: usize = 0;", pos_idx = pos_idx));
+        // Call-site unpacking can fail at runtime (missing args, unknown kwargs, etc.),
+        // so this path always materializes a `Result<_, PyError>` binder.
+        self.uses.py_error = true;
         let mut call_args = Vec::new();
         let mut has_vararg = false;
         let mut has_varkw = false;
@@ -445,7 +448,10 @@ impl<'a> Codegen<'a> {
                 };
                 self.gen_expr_with_expected(&default_expr, sig.params.get(idx))?
             } else {
-                format!("panic!(\"Missing required argument `{}`\")", param.name)
+                format!(
+                    "return Err(PyError::TypeError(\"Missing required argument `{}`\".to_string()))",
+                    param.name
+                )
             };
 
             match param.kind {
@@ -497,26 +503,32 @@ impl<'a> Codegen<'a> {
 
         if !has_vararg {
             lines.push(format!(
-                "if {pos_idx} < {pos_vec}.len() {{ panic!(\"Argument count mismatch\"); }}",
+                "if {pos_idx} < {pos_vec}.len() {{ return Err(PyError::TypeError(\"Argument count mismatch\".to_string())); }}",
                 pos_idx = pos_idx,
                 pos_vec = pos_vec
             ));
         }
         if !has_varkw {
             lines.push(format!(
-                "if !{kw_map}.is_empty() {{ panic!(\"Unknown keyword argument\"); }}",
+                "if !{kw_map}.is_empty() {{ return Err(PyError::TypeError(\"Unknown keyword argument\".to_string())); }}",
                 kw_map = kw_map
             ));
         }
 
         let call = format!("{}({})", func_name, call_args.join(", "));
-        let result_expr = if sig.can_throw {
+        let call_value = if sig.can_throw {
             format!("({call}?)", call = call)
         } else {
             call
         };
-        lines.push(result_expr);
-        Ok(format!("{{ {} }}", lines.join(" ")))
+        lines.push(format!("Ok({call_value})", call_value = call_value));
+        let unpack_result = self.new_tmp();
+        Ok(format!(
+            "{{ let {unpack_result} = (|| -> Result<_, PyError> {{ {body} }})(); {wrapped} }}",
+            unpack_result = unpack_result,
+            body = lines.join(" "),
+            wrapped = self.wrap_result(unpack_result.clone())
+        ))
     }
 
     /// Convert a kwargs expression into owned key/value pairs.
@@ -2060,7 +2072,8 @@ impl<'a> Codegen<'a> {
                     return Err(self.error(value.span, "list.sort() expects no arguments"));
                 }
                 let sort_call = if matches!(inner.as_ref(), Type::Float) {
-                    "sort_by(|a, b| a.partial_cmp(b).unwrap())"
+                    // `total_cmp` avoids panics for NaN while still providing deterministic order.
+                    "sort_by(|a, b| a.total_cmp(b))"
                 } else {
                     "sort()"
                 };

@@ -695,6 +695,7 @@ impl<'a> Codegen<'a> {
     /// Decide whether the PyError enum and trait impls are needed.
     fn needs_py_error(&self) -> bool {
         self.top_level_can_throw
+            || self.uses.py_error
             || self.ctx.functions.values().any(|sig| sig.can_throw)
             || self.uses.py_parse_int
             || self.uses.py_parse_float

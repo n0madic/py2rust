@@ -387,6 +387,8 @@ impl<'a> Codegen<'a> {
                 orelse,
                 finalbody,
             } => {
+                // Try lowering always materializes `Result<_, PyError>` in generated Rust.
+                self.uses.py_error = true;
                 for stmt in body {
                     self.scan_stmt(stmt)?;
                 }
@@ -403,6 +405,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             StmtKind::Raise { exc, cause } => {
+                self.uses.py_error = true;
                 if let Some(expr) = exc {
                     self.scan_expr(expr)?;
                 }

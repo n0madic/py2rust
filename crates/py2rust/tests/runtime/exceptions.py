@@ -427,6 +427,22 @@ def test_try_else_computation() -> None:
 
 test_try_else_computation()
 
+# Try with partial value-return must not panic on fallthrough path
+def test_try_partial_value_return() -> None:
+    def partial_return(flag: bool) -> int:
+        try:
+            if flag:
+                return 11
+            marker: int = 5
+        except Exception:
+            return -1
+        return 6
+
+    assert partial_return(True) == 11
+    assert partial_return(False) == 6
+
+test_try_partial_value_return()
+
 # Exception propagation with specific types
 def raises_value_error() -> int:
     raise ValueError("from function")

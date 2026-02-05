@@ -812,6 +812,32 @@ def complex_sig(a: int, b: int = 5, c: int = 10) -> int:
 
 assert complex_sig(*[1], **{"b": 2}) == 13, "complex mix with defaults"
 
+# Test 18: Runtime *args unpacking errors should raise TypeError
+caught_missing_unpack_arg: bool = False
+try:
+    missing_unpack_args: list[int] = [1, 2]
+    accepts_three_args(*missing_unpack_args)
+except TypeError:
+    caught_missing_unpack_arg = True
+assert caught_missing_unpack_arg, "missing unpacked arg should raise TypeError"
+
+caught_extra_unpack_arg: bool = False
+try:
+    extra_unpack_args: list[int] = [1, 2, 3, 4]
+    accepts_three_args(*extra_unpack_args)
+except TypeError:
+    caught_extra_unpack_arg = True
+assert caught_extra_unpack_arg, "extra unpacked arg should raise TypeError"
+
+# Test 19: Runtime **kwargs unknown key should raise TypeError
+caught_unknown_unpack_kw: bool = False
+try:
+    bad_unpack_kwargs: dict[str, int] = {"a": 1, "c": 2}
+    accepts_two_kwargs(**bad_unpack_kwargs)
+except TypeError:
+    caught_unknown_unpack_kw = True
+assert caught_unknown_unpack_kw, "unknown unpacked kwarg should raise TypeError"
+
 print("All call-site unpacking tests passed!")
 
 # ===== SECTION: Runtime variable unpacking =====

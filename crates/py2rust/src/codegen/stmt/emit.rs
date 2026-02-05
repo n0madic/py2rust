@@ -1031,8 +1031,10 @@ impl<'a> Codegen<'a> {
                 // Check if we're in a throwing function or inside a try block with value return.
                 let in_throwing_fn = self.current_function_throws();
                 let in_try_with_value = self.try_block_return_type.is_some();
+                let try_uses_option = self.try_block_returns_option;
 
-                // Inside try block with value returns, always wrap in Ok.
+                // Inside try blocks with value returns, wrap as `Ok(Some(..))` so
+                // non-returning branches can still fall through via `Ok(None)`.
                 let wrap_in_ok = in_throwing_fn || in_try_with_value;
 
                 if let Some(expr) = value {
@@ -1060,13 +1062,19 @@ impl<'a> Codegen<'a> {
                             }
                         }
                     }
-                    if wrap_in_ok {
+                    if in_try_with_value && try_uses_option {
+                        self.push_line(&format!("return Ok(Some({}));", expr_str));
+                    } else if wrap_in_ok {
                         self.push_line(&format!("return Ok({});", expr_str));
                     } else {
                         self.push_line(&format!("return {};", expr_str));
                     }
                 } else if wrap_in_ok {
-                    self.push_line("return Ok(());");
+                    if in_try_with_value && try_uses_option {
+                        self.push_line("return Ok(None);");
+                    } else {
+                        self.push_line("return Ok(());");
+                    }
                 } else {
                     self.push_line("return;");
                 }

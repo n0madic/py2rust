@@ -235,6 +235,20 @@ def test_lists() -> None:
     reverse_nums.sort()
     assert reverse_nums == [1, 2, 3, 4, 5]
 
+    # list.sort() on floats with NaN should not panic.
+    sort_float_nan: list[float] = [1.0, float("nan"), -2.0]
+    sort_float_nan.sort()
+    assert len(sort_float_nan) == 3
+    nan_seen: bool = False
+    non_nan: list[float] = []
+    for value in sort_float_nan:
+        if value != value:
+            nan_seen = True
+        else:
+            non_nan.append(value)
+    assert nan_seen, "sorted float list should still contain NaN"
+    assert non_nan == [-2.0, 1.0], "non-NaN values should remain sorted"
+
     # List unpacking
     pairs: list[list[int]] = [[10, 20], [30, 40]]
     pair_first, pair_second = pairs

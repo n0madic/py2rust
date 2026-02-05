@@ -56,6 +56,8 @@ pub(crate) struct Uses {
     pub(crate) py_repr: bool,
     pub(crate) py_bytes_from_len: bool,
     pub(crate) py_bytes_from_str: bool,
+    /// Force-emits `PyError` support for generated control-flow that references it directly.
+    pub(crate) py_error: bool,
 }
 
 /// Storage strategy for list values in generated Rust.
@@ -192,6 +194,8 @@ pub struct Codegen<'a> {
     pub(crate) current_function_ret: Option<Type>,
     /// Return type when inside a try block with value returns
     pub(crate) try_block_return_type: Option<Type>,
+    /// True when try-return lowering uses `Result<Option<T>, PyError>` fallback semantics.
+    pub(crate) try_block_returns_option: bool,
     /// Local variable types for current function (function scope)
     pub(crate) local_vars: Option<HashMap<String, Type>>,
     /// Names declared nonlocal in the current scope.
@@ -245,6 +249,7 @@ impl<'a> Codegen<'a> {
             current_function: None,
             current_function_ret: None,
             try_block_return_type: None,
+            try_block_returns_option: false,
             local_vars: None,
             nonlocal_decls: None,
             cell_locals: None,
