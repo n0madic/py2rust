@@ -27,6 +27,7 @@ impl<'a> TypeChecker<'a> {
         // Create a new scope for this function
         self.scopes.push(HashMap::new());
         self.global_scopes.push(GlobalScope::default());
+        self.nonlocal_scopes.push(NonlocalScope::default());
         self.function_scopes.push(self.scopes.len() - 1);
         // For methods, validate and insert `self` parameter
         if require_self {
@@ -419,7 +420,7 @@ impl<'a> TypeChecker<'a> {
                             collect_names(expr, out);
                         }
                     }
-                    StmtKind::Global { .. } => {}
+                    StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
                     StmtKind::Break | StmtKind::Continue => {}
                 }
             }
@@ -497,7 +498,7 @@ impl<'a> TypeChecker<'a> {
                             visit_expr(expr, out);
                         }
                     }
-                    StmtKind::Global { .. } => {}
+                    StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
                     StmtKind::Break | StmtKind::Continue => {}
                 }
             }
@@ -543,6 +544,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.global_scopes.pop();
+        self.nonlocal_scopes.pop();
         self.scopes.pop();
         self.function_scopes.pop();
         self.current_class = prev_class;

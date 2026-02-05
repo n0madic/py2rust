@@ -42,6 +42,8 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Name(name) => {
                 // Track global usage for validation
                 self.note_global_use(name, expr.span);
+                // Track nonlocal usage for validation
+                self.note_nonlocal_use(name, expr.span);
                 if let Some(mut ty) = self.lookup_var(name) {
                     // If variable is Unknown, try to use expected type
                     if matches!(ty, Type::Unknown) {
@@ -807,6 +809,7 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Lambda { params, body } => {
                 self.scopes.push(HashMap::new());
                 self.global_scopes.push(GlobalScope::default());
+                self.nonlocal_scopes.push(NonlocalScope::default());
                 self.function_scopes.push(self.scopes.len() - 1);
                 let expected_params = match expected {
                     Some(Type::Lambda { params, .. }) => Some(params),
@@ -889,6 +892,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 self.global_scopes.pop();
+                self.nonlocal_scopes.pop();
                 self.scopes.pop();
                 self.function_scopes.pop();
                 Type::Lambda {

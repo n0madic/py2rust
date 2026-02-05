@@ -139,6 +139,9 @@ impl<'a> Lowerer<'a> {
             ast::Stmt::Global(def) => StmtKind::Global {
                 names: def.names.iter().map(|n| n.to_string()).collect(),
             },
+            ast::Stmt::Nonlocal(def) => StmtKind::Nonlocal {
+                names: def.names.iter().map(|n| n.to_string()).collect(),
+            },
             ast::Stmt::If(def) => {
                 let test = self.lower_expr(&def.test)?;
                 let mut body_stmts = Vec::new();

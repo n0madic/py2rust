@@ -26,6 +26,7 @@ impl<'a> Codegen<'a> {
         let mut local_defs: HashSet<String> = params.iter().cloned().collect();
         local_defs.insert(name.to_string());
         let mut global_names = HashSet::new();
+        let mut nonlocal_names = HashSet::new();
 
         let stmts = match &body.kind {
             ExprKind::Block { stmts } => stmts,
@@ -36,15 +37,22 @@ impl<'a> Codegen<'a> {
             stmts: &[Stmt],
             locals: &mut HashSet<String>,
             globals: &mut HashSet<String>,
+            nonlocals: &mut HashSet<String>,
         ) {
-            fn record_target(target: &AssignTarget, locals: &mut HashSet<String>) {
+            fn record_target(
+                target: &AssignTarget,
+                locals: &mut HashSet<String>,
+                nonlocals: &HashSet<String>,
+            ) {
                 match target {
                     AssignTarget::Name(name) => {
-                        locals.insert(name.clone());
+                        if !nonlocals.contains(name) {
+                            locals.insert(name.clone());
+                        }
                     }
                     AssignTarget::Tuple(items) | AssignTarget::List(items) => {
                         for item in items {
-                            record_target(item, locals);
+                            record_target(item, locals, nonlocals);
                         }
                     }
                     AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
@@ -54,30 +62,36 @@ impl<'a> Codegen<'a> {
             for stmt in stmts {
                 match &stmt.kind {
                     StmtKind::Let { name, .. } => {
-                        locals.insert(name.clone());
+                        if !nonlocals.contains(name) {
+                            locals.insert(name.clone());
+                        }
                     }
                     StmtKind::Assign { target, .. } => {
-                        record_target(target, locals);
+                        record_target(target, locals, nonlocals);
                     }
                     StmtKind::For { target, body, .. } => {
                         for name in target.names() {
-                            locals.insert(name.to_string());
+                            if !nonlocals.contains(name) {
+                                locals.insert(name.to_string());
+                            }
                         }
-                        collect_local_defs(body, locals, globals);
+                        collect_local_defs(body, locals, globals, nonlocals);
                     }
                     StmtKind::If { body, orelse, .. } => {
-                        collect_local_defs(body, locals, globals);
-                        collect_local_defs(orelse, locals, globals);
+                        collect_local_defs(body, locals, globals, nonlocals);
+                        collect_local_defs(orelse, locals, globals, nonlocals);
                     }
                     StmtKind::While { body, .. } => {
-                        collect_local_defs(body, locals, globals);
+                        collect_local_defs(body, locals, globals, nonlocals);
                     }
                     StmtKind::Match { cases, .. } => {
                         for case in cases {
                             for binding in &case.bindings {
-                                locals.insert(binding.clone());
+                                if !nonlocals.contains(binding) {
+                                    locals.insert(binding.clone());
+                                }
                             }
-                            collect_local_defs(&case.body, locals, globals);
+                            collect_local_defs(&case.body, locals, globals, nonlocals);
                         }
                     }
                     StmtKind::Try {
@@ -86,19 +100,26 @@ impl<'a> Codegen<'a> {
                         orelse,
                         finalbody,
                     } => {
-                        collect_local_defs(body, locals, globals);
+                        collect_local_defs(body, locals, globals, nonlocals);
                         for handler in handlers {
                             if let Some(name) = &handler.name {
-                                locals.insert(name.clone());
+                                if !nonlocals.contains(name) {
+                                    locals.insert(name.clone());
+                                }
                             }
-                            collect_local_defs(&handler.body, locals, globals);
+                            collect_local_defs(&handler.body, locals, globals, nonlocals);
                         }
-                        collect_local_defs(orelse, locals, globals);
-                        collect_local_defs(finalbody, locals, globals);
+                        collect_local_defs(orelse, locals, globals, nonlocals);
+                        collect_local_defs(finalbody, locals, globals, nonlocals);
                     }
                     StmtKind::Global { names } => {
                         for name in names {
                             globals.insert(name.clone());
+                        }
+                    }
+                    StmtKind::Nonlocal { names } => {
+                        for name in names {
+                            nonlocals.insert(name.clone());
                         }
                     }
                     StmtKind::Expr(_)
@@ -274,11 +295,19 @@ impl<'a> Codegen<'a> {
                             .as_ref()
                             .is_some_and(|c| expr_uses_outer(c, locals, globals, outers))
                 }
-                StmtKind::Global { .. } | StmtKind::Break | StmtKind::Continue => false,
+                StmtKind::Global { .. }
+                | StmtKind::Nonlocal { .. }
+                | StmtKind::Break
+                | StmtKind::Continue => false,
             }
         }
 
-        collect_local_defs(stmts, &mut local_defs, &mut global_names);
+        collect_local_defs(
+            stmts,
+            &mut local_defs,
+            &mut global_names,
+            &mut nonlocal_names,
+        );
         stmts
             .iter()
             .any(|stmt| stmt_uses_outer(stmt, &local_defs, &global_names, &outer_locals))

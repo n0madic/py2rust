@@ -170,7 +170,7 @@ impl<'a> Codegen<'a> {
                         visit_expr(expr, ok);
                     }
                 }
-                StmtKind::Global { .. } => {}
+                StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
                 StmtKind::Break | StmtKind::Continue => {}
             }
         }
@@ -402,7 +402,7 @@ impl<'a> Codegen<'a> {
                     self.scan_expr(expr)?;
                 }
             }
-            StmtKind::Global { .. } => {}
+            StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
             StmtKind::Break | StmtKind::Continue => {}
         }
         Ok(())

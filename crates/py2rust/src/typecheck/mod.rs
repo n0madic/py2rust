@@ -32,6 +32,17 @@ struct GlobalScope {
     used_before_decl: HashMap<String, Span>,
 }
 
+/// Nonlocal scope tracking for nested functions.
+///
+/// This mirrors global tracking but resolves names to enclosing function scopes.
+#[derive(Debug, Default, Clone)]
+struct NonlocalScope {
+    /// Variables explicitly declared with `nonlocal` statement
+    declared: HashSet<String>,
+    /// Variables used before being declared nonlocal (for error reporting)
+    used_before_decl: HashMap<String, Span>,
+}
+
 /// The type checker performs type inference and validation on the HIR.
 ///
 /// Type checking is a critical phase that:
@@ -62,6 +73,8 @@ pub struct TypeChecker<'a> {
     scopes: Vec<HashMap<String, Type>>,
     /// Stack of global scopes (for tracking `global` declarations)
     global_scopes: Vec<GlobalScope>,
+    /// Stack of nonlocal scopes (for tracking `nonlocal` declarations)
+    nonlocal_scopes: Vec<NonlocalScope>,
     /// Accumulated warnings (e.g., unused variables, potential issues)
     warnings: Vec<Warning>,
     /// Depth of nested exception handlers (for bare `raise` validation)
@@ -142,6 +155,7 @@ impl<'a> TypeChecker<'a> {
             },
             scopes: Vec::new(),
             global_scopes: Vec::new(),
+            nonlocal_scopes: Vec::new(),
             warnings: Vec::new(),
             except_handler_depth: 0,
             lambda_defs: HashMap::new(),

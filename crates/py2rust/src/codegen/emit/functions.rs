@@ -45,6 +45,12 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        // Precompute nonlocal declarations and cell-backed locals for this scope.
+        let param_names: Vec<String> = func.params.iter().map(|p| p.name.clone()).collect();
+        let nonlocal_info = self.collect_nonlocal_info_for_stmts(&func.body, &param_names);
+        self.nonlocal_decls = Some(nonlocal_info.nonlocal_decls);
+        self.cell_locals = Some(nonlocal_info.cell_locals);
+
         let sig = if let Some(class) = class {
             self.method_signature(func, class)?
         } else {
@@ -84,6 +90,8 @@ impl<'a> Codegen<'a> {
         self.current_function = None;
         self.current_function_ret = None;
         self.local_vars = None;
+        self.nonlocal_decls = None;
+        self.cell_locals = None;
         self.inferred_list_elems = None;
         self.local_list_storage = None;
         self.local_dict_storage = None;
@@ -96,6 +104,9 @@ impl<'a> Codegen<'a> {
         program: &Program,
         body: &[Stmt],
     ) -> Result<(), CompileError> {
+        // Top-level code has no nonlocal bindings.
+        self.nonlocal_decls = None;
+        self.cell_locals = None;
         // Check if top-level contains exception handling.
         let top_level_can_throw = self.analyze_top_level_throws(body);
         self.top_level_can_throw = top_level_can_throw;

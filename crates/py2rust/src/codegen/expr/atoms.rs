@@ -43,6 +43,9 @@ impl<'a> Codegen<'a> {
         if let Some(override_expr) = self.name_override(name) {
             return Ok(override_expr.to_string());
         }
+        if self.is_cell_local(name) || self.is_nonlocal_decl(name) {
+            return Ok(format!("{}.borrow().clone()", name));
+        }
         if self.is_global(name) {
             // Global reads go through OnceLock + Mutex with context-rich expects.
             if let Some(override_expr) = self.global_override(name) {

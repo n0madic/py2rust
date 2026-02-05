@@ -194,6 +194,33 @@ impl<'a> Codegen<'a> {
             .map(|(_, expr)| expr.as_str())
     }
 
+    /// Temporarily replace a local name with a provided expression while generating code.
+    pub(crate) fn with_name_override<T>(
+        &mut self,
+        name: &str,
+        replacement: String,
+        f: impl FnOnce(&mut Self) -> Result<T, CompileError>,
+    ) -> Result<T, CompileError> {
+        self.name_overrides.push((name.to_string(), replacement));
+        let result = f(self);
+        self.name_overrides.pop();
+        result
+    }
+
+    /// Check if a name is declared nonlocal in the current scope.
+    pub(crate) fn is_nonlocal_decl(&self, name: &str) -> bool {
+        self.nonlocal_decls
+            .as_ref()
+            .is_some_and(|names| names.contains(name))
+    }
+
+    /// Check if a local name should be stored as Rc<RefCell<_>>.
+    pub(crate) fn is_cell_local(&self, name: &str) -> bool {
+        self.cell_locals
+            .as_ref()
+            .is_some_and(|names| names.contains(name))
+    }
+
     /// Clone shared/owned values to preserve Python assignment semantics.
     pub(crate) fn maybe_clone_list_expr(
         &self,
@@ -503,6 +530,7 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                     visit_expr(expr, counts);
                 }
             }
+            StmtKind::Nonlocal { .. } => {}
             _ => {}
         }
     }

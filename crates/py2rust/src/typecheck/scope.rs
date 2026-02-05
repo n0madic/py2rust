@@ -46,6 +46,16 @@ impl<'a> TypeChecker<'a> {
             .unwrap_or(false)
     }
 
+    /// Check if a variable has been declared nonlocal in the current function.
+    ///
+    /// Returns false if not in a function or if no nonlocal declaration.
+    pub(super) fn is_declared_nonlocal(&self, name: &str) -> bool {
+        self.nonlocal_scopes
+            .last()
+            .map(|scope| scope.declared.contains(name))
+            .unwrap_or(false)
+    }
+
     /// Record that a global variable is being used.
     ///
     /// We track this to detect errors where `global x` appears
@@ -73,6 +83,28 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Record that a nonlocal variable is being used.
+    ///
+    /// We track this to detect errors where `nonlocal x` appears
+    /// after `x` has already been referenced in the current function.
+    pub(super) fn note_nonlocal_use(&mut self, name: &str, span: Span) {
+        if !self.in_function() {
+            return;
+        }
+        if self.is_declared_nonlocal(name) {
+            return;
+        }
+        if self.lookup_nonlocal_var(name).is_none() {
+            return;
+        }
+        if let Some(scope) = self.nonlocal_scopes.last_mut() {
+            scope
+                .used_before_decl
+                .entry(name.to_string())
+                .or_insert(span);
+        }
+    }
+
     /// Process a `global` declaration.
     ///
     /// Validates:
@@ -92,6 +124,54 @@ impl<'a> TypeChecker<'a> {
                 return Err(self.error(
                     span,
                     format!("global `{name}` must appear before first use"),
+                ));
+            }
+            scope.declared.insert(name.to_string());
+        }
+        Ok(())
+    }
+
+    /// Resolve a nonlocal binding in any enclosing function scope.
+    ///
+    /// Returns the first matching type found outside the current function,
+    /// excluding module-level globals.
+    pub(super) fn lookup_nonlocal_var(&self, name: &str) -> Option<Type> {
+        if !self.in_function() {
+            return None;
+        }
+        let current_start = self.function_scopes.last().copied().unwrap_or(0);
+        if current_start == 0 {
+            return None;
+        }
+        for idx in (1..current_start).rev() {
+            if let Some(ty) = self.scopes[idx].get(name) {
+                return Some(ty.clone());
+            }
+        }
+        None
+    }
+
+    /// Process a `nonlocal` declaration.
+    ///
+    /// Validates:
+    /// 1. The name exists in an enclosing (non-global) scope
+    /// 2. It hasn't been used before being declared nonlocal
+    /// 3. It doesn't conflict with `global` in the same function
+    pub(super) fn declare_nonlocal(&mut self, name: &str, span: Span) -> Result<(), CompileError> {
+        if self.is_declared_global(name) {
+            return Err(self.error(span, format!("`{name}` cannot be both global and nonlocal")));
+        }
+        if self.lookup_nonlocal_var(name).is_none() {
+            return Err(self.error(
+                span,
+                format!("nonlocal name `{name}` is not defined in enclosing scope"),
+            ));
+        }
+        if let Some(scope) = self.nonlocal_scopes.last_mut() {
+            if scope.used_before_decl.contains_key(name) {
+                return Err(self.error(
+                    span,
+                    format!("nonlocal `{name}` must appear before first use"),
                 ));
             }
             scope.declared.insert(name.to_string());

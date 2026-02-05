@@ -171,6 +171,13 @@ pub enum StmtKind {
     Global {
         names: Vec<String>,
     },
+    /// Nonlocal declaration for closure variables.
+    ///
+    /// Python: `nonlocal x, y`
+    /// Marks names that must resolve to an enclosing function scope.
+    Nonlocal {
+        names: Vec<String>,
+    },
     Break,
     Continue,
     /// Expression statement (e.g., a function call for side effects)

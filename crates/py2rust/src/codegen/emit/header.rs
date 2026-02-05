@@ -19,6 +19,8 @@ impl<'a> Codegen<'a> {
         if self.uses.hash_set {
             self.push_line("use std::collections::HashSet;");
         }
+        self.push_line("use std::cell::RefCell;");
+        self.push_line("use std::rc::Rc;");
         // Arc/Mutex are required for list semantics and globals.
         self.push_line("use std::sync::{Arc, Mutex, OnceLock};");
         self.push_line("const __NAME__: &str = \"__main__\";");

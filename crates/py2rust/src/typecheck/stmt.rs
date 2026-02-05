@@ -31,6 +31,32 @@ impl<'a> TypeChecker<'a> {
                 if name == "__name__" {
                     return Err(self.error(stmt.span, "Assignment to __name__ is not supported"));
                 }
+                if self.in_function() && self.is_declared_nonlocal(name) {
+                    let outer_ty = self
+                        .lookup_nonlocal_var(name)
+                        .ok_or_else(|| self.error(stmt.span, "nonlocal binding not found"))?;
+                    let expected = if let Some(ann) = ann {
+                        let ty = self.resolve_type_ref(ann, stmt.span)?;
+                        if matches!(ty, Type::Iterator(_)) {
+                            return Err(self
+                                .error(stmt.span, "Iterator[T] is only allowed as a return type"));
+                        }
+                        self.ensure_assignable(&ty, &outer_ty, stmt.span)?;
+                        Some(ty)
+                    } else {
+                        None
+                    };
+                    let ty = self.check_expr(value, expected.as_ref().or(Some(&outer_ty)))?;
+                    if matches!(ty, Type::Unknown) && !matches!(outer_ty, Type::Unknown) {
+                        return Err(self.error(stmt.span, "Unable to infer type; add annotation"));
+                    }
+                    self.ensure_assignable(&ty, &outer_ty, stmt.span)?;
+                    stmt.kind = StmtKind::Assign {
+                        target: AssignTarget::Name(name.clone()),
+                        value: value.clone(),
+                    };
+                    return Ok(());
+                }
                 if self.in_function() && self.is_declared_global(name) {
                     let global_ty = self.ctx.globals.get(name).cloned().ok_or_else(|| {
                         self.error(
@@ -145,7 +171,17 @@ impl<'a> TypeChecker<'a> {
                                 return Err(self
                                     .error(stmt.span, "Assignment to __name__ is not supported"));
                             }
-                            if self.in_function() && self.is_declared_global(name) {
+                            if self.in_function() && self.is_declared_nonlocal(name) {
+                                let outer_ty = self.lookup_nonlocal_var(name).ok_or_else(|| {
+                                    self.error(stmt.span, "nonlocal binding not found")
+                                })?;
+                                if matches!(ty, Type::Unknown) && !matches!(outer_ty, Type::Unknown)
+                                {
+                                    return Err(self
+                                        .error(stmt.span, "Unable to infer type; add annotation"));
+                                }
+                                self.ensure_assignable(&ty, &outer_ty, stmt.span)?;
+                            } else if self.in_function() && self.is_declared_global(name) {
                                 let global_ty =
                                     self.ctx.globals.get(name).cloned().ok_or_else(|| {
                                         self.error(
@@ -162,7 +198,10 @@ impl<'a> TypeChecker<'a> {
                                         .error(stmt.span, "Unable to infer type; add annotation"));
                                 }
                                 self.ensure_assignable(&ty, &global_ty, stmt.span)?;
-                            } else if self.in_function() && !self.is_declared_global(name) {
+                            } else if self.in_function()
+                                && !self.is_declared_global(name)
+                                && !self.is_declared_nonlocal(name)
+                            {
                                 if let Some(existing) = self.lookup_local_var(name) {
                                     self.ensure_assignable(&ty, &existing, stmt.span)?;
                                 } else {
@@ -363,7 +402,12 @@ impl<'a> TypeChecker<'a> {
                 // Handle different target patterns.
                 match target {
                     ForTarget::Name(name) => {
-                        if self.in_function() && self.is_declared_global(name) {
+                        if self.in_function() && self.is_declared_nonlocal(name) {
+                            let outer_ty = self.lookup_nonlocal_var(name).ok_or_else(|| {
+                                self.error(stmt.span, "nonlocal binding not found")
+                            })?;
+                            self.ensure_assignable(&item_ty, &outer_ty, stmt.span)?;
+                        } else if self.in_function() && self.is_declared_global(name) {
                             let global_ty =
                                 self.ctx.globals.get(name).cloned().ok_or_else(|| {
                                     self.error(
@@ -407,7 +451,12 @@ impl<'a> TypeChecker<'a> {
 
                         // Bind each name to its corresponding element type.
                         for (name, ty) in names.iter().zip(elem_types.iter()) {
-                            if self.in_function() && self.is_declared_global(name) {
+                            if self.in_function() && self.is_declared_nonlocal(name) {
+                                let outer_ty = self.lookup_nonlocal_var(name).ok_or_else(|| {
+                                    self.error(stmt.span, "nonlocal binding not found")
+                                })?;
+                                self.ensure_assignable(ty, &outer_ty, stmt.span)?;
+                            } else if self.in_function() && self.is_declared_global(name) {
                                 let global_ty =
                                     self.ctx.globals.get(name).cloned().ok_or_else(|| {
                                         self.error(
@@ -446,6 +495,17 @@ impl<'a> TypeChecker<'a> {
                         return Err(self.error(stmt.span, "global __name__ is not supported"));
                     }
                     self.declare_global(name, stmt.span)?;
+                }
+            }
+            StmtKind::Nonlocal { names } => {
+                if !self.in_function() {
+                    return Err(self.error(stmt.span, "nonlocal is only allowed inside functions"));
+                }
+                for name in names.iter() {
+                    if name == "__name__" {
+                        return Err(self.error(stmt.span, "nonlocal __name__ is not supported"));
+                    }
+                    self.declare_nonlocal(name, stmt.span)?;
                 }
             }
             StmtKind::Break | StmtKind::Continue => {}
@@ -645,7 +705,15 @@ impl<'a> TypeChecker<'a> {
                 if name == "__name__" {
                     return Err(self.error(span, "Assignment to __name__ is not supported"));
                 }
-                if self.in_function() && self.is_declared_global(name) {
+                if self.in_function() && self.is_declared_nonlocal(name) {
+                    let outer_ty = self
+                        .lookup_nonlocal_var(name)
+                        .ok_or_else(|| self.error(span, "nonlocal binding not found"))?;
+                    if matches!(value_ty, Type::Unknown) && !matches!(outer_ty, Type::Unknown) {
+                        return Err(self.error(span, "Unable to infer type; add annotation"));
+                    }
+                    self.ensure_assignable(value_ty, &outer_ty, span)?;
+                } else if self.in_function() && self.is_declared_global(name) {
                     let global_ty = self.ctx.globals.get(name).cloned().ok_or_else(|| {
                         self.error(
                             span,

@@ -118,6 +118,57 @@ impl<'a> Codegen<'a> {
     ) -> Result<(), CompileError> {
         match target {
             AssignTarget::Name(name) => {
+                if self.is_cell_local(name) || self.is_nonlocal_decl(name) {
+                    let expected = self.local_var_type(name).cloned();
+                    if allow_let
+                        && self.local_var_type(name).is_none()
+                        && self.is_cell_local(name)
+                        && !self.is_nonlocal_decl(name)
+                    {
+                        if let Some((expr, elem_ty)) = self.gen_empty_list_with_hint(name, value)? {
+                            let expr = format!("Rc::new(RefCell::new({}))", expr);
+                            let mut_kw = mut_kw_for_name(name, mut_counts);
+                            self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                            self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
+                            return Ok(());
+                        }
+                        let expr = if let Some(local_expr) =
+                            self.gen_list_assignment_expr(name, value)?
+                        {
+                            local_expr
+                        } else if let Some(local_expr) =
+                            self.gen_dict_assignment_expr(name, value)?
+                        {
+                            local_expr
+                        } else {
+                            let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                            self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref())
+                        };
+                        let expr = format!("Rc::new(RefCell::new({}))", expr);
+                        let mut_kw = mut_kw_for_name(name, mut_counts);
+                        self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                        if let Some(ty) = value.ty.clone() {
+                            self.set_local_var_type(name, ty);
+                        }
+                        return Ok(());
+                    }
+
+                    // Assign through the RefCell, guarding against self-references.
+                    let current = self.new_tmp();
+                    self.push_line(&format!("let {} = {}.borrow().clone();", current, name));
+                    let expr = self.with_name_override(name, current, |this| {
+                        if let Some(local_expr) = this.gen_list_assignment_expr(name, value)? {
+                            return Ok(local_expr);
+                        }
+                        if let Some(local_expr) = this.gen_dict_assignment_expr(name, value)? {
+                            return Ok(local_expr);
+                        }
+                        let expr = this.gen_expr_with_expected(value, expected.as_ref())?;
+                        Ok(this.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref()))
+                    })?;
+                    self.push_line(&format!("*{}.borrow_mut() = {};", name, expr));
+                    return Ok(());
+                }
                 // Global assignment uses OnceLock + Mutex for initialization and mutation.
                 if self.is_global(name) {
                     let expected = self.ctx.globals.get(name).cloned();
@@ -594,6 +645,70 @@ impl<'a> Codegen<'a> {
                     self.initialized_globals.insert(name.clone());
                     return Ok(());
                 }
+                if self.is_cell_local(name) {
+                    if ann.is_none() {
+                        if let Some((expr, elem_ty)) = self.gen_empty_list_with_hint(name, value)? {
+                            let expr = format!("Rc::new(RefCell::new({}))", expr);
+                            let mut_kw = mut_kw_for_name(name, mut_counts);
+                            self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                            self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
+                            return Ok(());
+                        }
+                    }
+
+                    let expected = if let Some(ann) = ann {
+                        Some(self.resolve_type_ref(ann, stmt.span)?)
+                    } else {
+                        None
+                    };
+                    let declared =
+                        if let (Some(Type::Tuple(exp_items)), Some(Type::Tuple(actual_items))) =
+                            (expected.as_ref(), value.ty.as_ref())
+                        {
+                            if exp_items.len() != actual_items.len() {
+                                Some(Type::Tuple(actual_items.clone()))
+                            } else {
+                                expected.clone()
+                            }
+                        } else {
+                            expected.clone()
+                        };
+                    let expr = if let Some(local_expr) =
+                        self.gen_list_assignment_expr(name, value)?
+                    {
+                        local_expr
+                    } else if let Some(local_expr) = self.gen_dict_assignment_expr(name, value)? {
+                        local_expr
+                    } else {
+                        let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                        self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref())
+                    };
+                    let expr = format!("Rc::new(RefCell::new({}))", expr);
+                    let mut_kw = mut_kw_for_name(name, mut_counts);
+                    if let Some(declared) = declared.clone() {
+                        // Choose a storage-aware type for lists/dicts; everything else uses rust_type().
+                        let ty_str = match declared {
+                            Type::List(_) => {
+                                let storage = self.list_storage_for_name(name);
+                                self.rust_type_for_list_storage(&declared, storage)
+                            }
+                            Type::Dict(_, _) => {
+                                let storage = self.dict_storage_for_name(name);
+                                self.rust_type_for_dict_storage(&declared, storage)
+                            }
+                            _ => self.rust_type(&declared),
+                        };
+                        let wrapped = format!("Rc<RefCell<{}>>", ty_str);
+                        self.push_line(&format!("let {}{}: {} = {};", mut_kw, name, wrapped, expr));
+                        self.set_local_var_type(name, declared);
+                    } else {
+                        self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                        if let Some(ty) = value.ty.clone() {
+                            self.set_local_var_type(name, ty);
+                        }
+                    }
+                    return Ok(());
+                }
                 if ann.is_none() {
                     if let Some((expr, elem_ty)) = self.gen_empty_list_with_hint(name, value)? {
                         let mut_kw = mut_kw_for_name(name, mut_counts);
@@ -882,7 +997,7 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.push_line("}");
             }
-            StmtKind::Global { .. } => {}
+            StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
             StmtKind::Break => self.push_line("break;"),
             StmtKind::Continue => self.push_line("continue;"),
             StmtKind::Assert { test, msg } => {

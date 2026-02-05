@@ -248,7 +248,7 @@ fn rename_main_calls_in_stmt(stmt: &mut hir::Stmt, new_name: &str) {
                 rename_main_calls_in_expr(expr, new_name);
             }
         }
-        hir::StmtKind::Global { .. } => {}
+        hir::StmtKind::Global { .. } | hir::StmtKind::Nonlocal { .. } => {}
         hir::StmtKind::Break | hir::StmtKind::Continue => {}
     }
 }

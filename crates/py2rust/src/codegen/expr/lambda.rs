@@ -48,9 +48,21 @@ impl<'a> Codegen<'a> {
         }
         self.local_vars = Some(scoped_locals);
         self.lambda_depth += 1;
+        let saved_nonlocals = self.nonlocal_decls.clone();
+        let saved_cells = self.cell_locals.clone();
+        if let ExprKind::Block { stmts } = &body.kind {
+            let nonlocal_info = self.collect_nonlocal_info_for_stmts(stmts, params);
+            self.nonlocal_decls = Some(nonlocal_info.nonlocal_decls);
+            self.cell_locals = Some(nonlocal_info.cell_locals);
+        } else {
+            self.nonlocal_decls = Some(Default::default());
+            self.cell_locals = Some(Default::default());
+        }
         let body_expr = self.gen_expr(body);
         self.lambda_depth -= 1;
         let body_expr = body_expr?;
+        self.nonlocal_decls = saved_nonlocals;
+        self.cell_locals = saved_cells;
         self.local_vars = saved_locals;
         Ok(format!(
             "move |{}| {{ {} }}",
