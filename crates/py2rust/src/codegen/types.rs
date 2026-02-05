@@ -91,6 +91,16 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Convert a Python Type to a Rust type, using the requested list storage.
+    pub(crate) fn rust_type_for_list_storage(&mut self, ty: &Type, storage: ListStorage) -> String {
+        match (ty, storage) {
+            (Type::List(inner), ListStorage::Local) => {
+                format!("Vec<{}>", self.rust_type(inner))
+            }
+            _ => self.rust_type(ty),
+        }
+    }
+
     /// Convert a Python Type to its Rust representation for global variables.
     ///
     /// Global variables have special requirements in Rust:

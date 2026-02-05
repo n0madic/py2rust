@@ -98,12 +98,11 @@ impl<'a> Codegen<'a> {
             }
             if args.len() == 1 {
                 if matches!(args[0].ty.as_ref(), Some(Type::None)) {
-                    return Ok(Some("py_print(String::from(\"None\"))".to_string()));
+                    return Ok(Some("py_print(\"None\".to_string())".to_string()));
                 }
                 if matches!(args[0].ty.as_ref(), Some(Type::List(_))) {
-                    let arg_expr = self.gen_expr(&args[0])?;
-                    self.uses.py_list_str = true;
-                    return Ok(Some(format!("py_print(py_list_str(&{}))", arg_expr)));
+                    let list_expr = self.list_str_expr(&args[0])?;
+                    return Ok(Some(format!("py_print({})", list_expr)));
                 }
                 if self.print_needs_debug(&args[0]) {
                     let arg_expr = self.debug_arg_expr(&args[0])?;
@@ -120,11 +119,10 @@ impl<'a> Codegen<'a> {
                 }
                 if matches!(arg.ty.as_ref(), Some(Type::None)) {
                     fmt.push_str("{}");
-                    vals.push("String::from(\"None\")".to_string());
+                    vals.push("\"None\".to_string()".to_string());
                 } else if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
                     fmt.push_str("{}");
-                    self.uses.py_list_str = true;
-                    vals.push(format!("py_list_str(&{})", self.gen_expr(arg)?));
+                    vals.push(self.list_str_expr(arg)?);
                 } else {
                     let spec = if self.print_needs_debug(arg) {
                         "{:?}"
@@ -425,16 +423,38 @@ impl<'a> Codegen<'a> {
                     Some(ty) => self.truthy_expr_for_type("x", ty),
                     None => "true".to_string(),
                 };
+                let item_is_copy = item_ty
+                    .as_ref()
+                    .map(|ty| self.is_copy_type(ty))
+                    .unwrap_or(false);
+                let bind = if item_is_copy {
+                    "let x = *x;"
+                } else {
+                    "let x = x.clone();"
+                };
                 return Ok(Some(format!(
-                    "({}).filter(|x| {{ let x = x.clone(); {} }})",
-                    iter_expr, truthy
+                    "({}).filter(|x| {{ {} {} }})",
+                    iter_expr, bind, truthy
                 )));
             }
             let pred_expr = self.gen_expr(&args[0])?;
             let tmp = self.new_tmp();
+            let item_ty = args[1]
+                .ty
+                .as_ref()
+                .and_then(|ty| self.iter_item_type_hint(ty));
+            let item_is_copy = item_ty
+                .as_ref()
+                .map(|ty| self.is_copy_type(ty))
+                .unwrap_or(false);
+            let bind = if item_is_copy {
+                "let x = *x;"
+            } else {
+                "let x = x.clone();"
+            };
             return Ok(Some(format!(
-                "{{ let {} = {}; ({}).filter(move |x| {{ let x = x.clone(); ({}) (x) }}) }}",
-                tmp, pred_expr, iter_expr, tmp
+                "{{ let {} = {}; ({}).filter(move |x| {{ {} ({}) (x) }}) }}",
+                tmp, pred_expr, iter_expr, bind, tmp
             )));
         }
         if name == "all" {
@@ -450,10 +470,27 @@ impl<'a> Codegen<'a> {
                 Some(ty) => self.truthy_expr_for_type("v", ty),
                 None => "true".to_string(),
             };
-            let body = format!(
-                "{}.all(|v| {{ let v = v.clone(); {} }})",
-                iter_src.expr, truthy
+            let item_is_copy = item_ty
+                .as_ref()
+                .map(|ty| self.is_copy_type(ty))
+                .unwrap_or(false);
+            // Only some borrowed containers yield references (e.g., &HashMap); sets yield owned.
+            let yields_ref = matches!(
+                args[0].ty.as_ref(),
+                Some(Type::Ref(inner)) if !matches!(inner.as_ref(), Type::Set(_))
             );
+            let body = if item_is_copy {
+                if yields_ref {
+                    format!("{}.all(|v| {{ let v = *v; {} }})", iter_src.expr, truthy)
+                } else {
+                    format!("{}.all(|v| {})", iter_src.expr, truthy)
+                }
+            } else {
+                format!(
+                    "{}.all(|v| {{ let v = v.clone(); {} }})",
+                    iter_src.expr, truthy
+                )
+            };
             return Ok(Some(iter_src.wrap(body)));
         }
         if name == "any" {
@@ -469,10 +506,27 @@ impl<'a> Codegen<'a> {
                 Some(ty) => self.truthy_expr_for_type("v", ty),
                 None => "true".to_string(),
             };
-            let body = format!(
-                "{}.any(|v| {{ let v = v.clone(); {} }})",
-                iter_src.expr, truthy
+            let item_is_copy = item_ty
+                .as_ref()
+                .map(|ty| self.is_copy_type(ty))
+                .unwrap_or(false);
+            // Only some borrowed containers yield references (e.g., &HashMap); sets yield owned.
+            let yields_ref = matches!(
+                args[0].ty.as_ref(),
+                Some(Type::Ref(inner)) if !matches!(inner.as_ref(), Type::Set(_))
             );
+            let body = if item_is_copy {
+                if yields_ref {
+                    format!("{}.any(|v| {{ let v = *v; {} }})", iter_src.expr, truthy)
+                } else {
+                    format!("{}.any(|v| {})", iter_src.expr, truthy)
+                }
+            } else {
+                format!(
+                    "{}.any(|v| {{ let v = v.clone(); {} }})",
+                    iter_src.expr, truthy
+                )
+            };
             return Ok(Some(iter_src.wrap(body)));
         }
         if name == "reversed" {
@@ -481,23 +535,41 @@ impl<'a> Codegen<'a> {
             }
             if let Some(Type::List(inner)) = args[0].ty.as_ref() {
                 let arg_expr = self.gen_expr(&args[0])?;
-                let tmp = self.new_tmp();
-                let guard = self.new_tmp();
-                // Lists need a bounded lock scope; collect in reverse, then iterate owned.
-                let body = if self.is_copy_type(inner) {
+                let body = if matches!(self.list_storage_for_expr(&args[0]), ListStorage::Local) {
+                    let idx = self.new_tmp();
+                    let list_ref = self.new_tmp();
+                    let item_expr = if self.is_copy_type(inner) {
+                        format!("{list}[{idx}]", list = list_ref, idx = idx)
+                    } else {
+                        format!("{list}[{idx}].clone()", list = list_ref, idx = idx)
+                    };
+                    // Index-based reverse iteration avoids cloning the full Vec.
                     format!(
-                        "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().unwrap(); {guard}.iter().rev().copied().collect::<Vec<_>>().into_iter() }}",
-                        tmp = tmp,
-                        expr = arg_expr,
-                        guard = guard
+                        "{{ let {list_ref} = &{list}; let mut {idx}: usize = {list_ref}.len(); std::iter::from_fn(move || {{ if {idx} == 0 {{ None }} else {{ {idx} -= 1; Some({item}) }} }}) }}",
+                        idx = idx,
+                        list = arg_expr,
+                        list_ref = list_ref,
+                        item = item_expr
                     )
                 } else {
-                    format!(
-                        "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().unwrap(); {guard}.iter().rev().cloned().collect::<Vec<_>>().into_iter() }}",
-                        tmp = tmp,
-                        expr = arg_expr,
-                        guard = guard
-                    )
+                    let tmp = self.new_tmp();
+                    let guard = self.new_tmp();
+                    // Lists need a bounded lock scope; collect in reverse, then iterate owned.
+                    if self.is_copy_type(inner) {
+                        format!(
+                            "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().unwrap(); {guard}.iter().rev().copied().collect::<Vec<_>>().into_iter() }}",
+                            tmp = tmp,
+                            expr = arg_expr,
+                            guard = guard
+                        )
+                    } else {
+                        format!(
+                            "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().unwrap(); {guard}.iter().rev().cloned().collect::<Vec<_>>().into_iter() }}",
+                            tmp = tmp,
+                            expr = arg_expr,
+                            guard = guard
+                        )
+                    }
                 };
                 return Ok(Some(body));
             }
@@ -812,15 +884,12 @@ impl<'a> Codegen<'a> {
             return Ok(Some(match args[0].ty.as_ref() {
                 Some(Type::Int | Type::Float) => format!("format!(\"{{}}\", {})", arg_expr),
                 Some(Type::Bool) => format!(
-                    "if {} {{ String::from(\"True\") }} else {{ String::from(\"False\") }}",
+                    "if {} {{ \"True\".to_string() }} else {{ \"False\".to_string() }}",
                     arg_expr
                 ),
-                Some(Type::None) => "String::from(\"None\")".to_string(),
+                Some(Type::None) => "\"None\".to_string()".to_string(),
                 Some(Type::Str) => format!("format!(\"'{{}}'\", {})", arg_expr),
-                Some(Type::List(_)) => {
-                    self.uses.py_list_str = true;
-                    format!("py_list_str(&{})", arg_expr)
-                }
+                Some(Type::List(_)) => self.list_str_expr(&args[0])?,
                 _ => format!("format!(\"{{:?}}\", {})", arg_expr),
             }));
         }
@@ -844,15 +913,12 @@ impl<'a> Codegen<'a> {
             return Ok(Some(match args[0].ty.as_ref() {
                 Some(Type::Str) => arg_expr,
                 Some(Type::Bool) => format!(
-                    "if {} {{ String::from(\"True\") }} else {{ String::from(\"False\") }}",
+                    "if {} {{ \"True\".to_string() }} else {{ \"False\".to_string() }}",
                     arg_expr
                 ),
-                Some(Type::None) => "String::from(\"None\")".to_string(),
+                Some(Type::None) => "\"None\".to_string()".to_string(),
                 Some(Type::Int | Type::Float) => format!("{}.to_string()", arg_expr),
-                Some(Type::List(_)) => {
-                    self.uses.py_list_str = true;
-                    format!("py_list_str(&{})", arg_expr)
-                }
+                Some(Type::List(_)) => self.list_str_expr(&args[0])?,
                 _ => format!("format!(\"{{:?}}\", {})", arg_expr),
             }));
         }
@@ -889,7 +955,7 @@ impl<'a> Codegen<'a> {
             }
             if let Some(ty) = args[0].ty.as_ref() {
                 if let Some(class_str) = self.python_type_class(ty) {
-                    return Ok(Some(format!("String::from({:?})", class_str)));
+                    return Ok(Some(format!("{:?}.to_string()", class_str)));
                 }
             }
             self.uses.type_name = true;
@@ -964,6 +1030,8 @@ impl<'a> Codegen<'a> {
                 let target = if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
                         format!("{}.lock().unwrap()", self.global_lock_expr(name))
+                    } else if self.is_local_list_name(name) {
+                        return Ok(format!("{}.push({})", name, self.gen_args(args)?));
                     } else {
                         format!("{}.lock().unwrap()", self.gen_expr(value)?)
                     }
@@ -975,14 +1043,17 @@ impl<'a> Codegen<'a> {
         }
         if attr == "extend" {
             if let Some(Type::List(_)) = value.ty.as_ref() {
-                let target = if let ExprKind::Name(name) = &value.kind {
+                let mut target = None;
+                if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
-                        format!("{}.lock().unwrap()", self.global_lock_expr(name))
-                    } else {
-                        format!("{}.lock().unwrap()", self.gen_expr(value)?)
+                        target = Some(format!("{}.lock().unwrap()", self.global_lock_expr(name)));
+                    } else if self.is_local_list_name(name) {
+                        target = Some(name.clone());
                     }
-                } else {
-                    format!("{}.lock().unwrap()", self.gen_expr(value)?)
+                }
+                let target = match target {
+                    Some(expr) => expr,
+                    None => format!("{}.lock().unwrap()", self.gen_expr(value)?),
                 };
                 if args.is_empty() {
                     return Ok(format!("{{ {}.extend(std::iter::empty()); }}", target));
@@ -1007,10 +1078,16 @@ impl<'a> Codegen<'a> {
                     ));
                 }
                 let arg_expr = self.gen_expr(arg)?;
-                return Ok(format!(
-                    "{}.extend({}.lock().unwrap().iter().cloned())",
-                    target, arg_expr
-                ));
+                if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
+                    if matches!(self.list_storage_for_expr(arg), ListStorage::Local) {
+                        return Ok(format!("{}.extend({}.iter().cloned())", target, arg_expr));
+                    }
+                    return Ok(format!(
+                        "{}.extend({}.lock().unwrap().iter().cloned())",
+                        target, arg_expr
+                    ));
+                }
+                return Ok(format!("{}.extend({}.into_iter())", target, arg_expr));
             }
         }
         if attr == "pop" {
@@ -1019,6 +1096,31 @@ impl<'a> Codegen<'a> {
                     return Err(self.error(value.span, "list.pop() expects zero or one argument"));
                 }
                 let idx_arg = args.first();
+                if let ExprKind::Name(name) = &value.kind {
+                    if !self.is_global(name) && self.is_local_list_name(name) {
+                        if let Some(arg) = idx_arg {
+                            let idx_raw = self.gen_expr(arg)?;
+                            self.uses.py_index = true;
+                            let len_tmp = self.new_tmp();
+                            let idx_tmp = self.new_tmp();
+                            return Ok(format!(
+                                "{{ let {len_tmp} = {target}.len(); let {idx_tmp} = {idx_expr}; {target}.remove({idx_tmp}) }}",
+                                len_tmp = len_tmp,
+                                idx_tmp = idx_tmp,
+                                idx_expr = self.wrap_result(format!(
+                                    "py_index({}, {})",
+                                    idx_raw, len_tmp
+                                )),
+                                target = name
+                            ));
+                        }
+                        let pop_expr = format!(
+                            "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".to_string()))",
+                            name
+                        );
+                        return Ok(self.wrap_result(pop_expr));
+                    }
+                }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
                         let outer = self.new_tmp();
@@ -1039,7 +1141,7 @@ impl<'a> Codegen<'a> {
                             ));
                         }
                         let pop_expr = format!(
-                            "{}.pop().ok_or_else(|| PyError::IndexError(String::from(\"IndexError\")))",
+                            "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".to_string()))",
                             guard
                         );
                         return Ok(format!(
@@ -1073,7 +1175,7 @@ impl<'a> Codegen<'a> {
                         ));
                     }
                     let pop_expr = format!(
-                        "{}.pop().ok_or_else(|| PyError::IndexError(String::from(\"IndexError\")))",
+                        "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".to_string()))",
                         guard
                     );
                     return Ok(format!(
@@ -1102,7 +1204,7 @@ impl<'a> Codegen<'a> {
                     ));
                 }
                 let pop_expr = format!(
-                    "{}.pop().ok_or_else(|| PyError::IndexError(String::from(\"IndexError\")))",
+                    "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".to_string()))",
                     "guard"
                 );
                 return Ok(self.wrap_result(format!(
@@ -1119,6 +1221,20 @@ impl<'a> Codegen<'a> {
                 let idx_raw = self.gen_expr(&args[0])?;
                 let val_expr = self.gen_expr_with_expected(&args[1], Some(inner.as_ref()))?;
                 self.uses.py_insert_index = true;
+                if let ExprKind::Name(name) = &value.kind {
+                    if !self.is_global(name) && self.is_local_list_name(name) {
+                        let len_tmp = self.new_tmp();
+                        let idx_tmp = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let {len_tmp} = {target}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {target}.insert({idx_tmp}, {val}); }}",
+                            len_tmp = len_tmp,
+                            idx_tmp = idx_tmp,
+                            idx_raw = idx_raw,
+                            target = name,
+                            val = val_expr
+                        ));
+                    }
+                }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
                         let outer = self.new_tmp();
@@ -1172,6 +1288,11 @@ impl<'a> Codegen<'a> {
                     return Err(self.error(value.span, "list.clear() expects no arguments"));
                 }
                 if let ExprKind::Name(name) = &value.kind {
+                    if !self.is_global(name) && self.is_local_list_name(name) {
+                        return Ok(format!("{{ {}.clear(); }}", name));
+                    }
+                }
+                if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
                         let outer = self.new_tmp();
                         let guard = self.new_tmp();
@@ -1212,6 +1333,9 @@ impl<'a> Codegen<'a> {
                             self.global_lock_expr(name)
                         ));
                     }
+                    if self.is_local_list_name(name) {
+                        return Ok(format!("Arc::new(Mutex::new({}.clone()))", name));
+                    }
                 }
                 let target_expr = self.gen_expr(value)?;
                 return Ok(format!(
@@ -1224,6 +1348,11 @@ impl<'a> Codegen<'a> {
             if let Some(Type::List(_)) = value.ty.as_ref() {
                 if !args.is_empty() {
                     return Err(self.error(value.span, "list.reverse() expects no arguments"));
+                }
+                if let ExprKind::Name(name) = &value.kind {
+                    if !self.is_global(name) && self.is_local_list_name(name) {
+                        return Ok(format!("{{ {}.reverse(); }}", name));
+                    }
                 }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
@@ -1262,6 +1391,16 @@ impl<'a> Codegen<'a> {
                 self.uses.py_list_index = true;
                 let needle_expr = self.gen_expr(&args[0])?;
                 if let ExprKind::Name(name) = &value.kind {
+                    if !self.is_global(name) && self.is_local_list_name(name) {
+                        let call = format!(
+                            "py_list_index(&{target}, &{needle})",
+                            target = name,
+                            needle = needle_expr
+                        );
+                        return Ok(self.wrap_result(call));
+                    }
+                }
+                if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
                         let outer = self.new_tmp();
                         let guard = self.new_tmp();
@@ -1297,6 +1436,11 @@ impl<'a> Codegen<'a> {
                 } else {
                     "sort()"
                 };
+                if let ExprKind::Name(name) = &value.kind {
+                    if !self.is_global(name) && self.is_local_list_name(name) {
+                        return Ok(format!("{{ {}.{}; }}", name, sort_call));
+                    }
+                }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
                         let outer = self.new_tmp();
@@ -1335,6 +1479,11 @@ impl<'a> Codegen<'a> {
                 }
                 self.uses.py_list_count = true;
                 let needle_expr = self.gen_expr(&args[0])?;
+                if let ExprKind::Name(name) = &value.kind {
+                    if !self.is_global(name) && self.is_local_list_name(name) {
+                        return Ok(format!("py_list_count(&{}, &{})", name, needle_expr));
+                    }
+                }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
                         let outer = self.new_tmp();
@@ -1438,7 +1587,7 @@ impl<'a> Codegen<'a> {
                             ));
                         }
                         let pop_expr = format!(
-                            "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(String::from(\"KeyError\")))",
+                            "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".to_string()))",
                             guard = guard,
                             key = key_expr
                         );
@@ -1470,7 +1619,7 @@ impl<'a> Codegen<'a> {
                     ));
                 }
                 let pop_expr = format!(
-                    "{}.remove(&{}).ok_or_else(|| PyError::KeyError(String::from(\"KeyError\")))",
+                    "{}.remove(&{}).ok_or_else(|| PyError::KeyError(\"KeyError\".to_string()))",
                     target_expr, key_expr
                 );
                 return Ok(self.wrap_result(pop_expr));
@@ -1649,13 +1798,12 @@ impl<'a> Codegen<'a> {
             if let ExprKind::Literal(Literal::Str(fmt)) = &value.kind {
                 let fmt_lit = format!("{fmt:?}");
                 if args.is_empty() {
-                    return Ok(format!("String::from({})", fmt_lit));
+                    return Ok(format!("{}.to_string()", fmt_lit));
                 }
                 let mut vals = Vec::new();
                 for arg in args {
                     if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
-                        self.uses.py_list_str = true;
-                        vals.push(format!("py_list_str(&{})", self.gen_expr(arg)?));
+                        vals.push(self.list_str_expr(arg)?);
                     } else if self.print_needs_debug(arg) {
                         let arg_expr = self.debug_arg_expr(arg)?;
                         vals.push(format!("format!(\"{{:?}}\", {})", arg_expr));

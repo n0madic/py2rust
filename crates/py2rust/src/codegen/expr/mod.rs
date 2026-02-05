@@ -20,7 +20,7 @@ impl<'a> Codegen<'a> {
     ///
     /// Key design decisions:
     /// - Literals: Always suffix numeric literals (42i64, 3.14f64) to avoid ambiguity
-    /// - Strings: Use String::from() instead of .to_string() for consistency
+    /// - Strings: Prefer literal .to_string() for string constants
     /// - None: Maps to () or None depending on whether it's in Optional context
     /// - __name__: Special variable backed by const __NAME__, calls .to_string() on access
     /// - Globals: Access via OnceLock mutex wrapper for thread-safe mutation

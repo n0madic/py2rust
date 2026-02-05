@@ -194,7 +194,7 @@ impl<'a> Codegen<'a> {
             );
             self.indent += 1;
             self.push_line(
-                "if step == 0 { return Err(PyError::ValueError(String::from(\"range() arg 3 must not be zero\"))); }",
+                "if step == 0 { return Err(PyError::ValueError(\"range() arg 3 must not be zero\".to_string())); }",
             );
             self.push_line("if step > 0 {");
             self.indent += 1;
@@ -262,7 +262,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.push_line("let mut iter = iter.into_iter();");
             self.push_line(
-                "let mut best = iter.next().ok_or_else(|| PyError::ValueError(String::from(\"max() arg is an empty sequence\")))?;",
+                "let mut best = iter.next().ok_or_else(|| PyError::ValueError(\"max() arg is an empty sequence\".to_string()))?;",
             );
             self.push_line("for item in iter {");
             self.indent += 1;
@@ -287,7 +287,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.push_line("let mut iter = iter.into_iter();");
             self.push_line(
-                "let mut best = iter.next().ok_or_else(|| PyError::ValueError(String::from(\"min() arg is an empty sequence\")))?;",
+                "let mut best = iter.next().ok_or_else(|| PyError::ValueError(\"min() arg is an empty sequence\".to_string()))?;",
             );
             self.push_line("for item in iter {");
             self.indent += 1;
@@ -330,7 +330,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.push_line("if len < 0 {");
             self.indent += 1;
-            self.push_line("return Err(PyError::ValueError(String::from(\"negative count\")));");
+            self.push_line("return Err(PyError::ValueError(\"negative count\".to_string()));");
             self.indent -= 1;
             self.push_line("}");
             self.push_line("Ok(vec![0i64; len as usize])");
@@ -346,7 +346,7 @@ impl<'a> Codegen<'a> {
             self.push_line("if encoding != \"utf-8\" {");
             self.indent += 1;
             self.push_line(
-                "return Err(PyError::ValueError(String::from(\"unsupported encoding\")));",
+                "return Err(PyError::ValueError(\"unsupported encoding\".to_string()));",
             );
             self.indent -= 1;
             self.push_line("}");
@@ -360,7 +360,7 @@ impl<'a> Codegen<'a> {
             self.push_line("if value < 0 || value > 0x10FFFF {");
             self.indent += 1;
             self.push_line(
-                "return Err(PyError::ValueError(String::from(\"chr() arg not in range(0x110000)\")));",
+                "return Err(PyError::ValueError(\"chr() arg not in range(0x110000)\".to_string()));",
             );
             self.indent -= 1;
             self.push_line("}");
@@ -368,7 +368,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.push_line("Some(c) => Ok(c.to_string()),");
             self.push_line(
-                "None => Err(PyError::ValueError(String::from(\"chr() arg not in range(0x110000)\"))),",
+                "None => Err(PyError::ValueError(\"chr() arg not in range(0x110000)\".to_string())),",
             );
             self.indent -= 1;
             self.push_line("}");
@@ -383,7 +383,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.push_line("(Some(c), None) => Ok(c as i64),");
             self.push_line(
-                "_ => Err(PyError::TypeError(String::from(\"ord() expects a character\"))),",
+                "_ => Err(PyError::TypeError(\"ord() expects a character\".to_string())),",
             );
             self.indent -= 1;
             self.push_line("}");
@@ -403,7 +403,7 @@ impl<'a> Codegen<'a> {
             );
             self.indent += 1;
             self.push_line(
-                "map.get(key).cloned().ok_or_else(|| PyError::KeyError(String::from(\"KeyError\")))",
+                "map.get(key).cloned().ok_or_else(|| PyError::KeyError(\"KeyError\".to_string()))",
             );
             self.indent -= 1;
             self.push_line("}");
@@ -417,7 +417,7 @@ impl<'a> Codegen<'a> {
             self.push_line("let adj = if idx < 0 { len + idx } else { idx };");
             self.push_line("if adj < 0 || adj >= len {");
             self.indent += 1;
-            self.push_line("Err(PyError::IndexError(String::from(\"IndexError\")))");
+            self.push_line("Err(PyError::IndexError(\"IndexError\".to_string()))");
             self.indent -= 1;
             self.push_line("} else {");
             self.indent += 1;
@@ -437,7 +437,7 @@ impl<'a> Codegen<'a> {
             self.push_line("if item == needle { return Ok(idx as i64); }");
             self.indent -= 1;
             self.push_line("}");
-            self.push_line("Err(PyError::ValueError(String::from(\"ValueError\")))");
+            self.push_line("Err(PyError::ValueError(\"ValueError\".to_string()))");
             self.indent -= 1;
             self.push_line("}");
         }
@@ -472,7 +472,7 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
             self.push_line("impl PyListRepr for bool {");
             self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { if *self { String::from(\"True\") } else { String::from(\"False\") } }");
+            self.push_line("fn py_repr(&self) -> String { if *self { \"True\".to_string() } else { \"False\".to_string() } }");
             self.indent -= 1;
             self.push_line("}");
             self.push_line("impl PyListRepr for String {");
@@ -513,21 +513,33 @@ impl<'a> Codegen<'a> {
             self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
             self.indent -= 1;
             self.push_line("}");
+            self.push_line("impl<T: PyListRepr> PyListRepr for Vec<T> {");
+            self.indent += 1;
+            self.push_line("fn py_repr(&self) -> String { py_list_str_vec(self) }");
+            self.indent -= 1;
+            self.push_line("}");
             self.push_line("impl<T: PyListRepr> PyListRepr for Arc<Mutex<Vec<T>>> {");
             self.indent += 1;
             self.push_line("fn py_repr(&self) -> String { py_list_str(self) }");
             self.indent -= 1;
             self.push_line("}");
+            self.push_line("fn py_list_str_vec<T: PyListRepr>(list: &[T]) -> String {");
+            self.indent += 1;
+            self.push_line("let mut out = \"[\".to_string();");
+            self.push_line("for (idx, item) in list.iter().enumerate() {");
+            self.indent += 1;
+            self.push_line("if idx > 0 { out.push_str(\", \"); }");
+            self.push_line("out.push_str(&item.py_repr());");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("out.push(']');");
+            self.push_line("out");
+            self.indent -= 1;
+            self.push_line("}");
             self.push_line("fn py_list_str<T: PyListRepr>(list: &Arc<Mutex<Vec<T>>>) -> String {");
             self.indent += 1;
             self.push_line("let guard = list.lock().expect(\"list mutex poisoned\");");
-            self.push_line("let mut parts: Vec<String> = Vec::new();");
-            self.push_line("for item in guard.iter() {");
-            self.indent += 1;
-            self.push_line("parts.push(item.py_repr());");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("format!(\"[{}]\", parts.join(\", \"))");
+            self.push_line("py_list_str_vec(&guard)");
             self.indent -= 1;
             self.push_line("}");
         }
@@ -541,7 +553,7 @@ impl<'a> Codegen<'a> {
             self.push_line("let adj = if idx < 0 { len_i + idx } else { idx };");
             self.push_line("if adj < 0 || adj >= len_i {");
             self.indent += 1;
-            self.push_line("Err(PyError::IndexError(String::from(\"IndexError\")))");
+            self.push_line("Err(PyError::IndexError(\"IndexError\".to_string()))");
             self.indent -= 1;
             self.push_line("} else {");
             self.indent += 1;
@@ -582,7 +594,7 @@ impl<'a> Codegen<'a> {
             );
             self.indent += 1;
             self.push_line(
-                "if step == 0 { return Err(PyError::ValueError(String::from(\"slice step cannot be zero\"))); }",
+                "if step == 0 { return Err(PyError::ValueError(\"slice step cannot be zero\".to_string())); }",
             );
             self.push_line("let len = items.len() as i64;");
             self.push_line("let mut out = Vec::new();");

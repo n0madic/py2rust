@@ -130,6 +130,17 @@ impl<'a> Codegen<'a> {
             }),
             // Lists are shared (Arc<Mutex<...>>), so keep the lock guard in scope.
             Some(Type::List(inner)) => {
+                if matches!(self.list_storage_for_expr(expr), ListStorage::Local) {
+                    let expr = if self.is_copy_type(inner) {
+                        format!("{}.iter().copied()", rendered)
+                    } else {
+                        format!("{}.iter().cloned()", rendered)
+                    };
+                    return Ok(IterSource {
+                        setup: Vec::new(),
+                        expr,
+                    });
+                }
                 let tmp = self.new_tmp();
                 let guard = self.new_tmp();
                 let iter_expr = if self.is_copy_type(inner) {
@@ -223,6 +234,11 @@ impl<'a> Codegen<'a> {
                     })
                 }
             }
+            // Iterators are already iterable; avoid redundant .into_iter() on ranges.
+            Some(Type::Iterator(_)) => Ok(IterSource {
+                setup: Vec::new(),
+                expr: rendered,
+            }),
             // References to collections.
             Some(Type::Ref(inner)) => match inner.as_ref() {
                 Type::Set(elem) => {
@@ -254,6 +270,23 @@ impl<'a> Codegen<'a> {
         match expr.ty.as_ref() {
             // Lists need a guard that lives inside the returned iterator.
             Some(Type::List(inner)) => {
+                if matches!(self.list_storage_for_expr(expr), ListStorage::Local) {
+                    let idx = self.new_tmp();
+                    let list_ref = self.new_tmp();
+                    let item_expr = if self.is_copy_type(inner) {
+                        format!("{list}[{idx}]", list = list_ref, idx = idx)
+                    } else {
+                        format!("{list}[{idx}].clone()", list = list_ref, idx = idx)
+                    };
+                    // Index-based iteration avoids cloning the whole Vec for local lists.
+                    return Ok(format!(
+                        "{{ let {list_ref} = &{list}; let mut {idx}: usize = 0; std::iter::from_fn(move || {{ if {idx} < {list_ref}.len() {{ let item = {item}; {idx} += 1; Some(item) }} else {{ None }} }}) }}",
+                        idx = idx,
+                        list = rendered,
+                        list_ref = list_ref,
+                        item = item_expr
+                    ));
+                }
                 let tmp = self.new_tmp();
                 let idx = self.new_tmp();
                 let guard = self.new_tmp();
@@ -277,7 +310,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Check if a type implements Copy (primitives).
-    pub(super) fn is_copy_type(&self, ty: &Type) -> bool {
+    pub(crate) fn is_copy_type(&self, ty: &Type) -> bool {
         matches!(ty, Type::Int | Type::Float | Type::Bool)
     }
 
@@ -314,13 +347,9 @@ impl<'a> Codegen<'a> {
             Type::Str => format!("!{}.is_empty()", expr_str),
             Type::Bytes | Type::Set(_) | Type::Dict(_, _) => format!("!{}.is_empty()", expr_str),
             Type::List(_) => {
-                // Clone into a temporary so we don't move list Arcs out of scope.
-                let tmp = self.new_tmp();
-                format!(
-                    "{{ let {tmp} = {expr}.clone(); let _guard = {tmp}.lock().unwrap(); !_guard.is_empty() }}",
-                    tmp = tmp,
-                    expr = expr_str
-                )
+                // Use py_len so both Vec and Arc<Mutex<Vec<T>>> are supported.
+                self.uses.len = true;
+                format!("py_len(&{}) != 0", expr_str)
             }
             Type::Tuple(items) => {
                 if items.is_empty() {
@@ -460,8 +489,48 @@ impl<'a> Codegen<'a> {
     pub(super) fn debug_arg_expr(&mut self, expr: &Expr) -> Result<String, CompileError> {
         let rendered = self.gen_expr(expr)?;
         if matches!(expr.ty.as_ref(), Some(Type::List(_))) {
+            if matches!(self.list_storage_for_expr(expr), ListStorage::Local) {
+                return Ok(format!("&{}", rendered));
+            }
             return Ok(format!("{}.lock().unwrap()", rendered));
         }
         Ok(rendered)
+    }
+
+    /// Build a list repr expression that matches the list storage strategy.
+    pub(super) fn list_str_expr(&mut self, expr: &Expr) -> Result<String, CompileError> {
+        self.uses.py_list_str = true;
+        if let ExprKind::List(items) = &expr.kind {
+            let tmp = self.new_tmp();
+            let list_expr = self.gen_list_expr_with_storage(expr, items, ListStorage::Local)?;
+            // Print temporary list literals without Arc<Mutex<...>> overhead.
+            return Ok(format!(
+                "{{ let {tmp} = {list}; py_list_str_vec(&{tmp}) }}",
+                tmp = tmp,
+                list = list_expr
+            ));
+        }
+        if let ExprKind::ListComp {
+            elt,
+            target,
+            iter,
+            ifs,
+        } = &expr.kind
+        {
+            let tmp = self.new_tmp();
+            let list_expr =
+                self.gen_list_comp_expr_with_storage(elt, target, iter, ifs, ListStorage::Local)?;
+            // Keep list comprehension results local when formatting.
+            return Ok(format!(
+                "{{ let {tmp} = {list}; py_list_str_vec(&{tmp}) }}",
+                tmp = tmp,
+                list = list_expr
+            ));
+        }
+        let rendered = self.gen_expr(expr)?;
+        if matches!(self.list_storage_for_expr(expr), ListStorage::Local) {
+            return Ok(format!("py_list_str_vec(&{})", rendered));
+        }
+        Ok(format!("py_list_str(&{})", rendered))
     }
 }

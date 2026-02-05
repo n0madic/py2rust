@@ -9,6 +9,16 @@ impl<'a> Codegen<'a> {
         expr: &Expr,
         items: &[Expr],
     ) -> Result<String, CompileError> {
+        self.gen_list_expr_with_storage(expr, items, ListStorage::Shared)
+    }
+
+    /// Lower a list literal with an explicit storage strategy.
+    pub(crate) fn gen_list_expr_with_storage(
+        &mut self,
+        expr: &Expr,
+        items: &[Expr],
+        storage: ListStorage,
+    ) -> Result<String, CompileError> {
         let expected = match expr.ty.as_ref() {
             Some(Type::List(inner)) => Some(inner.as_ref()),
             _ => None,
@@ -16,14 +26,13 @@ impl<'a> Codegen<'a> {
         if items.is_empty() {
             if let Some(Type::List(inner)) = expr.ty.as_ref() {
                 if !matches!(inner.as_ref(), Type::Unknown) {
-                    return Ok(format!(
-                        "Arc::new(Mutex::new(Vec::<{}>::new()))",
-                        self.rust_type(inner)
-                    ));
+                    let base = format!("Vec::<{}>::new()", self.rust_type(inner));
+                    return Ok(self.wrap_list_storage_expr(&base, storage));
                 }
                 // Use PyRepr so empty lists with unknown element types are concrete.
                 self.uses.py_repr = true;
-                return Ok("Arc::new(Mutex::new(Vec::<PyRepr>::new()))".to_string());
+                let base = "Vec::<PyRepr>::new()".to_string();
+                return Ok(self.wrap_list_storage_expr(&base, storage));
             }
         }
         // If element types don't unify, coerce to a String-based list for Debug printing.
@@ -36,21 +45,22 @@ impl<'a> Codegen<'a> {
                 .iter()
                 .map(|e| self.gen_unknown_list_elem(e))
                 .collect();
-            return Ok(format!("Arc::new(Mutex::new(vec![{}]))", elems?.join(", ")));
+            let base = format!("vec![{}]", elems?.join(", "));
+            return Ok(self.wrap_list_storage_expr(&base, storage));
         }
         let elems: Result<Vec<String>, CompileError> = items
             .iter()
             .map(|e| self.gen_expr_with_expected(e, expected))
             .collect();
-        Ok(format!("Arc::new(Mutex::new(vec![{}]))", elems?.join(", ")))
+        let base = format!("vec![{}]", elems?.join(", "));
+        Ok(self.wrap_list_storage_expr(&base, storage))
     }
 
     /// Coerce heterogeneous list elements into PyRepr for a uniform Vec<PyRepr>.
     fn gen_unknown_list_elem(&mut self, expr: &Expr) -> Result<String, CompileError> {
         if matches!(expr.ty.as_ref(), Some(Type::List(_))) {
             // Nested list reprs already include brackets; avoid Debug-quoting the string.
-            self.uses.py_list_str = true;
-            let elem_expr = format!("py_list_str(&{})", self.gen_expr(expr)?);
+            let elem_expr = self.list_str_expr(expr)?;
             return Ok(format!("PyRepr({})", elem_expr));
         }
         let elem_expr = self.gen_expr(expr)?;
@@ -170,10 +180,12 @@ impl<'a> Codegen<'a> {
             let idx_expr = self.gen_expr(index)?;
             self.uses.py_list_get = true;
             if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                return Ok(self.wrap_result(format!(
-                    "py_list_get(&{}.lock().unwrap(), {})",
-                    base, idx_expr
-                )));
+                let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
+                    format!("&{}", base)
+                } else {
+                    format!("&{}.lock().unwrap()", base)
+                };
+                return Ok(self.wrap_result(format!("py_list_get({}, {})", list_ref, idx_expr)));
             }
             return Ok(self.wrap_result(format!("py_list_get(&{}, {})", base, idx_expr)));
         }
@@ -323,9 +335,15 @@ impl<'a> Codegen<'a> {
                 self.uses.py_list_slice_step = true;
                 let step_arg = self.gen_expr(step)?;
                 let call = if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+                    let list_ref =
+                        if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
+                            format!("&{}", base)
+                        } else {
+                            format!("&{}.lock().unwrap()", base)
+                        };
                     self.wrap_result(format!(
-                        "py_list_slice_step(&{}.lock().unwrap(), {}, {}, {})",
-                        base, start_arg, end_arg, step_arg
+                        "py_list_slice_step({}, {}, {}, {})",
+                        list_ref, start_arg, end_arg, step_arg
                     ))
                 } else {
                     self.wrap_result(format!(
@@ -341,9 +359,14 @@ impl<'a> Codegen<'a> {
             // Use the step helper with step=1 to handle negative bounds consistently.
             self.uses.py_list_slice_step = true;
             let call = if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+                let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
+                    format!("&{}", base)
+                } else {
+                    format!("&{}.lock().unwrap()", base)
+                };
                 self.wrap_result(format!(
-                    "py_list_slice_step(&{}.lock().unwrap(), {}, {}, 1i64)",
-                    base, start_arg, end_arg
+                    "py_list_slice_step({}, {}, {}, 1i64)",
+                    list_ref, start_arg, end_arg
                 ))
             } else {
                 self.wrap_result(format!(
@@ -379,8 +402,19 @@ impl<'a> Codegen<'a> {
         iter: &Expr,
         ifs: &[Expr],
     ) -> Result<String, CompileError> {
+        self.gen_list_comp_expr_with_storage(elt, target, iter, ifs, ListStorage::Shared)
+    }
+
+    /// Lower list comprehension expressions with explicit storage.
+    pub(crate) fn gen_list_comp_expr_with_storage(
+        &mut self,
+        elt: &Expr,
+        target: &str,
+        iter: &Expr,
+        ifs: &[Expr],
+        storage: ListStorage,
+    ) -> Result<String, CompileError> {
         let tmp = self.new_tmp();
-        let iter_src = self.gen_iter_source(iter)?;
         // Ensure the comprehension target is treated as a local binding while
         // generating the element and filter expressions.
         let saved_locals = self.local_vars.clone();
@@ -398,12 +432,40 @@ impl<'a> Codegen<'a> {
         self.local_vars = saved_locals;
         let mut out = String::new();
         out.push('{');
-        // Keep list lock guards alive for the duration of the comprehension.
-        for line in &iter_src.setup {
-            out.push_str(&format!(" {};", line));
-        }
         out.push_str(&format!(" let mut {} = Vec::new();", tmp));
-        out.push_str(&format!(" for {} in {} {{", target, iter_src.expr));
+        if let Some(Type::List(inner)) = iter.ty.as_ref() {
+            if matches!(self.list_storage_for_expr(iter), ListStorage::Local) {
+                let idx = self.new_tmp();
+                let iter_expr = self.gen_expr(iter)?;
+                let item_expr = if self.is_copy_type(inner) {
+                    format!("{iter}[{idx}]", iter = iter_expr, idx = idx)
+                } else {
+                    format!("{iter}[{idx}].clone()", iter = iter_expr, idx = idx)
+                };
+                out.push_str(&format!(" let mut {}: usize = 0;", idx));
+                out.push_str(&format!(" while {} < {}.len() {{", idx, iter_expr));
+                out.push_str(&format!(
+                    " let {target} = {item}; {idx} += 1;",
+                    target = target,
+                    item = item_expr,
+                    idx = idx
+                ));
+            } else {
+                let iter_src = self.gen_iter_source(iter)?;
+                // Keep list lock guards alive for the duration of the comprehension.
+                for line in &iter_src.setup {
+                    out.push_str(&format!(" {};", line));
+                }
+                out.push_str(&format!(" for {} in {} {{", target, iter_src.expr));
+            }
+        } else {
+            let iter_src = self.gen_iter_source(iter)?;
+            // Keep list lock guards alive for the duration of the comprehension.
+            for line in &iter_src.setup {
+                out.push_str(&format!(" {};", line));
+            }
+            out.push_str(&format!(" for {} in {} {{", target, iter_src.expr));
+        }
         if ifs.is_empty() {
             out.push_str(&format!(" {}.push({});", tmp, elt_expr));
         } else {
@@ -415,7 +477,10 @@ impl<'a> Codegen<'a> {
             ));
         }
         out.push_str(" }");
-        out.push_str(&format!(" Arc::new(Mutex::new({})) }}", tmp));
+        out.push_str(&format!(
+            " {} }}",
+            self.wrap_list_storage_expr(&tmp, storage)
+        ));
         Ok(out)
     }
 

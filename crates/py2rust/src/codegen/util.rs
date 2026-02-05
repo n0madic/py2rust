@@ -38,6 +38,59 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Determine the storage strategy for a list variable by name.
+    pub(crate) fn list_storage_for_name(&self, name: &str) -> ListStorage {
+        if self.is_global(name) {
+            return ListStorage::Shared;
+        }
+        if self.current_function.is_some() {
+            if let Some(map) = self.local_list_storage.as_ref() {
+                if let Some(storage) = map.get(name) {
+                    return *storage;
+                }
+            }
+            return ListStorage::Shared;
+        }
+        if let Some(storage) = self.main_list_storage.get(name) {
+            return *storage;
+        }
+        ListStorage::Shared
+    }
+
+    /// Check if a list variable is stored locally as Vec<T>.
+    pub(crate) fn is_local_list_name(&self, name: &str) -> bool {
+        matches!(self.list_storage_for_name(name), ListStorage::Local)
+    }
+
+    /// Resolve storage strategy for a list expression (defaults to Shared).
+    pub(crate) fn list_storage_for_expr(&self, expr: &Expr) -> ListStorage {
+        if matches!(expr.ty.as_ref(), Some(Type::List(_))) {
+            if let ExprKind::Name(name) = &expr.kind {
+                return self.list_storage_for_name(name);
+            }
+        }
+        ListStorage::Shared
+    }
+
+    /// Wrap a list expression with the configured storage strategy.
+    pub(crate) fn wrap_list_storage_expr(&self, expr: &str, storage: ListStorage) -> String {
+        match storage {
+            ListStorage::Local => expr.to_string(),
+            ListStorage::Shared => format!("Arc::new(Mutex::new({}))", expr),
+        }
+    }
+
+    /// Record list storage for a generated temporary name.
+    pub(crate) fn set_list_storage_for_temp(&mut self, name: &str, storage: ListStorage) {
+        if self.current_function.is_some() {
+            if let Some(map) = self.local_list_storage.as_mut() {
+                map.insert(name.to_string(), storage);
+            }
+        } else {
+            self.main_list_storage.insert(name.to_string(), storage);
+        }
+    }
+
     pub(crate) fn global_name(&self, name: &str) -> String {
         format!("__GLOBAL_{}", name.to_uppercase())
     }

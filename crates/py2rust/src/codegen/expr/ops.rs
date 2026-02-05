@@ -32,21 +32,41 @@ impl<'a> Codegen<'a> {
                     "{}"
                 };
                 let left_expr = if left_is_list {
-                    self.uses.py_list_str = true;
-                    format!("py_list_str(&{})", self.gen_expr(left)?)
+                    self.list_str_expr(left)?
                 } else if left_spec == "{:?}" {
                     self.debug_arg_expr(left)?
                 } else {
                     self.gen_expr(left)?
                 };
                 let right_expr = if right_is_list {
-                    self.uses.py_list_str = true;
-                    format!("py_list_str(&{})", self.gen_expr(right)?)
+                    self.list_str_expr(right)?
                 } else if right_spec == "{:?}" {
                     self.debug_arg_expr(right)?
                 } else {
                     self.gen_expr(right)?
                 };
+                let left_lit = match &left.kind {
+                    ExprKind::Literal(Literal::Str(s)) => Some(s.as_str()),
+                    _ => None,
+                };
+                let right_lit = match &right.kind {
+                    ExprKind::Literal(Literal::Str(s)) => Some(s.as_str()),
+                    _ => None,
+                };
+                if let (Some(left_lit), Some(right_lit)) = (left_lit, right_lit) {
+                    let combined = format!("{left}{right}", left = left_lit, right = right_lit);
+                    return Ok(format!("{:?}.to_string()", combined));
+                }
+                if let Some(left_lit) = left_lit {
+                    let fmt = format!("{}{}", self.escape_format_literal(left_lit), right_spec);
+                    let fmt_lit = format!("{:?}", fmt);
+                    return Ok(format!("format!({}, {})", fmt_lit, right_expr));
+                }
+                if let Some(right_lit) = right_lit {
+                    let fmt = format!("{}{}", left_spec, self.escape_format_literal(right_lit));
+                    let fmt_lit = format!("{:?}", fmt);
+                    return Ok(format!("format!({}, {})", fmt_lit, left_expr));
+                }
                 return Ok(format!(
                     "format!(\"{}{}\", {}, {})",
                     left_spec, right_spec, left_expr, right_expr
@@ -161,6 +181,12 @@ impl<'a> Codegen<'a> {
         Ok(format!("({}{})", op_str, self.gen_expr(inner)?))
     }
 
+    /// Escape braces so literal strings can be embedded into format! strings.
+    fn escape_format_literal(&self, literal: &str) -> String {
+        // format! treats `{` and `}` as placeholders, so we must escape them.
+        literal.replace('{', "{{").replace('}', "}}")
+    }
+
     /// Lower a comparison expression, including membership and None checks.
     pub(super) fn gen_compare_expr(
         &mut self,
@@ -192,7 +218,11 @@ impl<'a> Codegen<'a> {
             let right_expr = self.gen_expr(right)?;
             let mut expr = match right.ty.as_ref() {
                 Some(Type::List(_)) => {
-                    format!("{}.lock().unwrap().contains(&{})", right_expr, left_expr)
+                    if matches!(self.list_storage_for_expr(right), ListStorage::Local) {
+                        format!("{}.contains(&{})", right_expr, left_expr)
+                    } else {
+                        format!("{}.lock().unwrap().contains(&{})", right_expr, left_expr)
+                    }
                 }
                 Some(Type::Set(_)) | Some(Type::Slice(_)) => {
                     format!("{}.contains(&{})", right_expr, left_expr)
@@ -292,20 +322,46 @@ impl<'a> Codegen<'a> {
             {
                 let left_expr = self.gen_expr(left)?;
                 let right_expr = self.gen_expr(right)?;
-                let left_tmp = self.new_tmp();
-                let right_tmp = self.new_tmp();
-                let left_guard = self.new_tmp();
-                let right_guard = self.new_tmp();
-                let eq_expr = format!(
-                    // Clone the Arcs to avoid moving list values out of scope.
-                    "{{ let {left_tmp} = {left_expr}.clone(); let {right_tmp} = {right_expr}.clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().unwrap(); let {right_guard} = {right_tmp}.lock().unwrap(); {left_guard}.iter().eq({right_guard}.iter()) }} }}",
-                    left_tmp = left_tmp,
-                    right_tmp = right_tmp,
-                    left_guard = left_guard,
-                    right_guard = right_guard,
-                    left_expr = left_expr,
-                    right_expr = right_expr
-                );
+                let left_local = matches!(self.list_storage_for_expr(left), ListStorage::Local);
+                let right_local = matches!(self.list_storage_for_expr(right), ListStorage::Local);
+                let eq_expr = if left_local && right_local {
+                    format!("{}.iter().eq({}.iter())", left_expr, right_expr)
+                } else if left_local {
+                    let right_tmp = self.new_tmp();
+                    let right_guard = self.new_tmp();
+                    format!(
+                        "{{ let {right_tmp} = {right_expr}.clone(); let {right_guard} = {right_tmp}.lock().unwrap(); {left}.iter().eq({right_guard}.iter()) }}",
+                        right_tmp = right_tmp,
+                        right_guard = right_guard,
+                        right_expr = right_expr,
+                        left = left_expr
+                    )
+                } else if right_local {
+                    let left_tmp = self.new_tmp();
+                    let left_guard = self.new_tmp();
+                    format!(
+                        "{{ let {left_tmp} = {left_expr}.clone(); let {left_guard} = {left_tmp}.lock().unwrap(); {left_guard}.iter().eq({right}.iter()) }}",
+                        left_tmp = left_tmp,
+                        left_guard = left_guard,
+                        left_expr = left_expr,
+                        right = right_expr
+                    )
+                } else {
+                    let left_tmp = self.new_tmp();
+                    let right_tmp = self.new_tmp();
+                    let left_guard = self.new_tmp();
+                    let right_guard = self.new_tmp();
+                    format!(
+                        // Clone the Arcs to avoid moving list values out of scope.
+                        "{{ let {left_tmp} = {left_expr}.clone(); let {right_tmp} = {right_expr}.clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().unwrap(); let {right_guard} = {right_tmp}.lock().unwrap(); {left_guard}.iter().eq({right_guard}.iter()) }} }}",
+                        left_tmp = left_tmp,
+                        right_tmp = right_tmp,
+                        left_guard = left_guard,
+                        right_guard = right_guard,
+                        left_expr = left_expr,
+                        right_expr = right_expr
+                    )
+                };
                 if matches!(op, CmpOp::Eq) {
                     return Ok(eq_expr);
                 }

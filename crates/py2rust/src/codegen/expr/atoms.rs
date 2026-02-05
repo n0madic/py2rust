@@ -14,8 +14,8 @@ impl<'a> Codegen<'a> {
             Literal::Int(v) => Ok(format!("{}i64", v)),
             Literal::Float(v) => Ok(format!("{}f64", v)),
             Literal::Bool(v) => Ok(format!("{}", v)),
-            // Use String::from for string literals (more consistent than .to_string()).
-            Literal::Str(s) => Ok(format!("String::from({s:?})")),
+            // Use literal .to_string() to avoid String::from on literals.
+            Literal::Str(s) => Ok(format!("{s:?}.to_string()")),
             // Bytes map to Vec<i64> for Python-style byte access (0-255 as ints).
             Literal::Bytes(bytes) => {
                 if bytes.is_empty() {
@@ -177,7 +177,7 @@ impl<'a> Codegen<'a> {
                     if name == "type" && args.len() == 1 {
                         if let Some(ty) = args[0].ty.as_ref() {
                             if let Some(name) = self.python_type_name(ty) {
-                                return Ok(format!("String::from({:?})", name));
+                                return Ok(format!("{:?}.to_string()", name));
                             }
                         }
                         self.uses.type_name = true;

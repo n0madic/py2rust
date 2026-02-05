@@ -2,7 +2,7 @@
 
 use super::super::util::collect_assign_counts;
 use super::super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 impl<'a> Codegen<'a> {
     /// Emit a function or method body.
@@ -55,6 +55,9 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         // Precompute list element type hints for this function.
         self.inferred_list_elems = Some(self.collect_list_elem_types_for_stmts(&func.body));
+        // Precompute list storage strategy for this function's locals.
+        self.local_list_storage =
+            Some(self.collect_list_storage_for_stmts(&func.body, &HashSet::new()));
         let mut_counts = collect_assign_counts(&func.body);
         for stmt in &func.body {
             self.emit_stmt(stmt, &mut_counts)?;
@@ -79,6 +82,7 @@ impl<'a> Codegen<'a> {
         self.current_function_ret = None;
         self.local_vars = None;
         self.inferred_list_elems = None;
+        self.local_list_storage = None;
         Ok(())
     }
 
