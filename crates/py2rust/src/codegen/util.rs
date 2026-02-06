@@ -333,6 +333,12 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                             | "sort"
                             | "add"
                             | "remove"
+                            // File methods advance cursor or flush state and need mutable bindings.
+                            | "read"
+                            | "readline"
+                            | "readlines"
+                            | "write"
+                            | "close"
                     ) {
                         if let ExprKind::Name(name) = &value.kind {
                             *counts.entry(name.clone()).or_insert(0) += 1;

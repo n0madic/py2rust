@@ -83,7 +83,13 @@ impl<'a> Codegen<'a> {
                 "Option<{}>",
                 self.rust_type_with_lambda_depth(inner, lambda_depth)
             ),
-            Type::Custom(name) => name.clone(),
+            Type::Custom(name) => {
+                if name == "__py2rust_file" {
+                    "std::fs::File".to_string()
+                } else {
+                    name.clone()
+                }
+            }
             Type::Union(name) => name.clone(),
             Type::Iterator(inner) => format!(
                 "impl Iterator<Item = {}>",
@@ -228,6 +234,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             Type::Option(inner) => format!("Option<{}>", self.rust_type_for_global(inner)),
+            Type::Custom(name) if name == "__py2rust_file" => "std::fs::File".to_string(),
             Type::Ref(inner) => {
                 if matches!(inner.as_ref(), Type::Str) {
                     "&str".to_string()

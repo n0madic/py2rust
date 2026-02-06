@@ -10,7 +10,7 @@ use std::collections::HashSet;
 /// 4. Iterator protocol affects for-loop type checking
 ///
 /// Built-in functions handled:
-/// - print, len, range, round, list, dict, set, tuple, str, int, float
+/// - print, len, range, round, list, dict, set, tuple, str, int, float, open
 /// - enumerate, zip, map, filter, all, any, sum
 /// - reversed, sorted, max, min
 /// - isinstance, type
@@ -78,6 +78,18 @@ impl<'a> TypeChecker<'a> {
                     }
                     self.check_expr(&mut args[0], None)?;
                     return Ok(Type::Int);
+                }
+                if name == "open" {
+                    if args.is_empty() || args.len() > 2 {
+                        return Err(self.error(span, "open() expects one or two arguments"));
+                    }
+                    let path_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                    self.ensure_assignable(&path_ty, &Type::Str, span)?;
+                    if args.len() == 2 {
+                        let mode_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
+                        self.ensure_assignable(&mode_ty, &Type::Str, span)?;
+                    }
+                    return Ok(Type::Custom("__py2rust_file".to_string()));
                 }
                 if name == "range" {
                     if !args.is_empty() && args.len() <= 3 {
@@ -653,6 +665,22 @@ impl<'a> TypeChecker<'a> {
                 Err(self.error(span, "Unknown call target"))
             }
             ExprKind::Attr { value, attr } => {
+                if let ExprKind::Name(module_name) = &value.kind {
+                    if module_name == "os" && attr == "remove" {
+                        if !keywords.is_empty() {
+                            return Err(self.error(
+                                span,
+                                "Keyword arguments are not supported for os.remove()",
+                            ));
+                        }
+                        if args.len() != 1 {
+                            return Err(self.error(span, "os.remove() expects one argument"));
+                        }
+                        let path_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                        self.ensure_assignable(&path_ty, &Type::Str, span)?;
+                        return Ok(Type::None);
+                    }
+                }
                 let obj_ty = self.check_expr(value, None)?;
                 if let Type::List(inner) = &obj_ty {
                     if attr == "append" {
@@ -1042,12 +1070,74 @@ impl<'a> TypeChecker<'a> {
                         return Ok((*inner.as_ref()).clone());
                     }
                 }
+                if let Type::Custom(class_name) = &obj_ty {
+                    if class_name == "__py2rust_file" {
+                        if attr == "read" {
+                            if args.len() > 1 {
+                                return Err(
+                                    self.error(span, "file.read() expects zero or one argument")
+                                );
+                            }
+                            if args.len() == 1 {
+                                let arg_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                                self.ensure_assignable(&arg_ty, &Type::Int, span)?;
+                            }
+                            return Ok(Type::Str);
+                        }
+                        if attr == "readline" {
+                            if !args.is_empty() {
+                                return Err(
+                                    self.error(span, "file.readline() expects no arguments")
+                                );
+                            }
+                            return Ok(Type::Str);
+                        }
+                        if attr == "readlines" {
+                            if !args.is_empty() {
+                                return Err(
+                                    self.error(span, "file.readlines() expects no arguments")
+                                );
+                            }
+                            return Ok(Type::List(Box::new(Type::Str)));
+                        }
+                        if attr == "write" {
+                            if args.len() != 1 {
+                                return Err(self.error(span, "file.write() expects one argument"));
+                            }
+                            let arg_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                            self.ensure_assignable(&arg_ty, &Type::Str, span)?;
+                            return Ok(Type::Int);
+                        }
+                        if attr == "close" {
+                            if !args.is_empty() {
+                                return Err(self.error(span, "file.close() expects no arguments"));
+                            }
+                            return Ok(Type::None);
+                        }
+                    }
+                }
                 // String method support for core casing helpers.
                 if matches!(obj_ty, Type::Str) && attr == "upper" {
                     if !args.is_empty() {
                         return Err(self.error(span, "str.upper() expects no arguments"));
                     }
                     return Ok(Type::Str);
+                }
+                if matches!(obj_ty, Type::Str) && attr == "startswith" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, "str.startswith() expects one argument"));
+                    }
+                    let arg_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                    self.ensure_assignable(&arg_ty, &Type::Str, span)?;
+                    return Ok(Type::Bool);
+                }
+                if matches!(obj_ty, Type::Str) && attr == "find" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, "str.find() expects one argument"));
+                    }
+                    let arg_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                    self.ensure_assignable(&arg_ty, &Type::Str, span)?;
+                    return Ok(Type::Int);
                 }
                 if attr == "format" {
                     if args.is_empty() {

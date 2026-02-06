@@ -727,6 +727,111 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.push_line("}");
         }
+        if self.uses.py_file {
+            self.push_line(
+                "fn py_open(path: &str, mode: &str) -> Result<std::fs::File, PyError> {",
+            );
+            self.indent += 1;
+            self.push_line("match mode {");
+            self.indent += 1;
+            self.push_line(
+                "\"r\" => std::fs::File::open(path).map_err(|e| PyError::IOError(e.to_string())),",
+            );
+            self.push_line("\"w\" => std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path).map_err(|e| PyError::IOError(e.to_string())),");
+            self.push_line("\"a\" => std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| PyError::IOError(e.to_string())),");
+            self.push_line(
+                "_ => Err(PyError::ValueError(format!(\"unsupported file mode: {}\", mode))),",
+            );
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("fn py_file_read(file: &mut std::fs::File, n: Option<i64>) -> Result<String, PyError> {");
+            self.indent += 1;
+            self.push_line("use std::io::Read;");
+            self.push_line("if let Some(limit) = n {");
+            self.indent += 1;
+            self.push_line("if limit >= 0 {");
+            self.indent += 1;
+            self.push_line("let mut buf = vec![0u8; limit as usize];");
+            self.push_line(
+                "let read = file.read(&mut buf).map_err(|e| PyError::IOError(e.to_string()))?;",
+            );
+            self.push_line("buf.truncate(read);");
+            self.push_line(
+                "return String::from_utf8(buf).map_err(|e| PyError::IOError(e.to_string()));",
+            );
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("let mut out = String::new();");
+            self.push_line(
+                "file.read_to_string(&mut out).map_err(|e| PyError::IOError(e.to_string()))?;",
+            );
+            self.push_line("Ok(out)");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line(
+                "fn py_file_readline(file: &mut std::fs::File) -> Result<String, PyError> {",
+            );
+            self.indent += 1;
+            self.push_line("use std::io::Read;");
+            self.push_line("let mut bytes = Vec::new();");
+            self.push_line("let mut byte = [0u8; 1];");
+            self.push_line("loop {");
+            self.indent += 1;
+            self.push_line(
+                "let read = file.read(&mut byte).map_err(|e| PyError::IOError(e.to_string()))?;",
+            );
+            self.push_line("if read == 0 { break; }");
+            self.push_line("bytes.push(byte[0]);");
+            self.push_line("if byte[0] == b'\\n' { break; }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("String::from_utf8(bytes).map_err(|e| PyError::IOError(e.to_string()))");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line(
+                "fn py_file_readlines(file: &mut std::fs::File) -> Result<Vec<String>, PyError> {",
+            );
+            self.indent += 1;
+            self.push_line("let mut lines = Vec::new();");
+            self.push_line("loop {");
+            self.indent += 1;
+            self.push_line("let line = py_file_readline(file)?;");
+            self.push_line("if line.is_empty() { break; }");
+            self.push_line("lines.push(line);");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("Ok(lines)");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line(
+                "fn py_file_write(file: &mut std::fs::File, data: &str) -> Result<i64, PyError> {",
+            );
+            self.indent += 1;
+            self.push_line("use std::io::Write;");
+            self.push_line(
+                "file.write_all(data.as_bytes()).map_err(|e| PyError::IOError(e.to_string()))?;",
+            );
+            self.push_line("Ok(data.len() as i64)");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("fn py_file_close(file: &mut std::fs::File) -> Result<(), PyError> {");
+            self.indent += 1;
+            self.push_line("use std::io::Write;");
+            self.push_line("file.flush().map_err(|e| PyError::IOError(e.to_string()))");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("fn py_os_remove(path: &str) -> Result<(), PyError> {");
+            self.indent += 1;
+            self.push_line(
+                "std::fs::remove_file(path).map_err(|e| PyError::IOError(e.to_string()))",
+            );
+            self.indent -= 1;
+            self.push_line("}");
+        }
         if self.uses.print
             || self.uses.len
             || self.uses.range
@@ -747,6 +852,7 @@ impl<'a> Codegen<'a> {
             || self.uses.py_str_slice
             || self.uses.py_list_slice_step
             || self.uses.py_str_slice_step
+            || self.uses.py_file
         {
             self.push_line("");
         }
@@ -769,6 +875,7 @@ impl<'a> Codegen<'a> {
             || self.uses.py_min
             || self.uses.py_list_slice_step
             || self.uses.py_str_slice_step
+            || self.uses.py_file
             || self.uses.range3
     }
 

@@ -179,6 +179,91 @@ impl<'a> Lowerer<'a> {
                     body: body_stmts,
                 }
             }
+            // Context manager: with expr as name: body
+            //
+            // We lower this to a block with explicit close() calls:
+            // with open("x") as f:
+            //     body
+            // becomes:
+            // {
+            //     __tmp = open("x")
+            //     f = __tmp
+            //     body
+            //     __tmp.close()
+            // }
+            //
+            // For multiple with-items, close() calls are appended in reverse order.
+            ast::Stmt::With(with_stmt) => {
+                let mut block_stmts = Vec::new();
+                let mut close_stmts = Vec::new();
+                let mut lowered_body = with_stmt
+                    .body
+                    .iter()
+                    .map(|s| self.lower_stmt(s))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let with_id = stmt.range().start().to_u32();
+                for (item_index, item) in with_stmt.items.iter().enumerate() {
+                    let item_span = Span::from(item.context_expr.range());
+                    let temp_name =
+                        self.ident(&format!("__py2rust_with_{}_{}", with_id, item_index));
+                    let manager_name = if let Some(optional_vars) = &item.optional_vars {
+                        match &**optional_vars {
+                            ast::Expr::Name(name) => self.ident(name.id.as_str()),
+                            _ => {
+                                return Err(self.error(
+                                    optional_vars.range(),
+                                    "with target must be a simple name",
+                                ));
+                            }
+                        }
+                    } else {
+                        temp_name
+                    };
+
+                    block_stmts.push(Stmt {
+                        kind: StmtKind::Let {
+                            name: manager_name.clone(),
+                            ann: None,
+                            value: self.lower_expr(&item.context_expr)?,
+                        },
+                        span: item_span,
+                    });
+
+                    close_stmts.push(Stmt {
+                        kind: StmtKind::Expr(Expr {
+                            kind: ExprKind::Call {
+                                func: Box::new(Expr {
+                                    kind: ExprKind::Attr {
+                                        value: Box::new(Expr {
+                                            kind: ExprKind::Name(manager_name),
+                                            span: item_span,
+                                            ty: None,
+                                        }),
+                                        attr: "close".to_string(),
+                                    },
+                                    span: item_span,
+                                    ty: None,
+                                }),
+                                args: vec![],
+                                keywords: vec![],
+                            },
+                            span: item_span,
+                            ty: None,
+                        }),
+                        span: item_span,
+                    });
+                }
+                block_stmts.append(&mut lowered_body);
+                for close_stmt in close_stmts.into_iter().rev() {
+                    block_stmts.push(close_stmt);
+                }
+                StmtKind::Expr(Expr {
+                    kind: ExprKind::Block { stmts: block_stmts },
+                    span,
+                    ty: None,
+                })
+            }
             // For loop: for target in iter: body
             // We support:
             // - Simple name target: for x in items:
@@ -282,13 +367,15 @@ impl<'a> Lowerer<'a> {
                 }
             }
             // Import statement: import typing
-            // We only allow importing typing module (used for type annotations)
-            // All other imports are rejected
+            // We allow:
+            // - typing (for annotations)
+            // - os (for runtime file cleanup helpers like os.remove)
+            // All other imports are rejected.
             ast::Stmt::Import(import) => {
                 if import
                     .names
                     .iter()
-                    .all(|alias| alias.name.as_str() == "typing")
+                    .all(|alias| matches!(alias.name.as_str(), "typing" | "os"))
                 {
                     StmtKind::Expr(Expr {
                         kind: ExprKind::Literal(Literal::None),

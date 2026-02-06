@@ -19,6 +19,8 @@ mod comprehensions;
 mod control_flow;
 #[path = "runtime/exceptions.rs"]
 mod exceptions;
+#[path = "runtime/file_io.rs"]
+mod file_io;
 #[path = "runtime/functions.rs"]
 mod functions;
 #[path = "runtime/io.rs"]

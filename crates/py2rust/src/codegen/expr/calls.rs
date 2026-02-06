@@ -608,6 +608,7 @@ impl<'a> Codegen<'a> {
                 | "str"
                 | "isinstance"
                 | "type"
+                | "open"
                 | "exit"
         );
         let builtin_accepts_keywords = matches!(name, "print");
@@ -1598,6 +1599,21 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(&args[0])?
             )));
         }
+        if name == "open" {
+            if args.is_empty() || args.len() > 2 {
+                return Err(self.error(expr.span, "open() expects one or two arguments"));
+            }
+            self.uses.py_file = true;
+            let path_expr = self.gen_expr(&args[0])?;
+            let mode_expr = if args.len() == 2 {
+                self.gen_expr(&args[1])?
+            } else {
+                "\"r\".to_string()".to_string()
+            };
+            return Ok(Some(
+                self.wrap_result(format!("py_open(&{}, &{})", path_expr, mode_expr)),
+            ));
+        }
         if name == "exit" {
             if args.len() > 1 {
                 return Err(self.error(expr.span, "exit() expects zero or one argument"));
@@ -1667,6 +1683,19 @@ impl<'a> Codegen<'a> {
         args: &[Expr],
         keywords: &[KeywordArg],
     ) -> Result<String, CompileError> {
+        if let ExprKind::Name(name) = &value.kind {
+            if name == "os" && attr == "remove" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "os.remove() expects one argument"));
+                }
+                self.uses.py_file = true;
+                let path_expr = self.gen_expr(&args[0])?;
+                return Ok(self.wrap_result(format!("py_os_remove(&{})", path_expr)));
+            }
+        }
         if attr == "upper" {
             if let Some(Type::Str) = value.ty.as_ref() {
                 if !keywords.is_empty() {
@@ -1677,6 +1706,89 @@ impl<'a> Codegen<'a> {
                 }
                 // Rust's to_uppercase() matches Python's str.upper() semantics.
                 return Ok(format!("{}.to_uppercase()", self.gen_expr(value)?));
+            }
+        }
+        if attr == "startswith" {
+            if let Some(Type::Str) = value.ty.as_ref() {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "str.startswith() expects one argument"));
+                }
+                return Ok(format!(
+                    "{}.starts_with(&{})",
+                    self.gen_expr(value)?,
+                    self.gen_expr(&args[0])?
+                ));
+            }
+        }
+        if attr == "find" {
+            if let Some(Type::Str) = value.ty.as_ref() {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "str.find() expects one argument"));
+                }
+                return Ok(format!(
+                    "{}.find(&{}).map(|i| i as i64).unwrap_or(-1)",
+                    self.gen_expr(value)?,
+                    self.gen_expr(&args[0])?
+                ));
+            }
+        }
+        if let Some(Type::Custom(class_name)) = value.ty.as_ref() {
+            if class_name == "__py2rust_file" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                self.uses.py_file = true;
+                let file_expr = self.gen_expr(value)?;
+                if attr == "read" {
+                    if args.len() > 1 {
+                        return Err(
+                            self.error(value.span, "file.read() expects zero or one argument")
+                        );
+                    }
+                    let read_size = if args.len() == 1 {
+                        format!("Some({})", self.gen_expr(&args[0])?)
+                    } else {
+                        "None".to_string()
+                    };
+                    return Ok(self
+                        .wrap_result(format!("py_file_read(&mut {}, {})", file_expr, read_size)));
+                }
+                if attr == "readline" {
+                    if !args.is_empty() {
+                        return Err(self.error(value.span, "file.readline() expects no arguments"));
+                    }
+                    return Ok(self.wrap_result(format!("py_file_readline(&mut {})", file_expr)));
+                }
+                if attr == "readlines" {
+                    if !args.is_empty() {
+                        return Err(self.error(value.span, "file.readlines() expects no arguments"));
+                    }
+                    let lines_expr =
+                        self.wrap_result(format!("py_file_readlines(&mut {})", file_expr));
+                    return Ok(format!("Arc::new(Mutex::new({}))", lines_expr));
+                }
+                if attr == "write" {
+                    if args.len() != 1 {
+                        return Err(self.error(value.span, "file.write() expects one argument"));
+                    }
+                    let data_expr = self.gen_expr(&args[0])?;
+                    return Ok(self.wrap_result(format!(
+                        "py_file_write(&mut {}, &{})",
+                        file_expr, data_expr
+                    )));
+                }
+                if attr == "close" {
+                    if !args.is_empty() {
+                        return Err(self.error(value.span, "file.close() expects no arguments"));
+                    }
+                    return Ok(self.wrap_result(format!("py_file_close(&mut {})", file_expr)));
+                }
             }
         }
         if attr == "append" {

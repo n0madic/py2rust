@@ -54,6 +54,7 @@ pub(crate) struct Uses {
     pub(crate) py_str_slice: bool,
     pub(crate) py_str_slice_step: bool,
     pub(crate) py_list_slice_step: bool,
+    pub(crate) py_file: bool,
     pub(crate) py_iter: bool,
     pub(crate) py_repr: bool,
     pub(crate) py_bytes_from_len: bool,
