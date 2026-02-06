@@ -25,7 +25,8 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Single inheritance with method overrides and `super().__init__` calls
 - Decorators: `@property` (getter/setter), `@staticmethod`, `@classmethod`, and simple top-level function decorators
 - Enum-like `Union` aliases via `A | B` type aliases
-- `match/case` on union variants with `__match_args__` support
+- `match/case` for literals/singletons, capture and wildcard patterns, `|` patterns, guards, and list sequence/star patterns
+- `match/case` on union variants (class patterns) with `__match_args__` support
 - Custom iterators via `__iter__` and `next`
 - Simple list and set comprehensions
 - Call-site unpacking via `*args` and `**kwargs` (including mixed call forms)
@@ -68,6 +69,7 @@ Runtime integration coverage lives in `crates/py2rust/tests/runtime/`:
 - `collections.rs` covers lists, tuples, dicts, sets, bytes.
 - `builtins.rs` covers builtin functions.
 - `strings.rs` covers comprehensive string behavior (`str.format`, f-strings, predicates, split/join, alignment/fill, indexing/slicing, conversions `!s`/`!r`/`!a`).
+- `match.rs` covers comprehensive pattern matching behavior from `match.py`.
 - other files cover classes, control flow, operators, comprehensions, IO, assertions, and exceptions.
 
 Negative/compile-fail coverage lives in `crates/py2rust/tests/negative_tests.rs`.
@@ -101,6 +103,8 @@ The generated Rust injects tiny helper functions only when needed:
 - `__init__` is treated as a constructor; it must only assign `self` fields.
 - Class decorators and decorator calls are rejected (e.g. `@decorator()` or `@dataclass`).
 - Function decorators are limited to simple names on top-level functions.
+- Class-pattern `match` (e.g. `case Point(x, y):`) currently requires a union-typed subject.
+- Guards on class-pattern union matches are currently rejected.
 - `dict` indexing raises `KeyError` (propagated as `PyError`).
 - Tuple slicing requires literal integer bounds (including negative literals).
 - String indexing/slicing is character-based (Unicode scalar values).

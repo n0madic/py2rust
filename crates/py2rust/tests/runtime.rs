@@ -27,6 +27,8 @@ mod functions;
 mod import;
 #[path = "runtime/io.rs"]
 mod io;
+#[path = "runtime/match.rs"]
+mod match_tests;
 #[path = "runtime/operators.rs"]
 mod operators;
 #[path = "runtime/strings.rs"]

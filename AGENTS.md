@@ -64,7 +64,9 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - Literals: int, float, bool, None, str.
 - list/dict/tuple/set, indexing, slicing (limited), simple comprehension.
 - Tuple/list unpacking supports one starred target (`a, *rest, b = ...`).
-- `Union` for enum-like classes, `match/case` limited to union variants.
+- `Union` for enum-like classes.
+- `match/case` for literals/singletons, capture and wildcard patterns, OR patterns, guards, and list sequence/star patterns.
+- Class-pattern `match` on union variants with `__match_args__` support.
 - `__iter__/next` for custom iterators.
 - `lambda`, `if` expression, `round`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`, `reversed`, `max`, `min`, `int`, `float`, `str`, `isinstance`, `type`.
 - String methods: `upper`, `lower`.
@@ -101,9 +103,12 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - List/set iteration for builtins uses `.iter().cloned()` to avoid moves.
 - Set ops map to `&set1 | &set2`, `&set1 & &set2`, `&set1 - &set2`, `&set1 ^ &set2`.
 - Pattern matching:
+  - Runtime patterns are lowered to `if/elif` chains (subject evaluated once).
+  - Supported runtime patterns: literal/singleton, capture/wildcard, OR, guards, list sequence/star.
   - `__match_args__` defines field order for pattern matching (CPython 3.10+ compatible)
   - If not specified, uses field declaration order
   - All fields must appear in Rust pattern, unbound fields use `_`
+  - Class-pattern guards are currently rejected.
 - Exception handling uses `Result<T, PyError>` with closures for try blocks.
 - Variables declared in try block are exposed to else via `Option<T>` wrapper.
 - Functions with unhandled exceptions return `Result<T, PyError>`.
@@ -120,6 +125,7 @@ Runtime integration tests are in `crates/py2rust/tests/`:
   - `control_flow.rs` - loops and conditionals
   - `collections.rs` - lists, strings, tuples, dicts
   - `operators.rs` - arithmetic, comparison, boolean
+  - `match.rs` - comprehensive `match/case` patterns
   - `io.rs` - print output
   - `assert.rs` - assertions
   - `exceptions.rs` - try/except/finally/raise

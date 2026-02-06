@@ -6,6 +6,28 @@ use super::*;
 /// - optional field names for keyword patterns
 type LoweredMatchPattern = (String, Vec<String>, Option<Vec<String>>);
 
+/// Lowered runtime match payload for non-union `match` statements.
+struct LoweredRuntimePattern {
+    /// Boolean condition that determines if the pattern matches.
+    test: Expr,
+    /// Variable bindings introduced by the pattern.
+    bindings: Vec<(String, Expr)>,
+}
+
+/// Lowered runtime case payload used when desugaring `match` to `if/elif`.
+struct LoweredRuntimeMatchCase {
+    /// Pattern match condition.
+    test: Expr,
+    /// Optional guard condition (`case pat if guard:`).
+    guard: Option<Expr>,
+    /// Binding statements emitted before body/guard checks.
+    bindings: Vec<Stmt>,
+    /// Lowered case body statements.
+    body: Vec<Stmt>,
+    /// Case span for diagnostics and generated HIR nodes.
+    span: Span,
+}
+
 /// Statement lowering from RustPython AST to HIR.
 ///
 /// Statements are the imperative building blocks of Python programs.
@@ -351,19 +373,34 @@ impl<'a> Lowerer<'a> {
                 StmtKind::Assign { target, value }
             }
             // Match statement (pattern matching):
-            // match value:
-            //     case Constructor(x):
-            //         ...
-            // We only support matching on Union constructors
+            // 1. Class-constructor-only matches stay as HIR Match (union dispatch path).
+            // 2. Literal/sequence/capture/or/guard patterns are desugared to if/elif.
             ast::Stmt::Match(def) => {
-                let subject = self.lower_expr(&def.subject)?;
-                let mut lowered_cases = Vec::new();
-                for case in &def.cases {
-                    lowered_cases.push(self.lower_match_case(case)?);
+                // Keep the existing class-pattern behavior and diagnostics so
+                // union pattern matching and its negative tests remain intact.
+                let has_class_guard = def.cases.iter().any(|case| {
+                    matches!(&case.pattern, ast::Pattern::MatchClass(_)) && case.guard.is_some()
+                });
+                if has_class_guard {
+                    return Err(self.error(def.range(), "Match guards are not supported"));
                 }
-                StmtKind::Match {
-                    subject,
-                    cases: lowered_cases,
+
+                let all_class_patterns = def
+                    .cases
+                    .iter()
+                    .all(|case| matches!(&case.pattern, ast::Pattern::MatchClass(_)));
+                if all_class_patterns {
+                    let subject = self.lower_expr(&def.subject)?;
+                    let mut lowered_cases = Vec::new();
+                    for case in &def.cases {
+                        lowered_cases.push(self.lower_match_case(case)?);
+                    }
+                    StmtKind::Match {
+                        subject,
+                        cases: lowered_cases,
+                    }
+                } else {
+                    self.lower_runtime_match_stmt(&def.subject, &def.cases, def.range())?
                 }
             }
             // Import statement: import os, import os as o
@@ -515,6 +552,394 @@ impl<'a> Lowerer<'a> {
             body,
             span,
         })
+    }
+
+    /// Lower non-union match syntax by desugaring to an if/elif chain.
+    ///
+    /// This path supports literal, singleton, capture/wildcard, sequence, OR, and guard
+    /// patterns while preserving "evaluate subject once" semantics.
+    fn lower_runtime_match_stmt(
+        &self,
+        subject: &ast::Expr,
+        cases: &[ast::MatchCase],
+        range: rustpython_parser::text_size::TextRange,
+    ) -> Result<StmtKind, CompileError> {
+        let span = Span::from(range);
+        let subject_span = Span::from(subject.range());
+        let subject_name = self.ident(&format!(
+            "__py2rust_match_subject_{}",
+            range.start().to_u32()
+        ));
+
+        let subject_expr = Expr {
+            kind: ExprKind::Name(subject_name.clone()),
+            span: subject_span,
+            ty: None,
+        };
+
+        let mut block_stmts = Vec::new();
+        block_stmts.push(Stmt {
+            kind: StmtKind::Let {
+                name: subject_name,
+                ann: None,
+                value: self.lower_expr(subject)?,
+            },
+            span: subject_span,
+        });
+
+        let mut next_branch: Vec<Stmt> = Vec::new();
+        for case in cases.iter().rev() {
+            let lowered_case = self.lower_runtime_match_case(case, &subject_expr)?;
+            let mut matched_body = lowered_case.bindings;
+            if let Some(guard) = lowered_case.guard {
+                // Guard failure continues with the next case, just like Python's `match`.
+                matched_body.push(Stmt {
+                    kind: StmtKind::If {
+                        test: guard,
+                        body: lowered_case.body,
+                        orelse: next_branch.clone(),
+                    },
+                    span: lowered_case.span,
+                });
+            } else {
+                matched_body.extend(lowered_case.body);
+            }
+
+            let outer_if = Stmt {
+                kind: StmtKind::If {
+                    test: lowered_case.test,
+                    body: matched_body,
+                    orelse: next_branch,
+                },
+                span: lowered_case.span,
+            };
+            next_branch = vec![outer_if];
+        }
+
+        block_stmts.extend(next_branch);
+        Ok(StmtKind::Expr(Expr {
+            kind: ExprKind::Block { stmts: block_stmts },
+            span,
+            ty: None,
+        }))
+    }
+
+    /// Lower one runtime case to a condition + bindings + body representation.
+    fn lower_runtime_match_case(
+        &self,
+        case: &ast::MatchCase,
+        subject: &Expr,
+    ) -> Result<LoweredRuntimeMatchCase, CompileError> {
+        let span = Span::from(case.pattern.range());
+        let lowered_pattern = self.lower_runtime_pattern(&case.pattern, subject)?;
+        let guard = case
+            .guard
+            .as_ref()
+            .map(|guard| self.lower_expr(guard))
+            .transpose()?;
+        let bindings = lowered_pattern
+            .bindings
+            .into_iter()
+            .map(|(name, value)| Stmt {
+                kind: StmtKind::Let {
+                    name,
+                    ann: None,
+                    value,
+                },
+                span,
+            })
+            .collect::<Vec<_>>();
+        let body = case
+            .body
+            .iter()
+            .map(|stmt| self.lower_stmt(stmt))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(LoweredRuntimeMatchCase {
+            test: lowered_pattern.test,
+            guard,
+            bindings,
+            body,
+            span,
+        })
+    }
+
+    /// Lower a runtime pattern into a boolean condition plus bindings.
+    fn lower_runtime_pattern(
+        &self,
+        pattern: &ast::Pattern,
+        subject: &Expr,
+    ) -> Result<LoweredRuntimePattern, CompileError> {
+        let span = Span::from(pattern.range());
+        match pattern {
+            ast::Pattern::MatchValue(value_pat) => {
+                let value = self.lower_expr(&value_pat.value)?;
+                Ok(LoweredRuntimePattern {
+                    test: self.make_compare_expr(subject.clone(), CmpOp::Eq, value, span),
+                    bindings: Vec::new(),
+                })
+            }
+            ast::Pattern::MatchSingleton(singleton_pat) => {
+                let (op, literal) = match &singleton_pat.value {
+                    ast::Constant::Bool(value) => (CmpOp::Eq, Literal::Bool(*value)),
+                    ast::Constant::None => (CmpOp::Is, Literal::None),
+                    _ => {
+                        return Err(self.error(
+                            pattern.range(),
+                            "Only True/False/None singleton patterns are supported",
+                        ))
+                    }
+                };
+                let rhs = Expr {
+                    kind: ExprKind::Literal(literal),
+                    span,
+                    ty: None,
+                };
+                Ok(LoweredRuntimePattern {
+                    test: self.make_compare_expr(subject.clone(), op, rhs, span),
+                    bindings: Vec::new(),
+                })
+            }
+            ast::Pattern::MatchSequence(seq_pat) => {
+                self.lower_runtime_sequence_pattern(seq_pat, subject)
+            }
+            ast::Pattern::MatchStar(_) => Err(self.error(
+                pattern.range(),
+                "Starred patterns are only valid inside sequence patterns",
+            )),
+            ast::Pattern::MatchAs(as_pat) => {
+                // `case _:` => MatchAs(name=None, pattern=None)
+                // `case name:` => MatchAs(name=Some, pattern=None)
+                // `case pat as name:` => MatchAs(name=Some, pattern=Some)
+                if let Some(inner) = &as_pat.pattern {
+                    let mut lowered = self.lower_runtime_pattern(inner, subject)?;
+                    if let Some(name) = &as_pat.name {
+                        lowered.bindings.push((
+                            self.ident(name.as_str()),
+                            self.make_clone_expr(subject, span),
+                        ));
+                    }
+                    return Ok(lowered);
+                }
+                let test = self.make_bool_expr(true, span);
+                let mut bindings = Vec::new();
+                if let Some(name) = &as_pat.name {
+                    bindings.push((
+                        self.ident(name.as_str()),
+                        self.make_clone_expr(subject, span),
+                    ));
+                }
+                Ok(LoweredRuntimePattern { test, bindings })
+            }
+            ast::Pattern::MatchOr(or_pat) => {
+                let mut tests = Vec::new();
+                for subpattern in &or_pat.patterns {
+                    let lowered = self.lower_runtime_pattern(subpattern, subject)?;
+                    if !lowered.bindings.is_empty() {
+                        return Err(self.error(
+                            subpattern.range(),
+                            "OR patterns with bindings are not supported",
+                        ));
+                    }
+                    tests.push(lowered.test);
+                }
+                Ok(LoweredRuntimePattern {
+                    test: self.combine_bool_exprs(BoolOp::Or, tests, span),
+                    bindings: Vec::new(),
+                })
+            }
+            ast::Pattern::MatchClass(_) => Err(self.error(
+                pattern.range(),
+                "Class constructor patterns are only supported for union matches",
+            )),
+            ast::Pattern::MatchMapping(_) => {
+                Err(self.error(pattern.range(), "Mapping match patterns are not supported"))
+            }
+        }
+    }
+
+    /// Lower sequence patterns like `[a, b]`, `[1, x, 3]`, `[head, *rest]`.
+    fn lower_runtime_sequence_pattern(
+        &self,
+        seq_pat: &ast::PatternMatchSequence,
+        subject: &Expr,
+    ) -> Result<LoweredRuntimePattern, CompileError> {
+        let span = Span::from(seq_pat.range);
+        let mut checks = Vec::new();
+        let mut bindings = Vec::new();
+
+        let star_positions = seq_pat
+            .patterns
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, pattern)| {
+                if matches!(pattern, ast::Pattern::MatchStar(_)) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if star_positions.len() > 1 {
+            return Err(self.error(
+                seq_pat.range,
+                "Only one starred pattern is allowed in a sequence pattern",
+            ));
+        }
+
+        let star_idx = star_positions.first().copied();
+        let min_len = if star_idx.is_some() {
+            seq_pat.patterns.len().saturating_sub(1)
+        } else {
+            seq_pat.patterns.len()
+        };
+        let min_len_expr = self.make_int_expr(min_len as i64, span);
+        let len_cmp = if star_idx.is_some() {
+            CmpOp::GtEq
+        } else {
+            CmpOp::Eq
+        };
+        checks.push(self.make_compare_expr(
+            self.make_len_expr(subject, span),
+            len_cmp,
+            min_len_expr,
+            span,
+        ));
+
+        let trailing_count = star_idx
+            .map(|star_pos| seq_pat.patterns.len() - star_pos - 1)
+            .unwrap_or(0);
+
+        for (idx, pattern) in seq_pat.patterns.iter().enumerate() {
+            if let ast::Pattern::MatchStar(star_pat) = pattern {
+                if let Some(name) = &star_pat.name {
+                    let start = if idx == 0 {
+                        None
+                    } else {
+                        Some(Box::new(self.make_int_expr(idx as i64, span)))
+                    };
+                    let end = if trailing_count == 0 {
+                        None
+                    } else {
+                        // Use a negative end index to avoid nested lock attempts like
+                        // py_list_slice_step(&lock, ..., py_len(subject) - n, ...) during codegen.
+                        Some(Box::new(self.make_int_expr(-(trailing_count as i64), span)))
+                    };
+                    let slice_expr = Expr {
+                        kind: ExprKind::Slice {
+                            value: Box::new(subject.clone()),
+                            start,
+                            end,
+                            step: None,
+                        },
+                        span,
+                        ty: None,
+                    };
+                    bindings.push((self.ident(name.as_str()), slice_expr));
+                }
+                continue;
+            }
+
+            let index_expr = if let Some(star_pos) = star_idx {
+                if idx < star_pos {
+                    self.make_int_expr(idx as i64, span)
+                } else {
+                    let idx_from_tail = idx - star_pos - 1;
+                    let distance_from_end = trailing_count - idx_from_tail;
+                    // Prefer negative indexing from the tail to avoid `len(subject)` inside
+                    // list indexing code paths that already hold the list mutex.
+                    self.make_int_expr(-(distance_from_end as i64), span)
+                }
+            } else {
+                self.make_int_expr(idx as i64, span)
+            };
+
+            let element_subject = Expr {
+                kind: ExprKind::Index {
+                    value: Box::new(subject.clone()),
+                    index: Box::new(index_expr),
+                },
+                span,
+                ty: None,
+            };
+            let lowered = self.lower_runtime_pattern(pattern, &element_subject)?;
+            checks.push(lowered.test);
+            bindings.extend(lowered.bindings);
+        }
+
+        Ok(LoweredRuntimePattern {
+            test: self.combine_bool_exprs(BoolOp::And, checks, span),
+            bindings,
+        })
+    }
+
+    /// Build `left <op> right`.
+    fn make_compare_expr(&self, left: Expr, op: CmpOp, right: Expr, span: Span) -> Expr {
+        Expr {
+            kind: ExprKind::Compare {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            span,
+            ty: None,
+        }
+    }
+
+    /// Build a boolean literal expression.
+    fn make_bool_expr(&self, value: bool, span: Span) -> Expr {
+        Expr {
+            kind: ExprKind::Literal(Literal::Bool(value)),
+            span,
+            ty: None,
+        }
+    }
+
+    /// Build an integer literal expression.
+    fn make_int_expr(&self, value: i64, span: Span) -> Expr {
+        Expr {
+            kind: ExprKind::Literal(Literal::Int(value)),
+            span,
+            ty: None,
+        }
+    }
+
+    /// Build `len(subject)`.
+    fn make_len_expr(&self, subject: &Expr, span: Span) -> Expr {
+        Expr {
+            kind: ExprKind::Call {
+                func: Box::new(Expr {
+                    kind: ExprKind::Name("len".to_string()),
+                    span,
+                    ty: None,
+                }),
+                args: vec![subject.clone()],
+                keywords: vec![],
+            },
+            span,
+            ty: None,
+        }
+    }
+
+    /// Build a binding expression from the current subject value.
+    fn make_clone_expr(&self, subject: &Expr, _span: Span) -> Expr {
+        subject.clone()
+    }
+
+    /// Combine multiple boolean expressions with a single boolean operator.
+    fn combine_bool_exprs(&self, op: BoolOp, mut values: Vec<Expr>, span: Span) -> Expr {
+        if values.is_empty() {
+            return self.make_bool_expr(true, span);
+        }
+        if values.len() == 1 {
+            return values.remove(0);
+        }
+        Expr {
+            kind: ExprKind::BoolOp { op, values },
+            span,
+            ty: None,
+        }
     }
 
     /// Lower an except handler clause.
