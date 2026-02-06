@@ -8,7 +8,7 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         value: &mut Expr,
         attr: &String,
-        args: &mut Vec<Expr>,
+        args: &mut [Expr],
         keywords: &mut [KeywordArg],
         span: Span,
     ) -> Result<Type, CompileError> {

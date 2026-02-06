@@ -7,7 +7,7 @@ impl<'a> TypeChecker<'a> {
     pub(super) fn check_call_name(
         &mut self,
         func: &mut Expr,
-        args: &mut Vec<Expr>,
+        args: &mut [Expr],
         keywords: &mut [KeywordArg],
         expected: Option<&Type>,
         span: Span,
@@ -35,6 +35,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr(arg, None)?;
             }
             let mut seen_sep = false;
+            let mut seen_end = false;
             for kw in keywords.iter_mut() {
                 let Some(kw_name) = kw.name.as_deref() else {
                     return Err(self.error(
@@ -42,16 +43,22 @@ impl<'a> TypeChecker<'a> {
                         "Call-site **kwargs unpacking is not supported for print()",
                     ));
                 };
-                if kw_name != "sep" {
+                if kw_name == "sep" {
+                    if seen_sep {
+                        return Err(self.error(span, "Multiple values for keyword argument `sep`"));
+                    }
+                    seen_sep = true;
+                } else if kw_name == "end" {
+                    if seen_end {
+                        return Err(self.error(span, "Multiple values for keyword argument `end`"));
+                    }
+                    seen_end = true;
+                } else {
                     return Err(self.error(
                         span,
                         format!("Unknown keyword argument `{kw_name}` for print()"),
                     ));
                 }
-                if seen_sep {
-                    return Err(self.error(span, "Multiple values for keyword argument `sep`"));
-                }
-                seen_sep = true;
                 let kw_ty = self.check_expr(&mut kw.value, Some(&Type::Str))?;
                 self.ensure_assignable(&kw_ty, &Type::Str, span)?;
             }

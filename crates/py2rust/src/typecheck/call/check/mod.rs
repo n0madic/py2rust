@@ -10,7 +10,7 @@ impl<'a> TypeChecker<'a> {
     pub(in super::super) fn check_call(
         &mut self,
         func: &mut Expr,
-        args: &mut Vec<Expr>,
+        args: &mut [Expr],
         keywords: &mut [KeywordArg],
         expected: Option<&Type>,
         span: Span,

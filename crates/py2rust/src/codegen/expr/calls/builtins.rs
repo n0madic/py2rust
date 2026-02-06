@@ -64,6 +64,7 @@ impl<'a> Codegen<'a> {
         if name == "print" {
             self.uses.print = true;
             let mut sep_kw: Option<&Expr> = None;
+            let mut end_kw: Option<&Expr> = None;
             for kw in keywords {
                 let Some(kw_name) = kw.name.as_deref() else {
                     return Err(self.error(
@@ -71,92 +72,111 @@ impl<'a> Codegen<'a> {
                         "Call-site **kwargs unpacking is not supported for print()",
                     ));
                 };
-                if kw_name != "sep" {
-                    return Err(self.error(
-                        expr.span,
-                        format!("Unknown keyword argument `{kw_name}` for print()"),
+                if kw_name == "sep" {
+                    if sep_kw.is_some() {
+                        return Err(
+                            self.error(expr.span, "Multiple values for keyword argument `sep`")
+                        );
+                    }
+                    sep_kw = Some(&kw.value);
+                    continue;
+                }
+                if kw_name == "end" {
+                    if end_kw.is_some() {
+                        return Err(
+                            self.error(expr.span, "Multiple values for keyword argument `end`")
+                        );
+                    }
+                    end_kw = Some(&kw.value);
+                    continue;
+                }
+                return Err(self.error(
+                    expr.span,
+                    format!("Unknown keyword argument `{kw_name}` for print()"),
+                ));
+            }
+
+            // Render each argument to String so we avoid moving owned values into print calls.
+            let mut render_arg = |arg: &Expr| -> Result<String, CompileError> {
+                if matches!(arg.ty.as_ref(), Some(Type::None)) {
+                    return Ok("\"None\".to_string()".to_string());
+                }
+                if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
+                    return self.list_str_expr(arg);
+                }
+                let is_dict_ctor_call = matches!(
+                    &arg.kind,
+                    ExprKind::Call { func, .. }
+                        if matches!(func.kind, ExprKind::Name(ref n) if n == "dict")
+                );
+                if matches!(arg.ty.as_ref(), Some(Type::Dict(_, _)))
+                    || matches!(arg.kind, ExprKind::Dict(_))
+                    || is_dict_ctor_call
+                {
+                    let dict_expr = self.gen_expr(arg)?;
+                    let is_local = matches!(self.dict_storage_for_expr(arg), DictStorage::Local);
+                    let needs_concrete_dict = match arg.ty.as_ref() {
+                        Some(Type::Dict(key_ty, val_ty)) => {
+                            matches!(key_ty.as_ref(), Type::Unknown)
+                                || matches!(val_ty.as_ref(), Type::Unknown)
+                        }
+                        _ => true,
+                    };
+                    if needs_concrete_dict {
+                        // Empty/unknown dict expressions need concrete K/V to satisfy Rust inference.
+                        self.uses.py_repr = true;
+                        let tmp = self.new_tmp();
+                        if is_local {
+                            return Ok(format!(
+                                "{{ let {tmp}: HashMap<PyRepr, PyRepr> = {dict_expr}; format!(\"{{:?}}\", {tmp}) }}",
+                                tmp = tmp,
+                                dict_expr = dict_expr
+                            ));
+                        }
+                        return Ok(format!(
+                            "{{ let {tmp}: Arc<Mutex<HashMap<PyRepr, PyRepr>>> = {dict_expr}; format!(\"{{:?}}\", {tmp}.lock().expect(\"dict mutex poisoned\")) }}",
+                            tmp = tmp,
+                            dict_expr = dict_expr
+                        ));
+                    }
+                    if is_local {
+                        return Ok(format!("format!(\"{{:?}}\", {})", dict_expr));
+                    }
+                    return Ok(format!(
+                        "format!(\"{{:?}}\", {}.lock().expect(\"dict mutex poisoned\"))",
+                        dict_expr
                     ));
                 }
-                if sep_kw.is_some() {
-                    return Err(self.error(expr.span, "Multiple values for keyword argument `sep`"));
+                if self.print_needs_debug(arg) {
+                    return Ok(format!(
+                        "format!(\"{{:?}}\", {})",
+                        self.debug_arg_expr(arg)?
+                    ));
                 }
-                sep_kw = Some(&kw.value);
-            }
-            if args.is_empty() {
-                return Ok(Some("py_print(\"\")".to_string()));
-            }
-            if args.len() == 1 {
-                if matches!(args[0].ty.as_ref(), Some(Type::None)) {
-                    return Ok(Some("py_print(\"None\".to_string())".to_string()));
-                }
-                if matches!(args[0].ty.as_ref(), Some(Type::List(_))) {
-                    let list_expr = self.list_str_expr(&args[0])?;
-                    return Ok(Some(format!("py_print({})", list_expr)));
-                }
-                if self.print_needs_debug(&args[0]) {
-                    let arg_expr = self.debug_arg_expr(&args[0])?;
-                    return Ok(Some(format!("py_print(format!(\"{{:?}}\", {}))", arg_expr)));
-                }
-                let arg_expr = self.gen_expr(&args[0])?;
-                if matches!(args[0].ty.as_ref(), Some(Type::Str)) {
-                    return Ok(Some(format!("py_print(&{})", arg_expr)));
-                }
-                return Ok(Some(format!("py_print({})", arg_expr)));
-            }
-            if let Some(sep_expr) = sep_kw {
-                let mut parts = Vec::new();
-                for arg in args {
-                    if matches!(arg.ty.as_ref(), Some(Type::None)) {
-                        parts.push("\"None\".to_string()".to_string());
-                    } else if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
-                        parts.push(self.list_str_expr(arg)?);
-                    } else if self.print_needs_debug(arg) {
-                        parts.push(format!(
-                            "format!(\"{{:?}}\", {})",
-                            self.debug_arg_expr(arg)?
-                        ));
-                    } else {
-                        parts.push(format!("format!(\"{{}}\", {})", self.gen_expr(arg)?));
-                    }
-                }
+                Ok(format!("format!(\"{{}}\", {})", self.gen_expr(arg)?))
+            };
+
+            let rendered = if args.is_empty() {
+                "\"\".to_string()".to_string()
+            } else if let Some(sep_expr) = sep_kw {
+                let parts: Result<Vec<String>, CompileError> =
+                    args.iter().map(&mut render_arg).collect();
                 let sep_code = self.gen_expr(sep_expr)?;
+                format!("vec![{}].join(&{})", parts?.join(", "), sep_code)
+            } else {
+                let parts: Result<Vec<String>, CompileError> =
+                    args.iter().map(&mut render_arg).collect();
+                format!("vec![{}].join(\" \")", parts?.join(", "))
+            };
+
+            if let Some(end_expr) = end_kw {
+                let end_code = self.gen_expr(end_expr)?;
                 return Ok(Some(format!(
-                    "py_print(vec![{}].join(&{}))",
-                    parts.join(", "),
-                    sep_code
+                    "print!(\"{{}}{{}}\", {}, {})",
+                    rendered, end_code
                 )));
             }
-            let mut fmt = String::new();
-            let mut vals = Vec::new();
-            for (idx, arg) in args.iter().enumerate() {
-                if idx > 0 {
-                    fmt.push(' ');
-                }
-                if matches!(arg.ty.as_ref(), Some(Type::None)) {
-                    fmt.push_str("{}");
-                    vals.push("\"None\".to_string()".to_string());
-                } else if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
-                    fmt.push_str("{}");
-                    vals.push(self.list_str_expr(arg)?);
-                } else {
-                    let spec = if self.print_needs_debug(arg) {
-                        "{:?}"
-                    } else {
-                        "{}"
-                    };
-                    fmt.push_str(spec);
-                    if spec == "{:?}" {
-                        vals.push(self.debug_arg_expr(arg)?);
-                    } else {
-                        vals.push(self.gen_expr(arg)?);
-                    }
-                }
-            }
-            return Ok(Some(format!(
-                "py_print(format!(\"{}\", {}))",
-                fmt,
-                vals.join(", ")
-            )));
+            return Ok(Some(format!("py_print({})", rendered)));
         }
         if name == "len" {
             self.uses.len = true;

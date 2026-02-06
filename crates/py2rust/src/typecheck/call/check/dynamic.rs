@@ -6,7 +6,7 @@ impl<'a> TypeChecker<'a> {
     pub(super) fn check_call_dynamic(
         &mut self,
         func: &mut Expr,
-        args: &mut Vec<Expr>,
+        args: &mut [Expr],
         keywords: &mut [KeywordArg],
         span: Span,
     ) -> Result<Type, CompileError> {
