@@ -467,6 +467,10 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                         record_target(item, counts);
                     }
                 }
+                AssignTarget::Starred(inner) => {
+                    // Starred unpacking also binds/mutates the wrapped target.
+                    record_target(inner, counts);
+                }
             }
         }
 

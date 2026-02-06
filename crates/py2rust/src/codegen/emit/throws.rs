@@ -209,6 +209,7 @@ impl<'a> Codegen<'a> {
                 }
                 false
             }
+            AssignTarget::Starred(inner) => self.assign_target_can_throw(inner, value_ty),
         }
     }
 }

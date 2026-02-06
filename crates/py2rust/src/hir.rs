@@ -341,6 +341,9 @@ pub enum AssignTarget {
     Tuple(Vec<AssignTarget>),
     /// List unpacking target, supports nesting.
     List(Vec<AssignTarget>),
+    /// Starred unpacking target (`*rest`) inside tuple/list unpacking.
+    /// The wrapped target is usually a simple name.
+    Starred(Box<AssignTarget>),
 }
 
 /// Expression in the HIR.

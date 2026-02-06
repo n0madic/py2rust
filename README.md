@@ -15,7 +15,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Arithmetic and bitwise ops: `+`, `-`, `*`, `/`, `//`, `%`, `**`, `&`, `|`, `^`, `~`, `<<`, `>>` (`int` for bitwise/shifts)
 - Augmented assignment: `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 - Control flow: `if/elif/else`, `x if cond else y`, `while`, `for`, `return`, `break`, `continue`
-- Tuple/list unpacking assignments (including nested)
+- Tuple/list unpacking assignments (including nested and one starred target like `a, *rest, b = ...`)
 - Negative indexing and slicing for lists/tuples (including step)
 - List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`
 - Dict methods: `get`, `pop`, `update`, `clear`, `copy`
@@ -86,6 +86,7 @@ The generated Rust injects tiny helper functions only when needed:
 - Wider inline unions in annotations (for example `int | str`) currently degrade to gradual typing (`Unknown`) rather than a fully static union type.
 - `bool` follows Python numeric compatibility in arithmetic/comparison contexts (subtype of `int`) while remaining `bool` in boolean-only flows.
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
+- `typing.List/Dict/Set/Tuple` annotations are aliases of `list/dict/set/tuple` annotations.
 - Import support is intentionally strict: only `typing`, `os`, and `sys` modules are currently accepted.
 - For registry-backed stdlib calls, module import is required (`os.remove(...)` / `sys.exit(...)` without import is a compile error).
 - `from ... import *` is not supported for stdlib modules.

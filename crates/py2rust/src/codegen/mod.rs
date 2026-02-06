@@ -443,6 +443,7 @@ impl<'a> Codegen<'a> {
                         record_target(item, vars);
                     }
                 }
+                AssignTarget::Starred(inner) => record_target(inner, vars),
                 AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
             }
         }
@@ -545,6 +546,7 @@ impl<'a> Codegen<'a> {
                         record_target(item, locals, globals);
                     }
                 }
+                AssignTarget::Starred(inner) => record_target(inner, locals, globals),
                 AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
             }
         }
@@ -2601,6 +2603,7 @@ impl<'a> Codegen<'a> {
                         record_target(item, locals, skip);
                     }
                 }
+                AssignTarget::Starred(inner) => record_target(inner, locals, skip),
                 AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
             }
         }

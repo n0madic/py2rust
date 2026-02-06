@@ -1,25 +1,27 @@
 # Consolidated test file for type system
 
+from typing import List, Dict, Set, Tuple
+
 # ===== SECTION: typing module imports (List, Dict, Set, Tuple, Optional, Union) =====
 
 # Test List (typing)
-nums_typing: list[int] = [1, 2, 3]
+nums_typing: List[int] = [1, 2, 3]
 assert nums_typing[0] == 1, "nums_typing[0] should equal 1"
 assert nums_typing[1] == 2, "nums_typing[1] should equal 2"
 assert len(nums_typing) == 3, "len(nums_typing) should equal 3"
 
 # Test Dict (typing)
-d_typing: dict[str, int] = {"a": 1, "b": 2}
+d_typing: Dict[str, int] = {"a": 1, "b": 2}
 assert d_typing["a"] == 1, "d_typing[\"a\"] should equal 1"
 assert d_typing["b"] == 2, "d_typing[\"b\"] should equal 2"
 
 # Test Set (typing)
-s_typing: set[int] = {1, 2, 3}
+s_typing: Set[int] = {1, 2, 3}
 assert 1 in s_typing, "1 should be in s_typing"
 assert 4 not in s_typing, "4 not should be in s_typing"
 
 # Test Tuple (typing)
-t_typing: tuple[int, int, int] = (1, 2, 3)
+t_typing: Tuple[int, int, int] = (1, 2, 3)
 assert t_typing[0] == 1, "t_typing[0] should equal 1"
 assert t_typing[1] == 2, "t_typing[1] should equal 2"
 assert t_typing[2] == 3, "t_typing[2] should equal 3"
@@ -49,7 +51,7 @@ assert t_builtin[1] == 20, "t_builtin[1] should equal 20"
 assert t_builtin[2] == 30, "t_builtin[2] should equal 30"
 
 # Nested types
-nested_typing: dict[str, list[int]] = {"key": [1, 2, 3]}
+nested_typing: Dict[str, List[int]] = {"key": [1, 2, 3]}
 assert nested_typing["key"][0] == 1, "nested_typing[\"key\"][0] should equal 1"
 assert nested_typing["key"][2] == 3, "nested_typing[\"key\"][2] should equal 3"
 
@@ -58,11 +60,11 @@ assert nested_builtin["data"][0] == 4, "nested_builtin[\"data\"][0] should equal
 assert nested_builtin["data"][2] == 6, "nested_builtin[\"data\"][2] should equal 6"
 
 # Mixed styles
-mixed1: list[tuple[int, int]] = [(1, 2), (3, 4)]
+mixed1: List[tuple[int, int]] = [(1, 2), (3, 4)]
 assert mixed1[0][0] == 1, "mixed1[0][0] should equal 1"
 assert mixed1[1][1] == 4, "mixed1[1][1] should equal 4"
 
-complex_nested: dict[str, list[tuple[int, int]]] = {"pairs": [(1, 2), (3, 4)]}
+complex_nested: dict[str, List[tuple[int, int]]] = {"pairs": [(1, 2), (3, 4)]}
 assert complex_nested["pairs"][0][0] == 1, "complex_nested[\"pairs\"][0][0] should equal 1"
 assert complex_nested["pairs"][1][1] == 4, "complex_nested[\"pairs\"][1][1] should equal 4"
 
@@ -386,6 +388,52 @@ def get_pair() -> tuple[int, int]:
 r1, r2 = get_pair()
 assert r1 == 42, "r1 should equal 42"
 assert r2 == 84, "r2 should equal 84"
+
+# ===== SECTION: Starred unpacking (*rest) =====
+
+# Basic case: a, *rest = [1, 2, 3, 4]
+star_a, *star_rest = [1, 2, 3, 4]
+assert star_a == 1, "star_a should equal 1"
+assert star_rest == [2, 3, 4], "star_rest should equal [2, 3, 4]"
+
+# Starred at the beginning: *rest, last = [1, 2, 3, 4]
+*star_rest2, star_last = [1, 2, 3, 4]
+assert star_rest2 == [1, 2, 3], "star_rest2 should equal [1, 2, 3]"
+assert star_last == 4, "star_last should equal 4"
+
+# Starred in the middle: first, *middle, last = [1, 2, 3, 4, 5]
+star_first, *star_middle, star_last2 = [1, 2, 3, 4, 5]
+assert star_first == 1, "star_first should equal 1"
+assert star_middle == [2, 3, 4], "star_middle should equal [2, 3, 4]"
+assert star_last2 == 5, "star_last2 should equal 5"
+
+# Edge case: empty starred portion
+star_x, *star_empty, star_y = [1, 2]
+assert star_x == 1, "star_x should equal 1"
+assert star_empty == [], "star_empty should equal []"
+assert star_y == 2, "star_y should equal 2"
+
+# Edge case: only starred
+*star_all_items, = [1, 2, 3]
+assert star_all_items == [1, 2, 3], "star_all_items should equal [1, 2, 3]"
+
+# Edge case: single element before star
+star_a2, *star_rest3 = [10]
+assert star_a2 == 10, "star_a2 should equal 10"
+assert star_rest3 == [], "star_rest3 should equal []"
+
+# Works with tuples (starred always returns list)
+star_t1, *star_t_rest = (10, 20, 30)
+assert star_t1 == 10, "star_t1 should equal 10"
+assert star_t_rest == [20, 30], "star_t_rest should equal [20, 30]"
+
+# Multiple elements before and after star
+star_p1, star_p2, *star_p_mid, star_p_last1, star_p_last2 = [1, 2, 3, 4, 5, 6, 7]
+assert star_p1 == 1, "star_p1 should equal 1"
+assert star_p2 == 2, "star_p2 should equal 2"
+assert star_p_mid == [3, 4, 5], "star_p_mid should equal [3, 4, 5]"
+assert star_p_last1 == 6, "star_p_last1 should equal 6"
+assert star_p_last2 == 7, "star_p_last2 should equal 7"
 
 # ===== SECTION: Union Is/IsNot operators =====
 

@@ -542,6 +542,12 @@ impl<'a> Codegen<'a> {
             AssignTarget::Tuple(_) | AssignTarget::List(_) => {
                 self.emit_unpack_assign(target, value, mut_counts)?;
             }
+            AssignTarget::Starred(_) => {
+                return Err(self.error(
+                    value.span,
+                    "Starred assignment target is only valid inside tuple/list unpacking",
+                ));
+            }
         }
         Ok(())
     }
@@ -577,6 +583,222 @@ impl<'a> Codegen<'a> {
     ) -> Result<(), CompileError> {
         match target {
             AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                let starred: Vec<usize> = items
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, item)| {
+                        if matches!(item, AssignTarget::Starred(_)) {
+                            Some(idx)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if starred.len() > 1 {
+                    return Err(
+                        self.error(source.span, "Only one starred assignment target is allowed")
+                    );
+                }
+
+                if let Some(star_idx) = starred.first().copied() {
+                    let prefix_len = star_idx;
+                    let suffix_len = items.len().saturating_sub(star_idx + 1);
+
+                    match source.ty.as_ref() {
+                        Some(Type::Tuple(tuple_types)) => {
+                            if tuple_types.len() < (prefix_len + suffix_len) {
+                                return Err(self.error(
+                                    source.span,
+                                    format!(
+                                        "Unpacking expected at least {} values, got {}",
+                                        prefix_len + suffix_len,
+                                        tuple_types.len()
+                                    ),
+                                ));
+                            }
+
+                            for (idx, item_target) in items.iter().take(prefix_len).enumerate() {
+                                let elem_ty =
+                                    tuple_types.get(idx).cloned().unwrap_or(Type::Unknown);
+                                let idx_expr = Expr {
+                                    kind: ExprKind::Literal(Literal::Int(idx as i64)),
+                                    span: source.span,
+                                    ty: Some(Type::Int),
+                                };
+                                let elem_expr = Expr {
+                                    kind: ExprKind::Index {
+                                        value: Box::new(source.clone()),
+                                        index: Box::new(idx_expr),
+                                    },
+                                    span: source.span,
+                                    ty: Some(elem_ty),
+                                };
+                                self.emit_simple_assign(item_target, &elem_expr, mut_counts, true)?;
+                            }
+
+                            let middle_start = prefix_len;
+                            let middle_end = tuple_types.len() - suffix_len;
+                            let middle_ty = self
+                                .merge_starred_elem_type(&tuple_types[middle_start..middle_end]);
+                            let star_list_ty = Type::List(Box::new(middle_ty.clone()));
+                            let tuple_src = self.gen_expr(source)?;
+                            let middle_items: Vec<String> = (middle_start..middle_end)
+                                .map(|idx| format!("{tuple_src}.{idx}.clone()"))
+                                .collect();
+                            let star_list_expr = if middle_items.is_empty() {
+                                format!(
+                                    "Arc::new(Mutex::new(Vec::<{}>::new()))",
+                                    self.rust_type(&middle_ty)
+                                )
+                            } else {
+                                format!("Arc::new(Mutex::new(vec![{}]))", middle_items.join(", "))
+                            };
+                            let star_tmp = self.new_tmp();
+                            self.push_line(&format!("let {} = {};", star_tmp, star_list_expr));
+                            let star_source = Expr {
+                                kind: ExprKind::Name(star_tmp),
+                                span: source.span,
+                                ty: Some(star_list_ty),
+                            };
+                            if let AssignTarget::Starred(inner) = &items[star_idx] {
+                                self.emit_unpack_from(&star_source, inner, mut_counts)?;
+                            } else {
+                                unreachable!("star index must point to AssignTarget::Starred");
+                            }
+
+                            for offset in 0..suffix_len {
+                                let idx = tuple_types.len() - suffix_len + offset;
+                                let elem_ty =
+                                    tuple_types.get(idx).cloned().unwrap_or(Type::Unknown);
+                                let idx_expr = Expr {
+                                    kind: ExprKind::Literal(Literal::Int(idx as i64)),
+                                    span: source.span,
+                                    ty: Some(Type::Int),
+                                };
+                                let elem_expr = Expr {
+                                    kind: ExprKind::Index {
+                                        value: Box::new(source.clone()),
+                                        index: Box::new(idx_expr),
+                                    },
+                                    span: source.span,
+                                    ty: Some(elem_ty),
+                                };
+                                self.emit_simple_assign(
+                                    &items[star_idx + 1 + offset],
+                                    &elem_expr,
+                                    mut_counts,
+                                    true,
+                                )?;
+                            }
+                        }
+                        Some(Type::List(inner)) => {
+                            let min_required = prefix_len + suffix_len;
+                            if min_required > 0 {
+                                let len_tmp = self.new_tmp();
+                                let src_expr = self.gen_expr(source)?;
+                                if matches!(self.list_storage_for_expr(source), ListStorage::Local)
+                                {
+                                    self.push_line(&format!(
+                                        "let {} = {}.len();",
+                                        len_tmp, src_expr
+                                    ));
+                                } else {
+                                    self.push_line(&format!(
+                                        "let {} = {}.lock().expect(\"list mutex poisoned\").len();",
+                                        len_tmp, src_expr
+                                    ));
+                                }
+                                self.push_line(&format!(
+                                    "if {} < {} {{ panic!(\"Unpacking expected at least {} values, got {{}}\", {}); }}",
+                                    len_tmp, min_required, min_required, len_tmp
+                                ));
+                            }
+
+                            for (idx, item_target) in items.iter().take(prefix_len).enumerate() {
+                                let idx_expr = Expr {
+                                    kind: ExprKind::Literal(Literal::Int(idx as i64)),
+                                    span: source.span,
+                                    ty: Some(Type::Int),
+                                };
+                                let elem_expr = Expr {
+                                    kind: ExprKind::Index {
+                                        value: Box::new(source.clone()),
+                                        index: Box::new(idx_expr),
+                                    },
+                                    span: source.span,
+                                    ty: Some(inner.as_ref().clone()),
+                                };
+                                self.emit_simple_assign(item_target, &elem_expr, mut_counts, true)?;
+                            }
+
+                            let start_expr = Some(Box::new(Expr {
+                                kind: ExprKind::Literal(Literal::Int(prefix_len as i64)),
+                                span: source.span,
+                                ty: Some(Type::Int),
+                            }));
+                            let end_expr = if suffix_len == 0 {
+                                None
+                            } else {
+                                Some(Box::new(Expr {
+                                    kind: ExprKind::Literal(Literal::Int(-(suffix_len as i64))),
+                                    span: source.span,
+                                    ty: Some(Type::Int),
+                                }))
+                            };
+                            let star_slice_expr = Expr {
+                                kind: ExprKind::Slice {
+                                    value: Box::new(source.clone()),
+                                    start: start_expr,
+                                    end: end_expr,
+                                    step: None,
+                                },
+                                span: source.span,
+                                ty: Some(Type::List(inner.clone())),
+                            };
+                            if let AssignTarget::Starred(inner_target) = &items[star_idx] {
+                                self.emit_simple_assign(
+                                    inner_target,
+                                    &star_slice_expr,
+                                    mut_counts,
+                                    true,
+                                )?;
+                            } else {
+                                unreachable!("star index must point to AssignTarget::Starred");
+                            }
+
+                            for offset in 0..suffix_len {
+                                let from_end = suffix_len - offset;
+                                let idx_expr = Expr {
+                                    kind: ExprKind::Literal(Literal::Int(-(from_end as i64))),
+                                    span: source.span,
+                                    ty: Some(Type::Int),
+                                };
+                                let elem_expr = Expr {
+                                    kind: ExprKind::Index {
+                                        value: Box::new(source.clone()),
+                                        index: Box::new(idx_expr),
+                                    },
+                                    span: source.span,
+                                    ty: Some(inner.as_ref().clone()),
+                                };
+                                self.emit_simple_assign(
+                                    &items[star_idx + 1 + offset],
+                                    &elem_expr,
+                                    mut_counts,
+                                    true,
+                                )?;
+                            }
+                        }
+                        _ => {
+                            return Err(self.error(
+                                source.span,
+                                "Unpacking assignment requires a tuple or list value",
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
+
                 let element_types =
                     self.unpack_element_types(source.ty.as_ref(), items.len(), source.span)?;
                 for (idx, item) in items.iter().enumerate() {
@@ -610,6 +832,7 @@ impl<'a> Codegen<'a> {
                 }
                 Ok(())
             }
+            AssignTarget::Starred(inner) => self.emit_unpack_from(source, inner, mut_counts),
             _ => self.emit_simple_assign(target, source, mut_counts, true),
         }
     }
@@ -635,6 +858,27 @@ impl<'a> Codegen<'a> {
             Some(Type::Unknown) | None => Ok(vec![Type::Unknown; count]),
             _ => Err(self.error(span, "Unpacking assignment requires a tuple or list value")),
         }
+    }
+
+    /// Merge element types for starred tuple unpacking.
+    fn merge_starred_elem_type(&self, items: &[Type]) -> Type {
+        if items.is_empty() {
+            return Type::Unknown;
+        }
+        let first = items[0].clone();
+        if items.iter().all(|t| t == &first) {
+            return first;
+        }
+        if items
+            .iter()
+            .all(|t| matches!(t, Type::Int | Type::Float | Type::Bool))
+        {
+            if items.iter().any(|t| matches!(t, Type::Float)) {
+                return Type::Float;
+            }
+            return Type::Int;
+        }
+        Type::Unknown
     }
 
     /// Render a statement condition using Python truthiness semantics.

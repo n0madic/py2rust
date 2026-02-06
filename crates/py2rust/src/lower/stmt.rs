@@ -668,8 +668,6 @@ impl<'a> Lowerer<'a> {
     /// - obj[index]: subscript assignment (mutation)
     /// - tuple/list unpacking: (a, b) = values, [a, (b, c)] = values
     ///
-    /// Not supported:
-    /// - Starred targets (a, *rest = values)
     pub(super) fn lower_assign_target(
         &self,
         expr: &ast::Expr,
@@ -693,11 +691,25 @@ impl<'a> Lowerer<'a> {
             }
             ast::Expr::Tuple(tuple) => {
                 let mut targets = Vec::new();
+                let mut saw_starred = false;
                 for elt in &tuple.elts {
-                    if matches!(elt, ast::Expr::Starred(_)) {
-                        return Err(
-                            self.error(elt.range(), "Starred assignment targets are not supported")
-                        );
+                    if let ast::Expr::Starred(star) = elt {
+                        if saw_starred {
+                            return Err(self.error(
+                                elt.range(),
+                                "Only one starred assignment target is allowed",
+                            ));
+                        }
+                        saw_starred = true;
+                        let inner = self.lower_assign_target(&star.value)?;
+                        if !matches!(inner, AssignTarget::Name(_)) {
+                            return Err(self.error(
+                                elt.range(),
+                                "Starred assignment target must be a simple name",
+                            ));
+                        }
+                        targets.push(AssignTarget::Starred(Box::new(inner)));
+                        continue;
                     }
                     targets.push(self.lower_assign_target(elt)?);
                 }
@@ -705,16 +717,34 @@ impl<'a> Lowerer<'a> {
             }
             ast::Expr::List(list) => {
                 let mut targets = Vec::new();
+                let mut saw_starred = false;
                 for elt in &list.elts {
-                    if matches!(elt, ast::Expr::Starred(_)) {
-                        return Err(
-                            self.error(elt.range(), "Starred assignment targets are not supported")
-                        );
+                    if let ast::Expr::Starred(star) = elt {
+                        if saw_starred {
+                            return Err(self.error(
+                                elt.range(),
+                                "Only one starred assignment target is allowed",
+                            ));
+                        }
+                        saw_starred = true;
+                        let inner = self.lower_assign_target(&star.value)?;
+                        if !matches!(inner, AssignTarget::Name(_)) {
+                            return Err(self.error(
+                                elt.range(),
+                                "Starred assignment target must be a simple name",
+                            ));
+                        }
+                        targets.push(AssignTarget::Starred(Box::new(inner)));
+                        continue;
                     }
                     targets.push(self.lower_assign_target(elt)?);
                 }
                 Ok(AssignTarget::List(targets))
             }
+            ast::Expr::Starred(star) => Err(self.error(
+                star.range(),
+                "Starred assignment target is only valid inside tuple/list unpacking",
+            )),
             _ => Err(self.error(expr.range(), "Unsupported assignment target")),
         }
     }

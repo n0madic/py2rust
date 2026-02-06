@@ -52,8 +52,12 @@ impl<'a> Lowerer<'a> {
                     }
                 };
                 match base {
-                    "list" => Ok(TypeRef::List(Box::new(self.lower_type_ref(&sub.slice)?))),
-                    "dict" => {
+                    // Support both PEP 585 builtins (`list[int]`) and typing aliases
+                    // (`List[int]`) for compatibility with existing tests/code.
+                    "list" | "List" => {
+                        Ok(TypeRef::List(Box::new(self.lower_type_ref(&sub.slice)?)))
+                    }
+                    "dict" | "Dict" => {
                         let args = self.extract_type_args(&sub.slice)?;
                         if args.len() != 2 {
                             return Err(
@@ -65,11 +69,11 @@ impl<'a> Lowerer<'a> {
                             Box::new(args[1].clone()),
                         ))
                     }
-                    "tuple" => {
+                    "tuple" | "Tuple" => {
                         let args = self.extract_type_args(&sub.slice)?;
                         Ok(TypeRef::Tuple(args))
                     }
-                    "set" => Ok(TypeRef::Set(Box::new(self.lower_type_ref(&sub.slice)?))),
+                    "set" | "Set" => Ok(TypeRef::Set(Box::new(self.lower_type_ref(&sub.slice)?))),
                     "Optional" => Ok(TypeRef::Optional(Box::new(
                         self.lower_type_ref(&sub.slice)?,
                     ))),

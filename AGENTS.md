@@ -63,6 +63,7 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - Functions, classes (plain data), if/elif/else, while, for, return, break/continue.
 - Literals: int, float, bool, None, str.
 - list/dict/tuple/set, indexing, slicing (limited), simple comprehension.
+- Tuple/list unpacking supports one starred target (`a, *rest, b = ...`).
 - `Union` for enum-like classes, `match/case` limited to union variants.
 - `__iter__/next` for custom iterators.
 - `lambda`, `if` expression, `round`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`, `reversed`, `max`, `min`, `int`, `float`, `str`, `isinstance`, `type`.
@@ -73,6 +74,7 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 ## Type System Notes
 - `str` maps to `String` (not `&str`).
 - `int -> i64`, `float -> f64`, `None -> ()`, `Optional[T] -> Option<T>`.
+- `typing.List/Dict/Set/Tuple` annotations are aliases for built-in `list/dict/set/tuple`.
 - `bool` is accepted in numeric contexts as Python-compatible `int` subtype behavior.
 - `round(x)` on float inputs currently preserves float result (`py_round(x, 0)`), while integer inputs remain integer.
 - `Union` aliases are for enum-like class unions.
