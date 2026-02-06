@@ -314,14 +314,6 @@ impl<'a> Codegen<'a> {
                 return Ok(self.wrap_result(format!("py_dict_get(&{}, &{})", base, idx)));
             }
             let guard = self.new_tmp();
-            if matches!(value.kind, ExprKind::Name(_)) {
-                return Ok(self.wrap_result(format!(
-                    "{{ let {guard} = {base}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
-                    guard = guard,
-                    base = base,
-                    idx = idx
-                )));
-            }
             let dict_tmp = self.new_tmp();
             return Ok(self.wrap_result(format!(
                 "{{ let {dict_tmp} = {base}; let {guard} = {dict_tmp}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",

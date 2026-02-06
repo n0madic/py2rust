@@ -208,6 +208,18 @@ impl<'a> TypeChecker<'a> {
             // Python bool is a subtype of int and is accepted in numeric contexts.
             (Type::Int, Type::Bool) => Ok(()),
             (Type::Float, Type::Bool) => Ok(()),
+            // Container types are assignable when their element types are assignable.
+            // This also permits empty literals like [] / {} to flow into annotated globals.
+            (Type::List(expected_inner), Type::List(actual_inner)) => {
+                self.ensure_assignable(actual_inner, expected_inner, span)
+            }
+            (Type::Set(expected_inner), Type::Set(actual_inner)) => {
+                self.ensure_assignable(actual_inner, expected_inner, span)
+            }
+            (Type::Dict(expected_key, expected_val), Type::Dict(actual_key, actual_val)) => {
+                self.ensure_assignable(actual_key, expected_key, span)?;
+                self.ensure_assignable(actual_val, expected_val, span)
+            }
             // None is assignable to any Optional type
             (Type::Option(_inner), Type::None) => Ok(()),
             // Optional to Optional: check inner types

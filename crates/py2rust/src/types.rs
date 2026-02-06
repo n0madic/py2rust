@@ -81,6 +81,42 @@ impl Type {
         matches!(self, Type::Exception(_))
     }
 
+    /// Returns true when this type (or nested parts) still contains Unknown.
+    ///
+    /// This is used by inference paths that need to decide whether an expression
+    /// should be re-checked with an expected type hint (for example `[]` into
+    /// an annotated `list[int]` target).
+    pub fn contains_unknown(&self) -> bool {
+        match self {
+            Type::Unknown => true,
+            Type::List(inner)
+            | Type::Set(inner)
+            | Type::Option(inner)
+            | Type::Iterator(inner)
+            | Type::Ref(inner)
+            | Type::MutRef(inner)
+            | Type::Slice(inner) => inner.contains_unknown(),
+            Type::Dict(key, value) | Type::Result(key, value) => {
+                key.contains_unknown() || value.contains_unknown()
+            }
+            Type::Tuple(items) => items.iter().any(Type::contains_unknown),
+            Type::Lambda { params, ret } => {
+                params.iter().any(Type::contains_unknown) || ret.contains_unknown()
+            }
+            Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::Str
+            | Type::Bytes
+            | Type::None
+            | Type::Module(_)
+            | Type::StdlibFunction { .. }
+            | Type::Custom(_)
+            | Type::Union(_)
+            | Type::Exception(_) => false,
+        }
+    }
+
     /// Extract Ok and Err types from Result<T, E>.
     /// Used in exception handling to determine function signatures.
     pub fn unwrap_result(&self) -> Option<(&Type, &Type)> {

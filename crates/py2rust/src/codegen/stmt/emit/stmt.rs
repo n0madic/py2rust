@@ -270,7 +270,9 @@ impl<'a> Codegen<'a> {
     ) -> Result<(), CompileError> {
         match &stmt.kind {
             StmtKind::Let { name, ann, value } => {
-                if self.is_global(name) {
+                // Function-local Let bindings should always stay local; global writes
+                // inside functions are normalized to Assign during type checking.
+                if self.current_function.is_none() && self.is_global(name) {
                     let expected = self.ctx.globals.get(name).cloned();
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                     let expr = self.wrap_global_value(expr, value, expected.as_ref());

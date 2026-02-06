@@ -55,6 +55,10 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
   - If only compared to string literals, emit `__NAME__ == "..."` without allocation.
   - Otherwise emit `__NAME__.to_string()` on each access.
   - Assigning to `__name__` is rejected by type checker.
+- Global scoping follows CPython rules:
+  - Function-local assignment shadows module names unless `global name` is declared.
+  - `global name` must be declared before first use in the function.
+  - `global name` is valid only when `name` exists at module scope.
 - User-defined `def main()` is renamed to `__py_main` (or `__py_mainN`) to avoid collision.
   - All calls to `main()` are rewritten to the new name.
   - Top-level statements always generate Rust `fn main()`.
@@ -126,6 +130,7 @@ Runtime integration tests are in `crates/py2rust/tests/`:
   - `collections.rs` - lists, strings, tuples, dicts
   - `operators.rs` - arithmetic, comparison, boolean
   - `match.rs` - comprehensive `match/case` patterns
+  - `global_scoping.rs` - global declarations, shadowing, and nested global writes
   - `io.rs` - print output
   - `assert.rs` - assertions
   - `exceptions.rs` - try/except/finally/raise

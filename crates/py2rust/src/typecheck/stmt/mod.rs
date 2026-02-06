@@ -169,7 +169,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             StmtKind::Assign { target, value } => {
-                let ty = self.check_expr(value, None)?;
+                let mut ty = self.check_expr(value, None)?;
                 if matches!(target, AssignTarget::Tuple(_) | AssignTarget::List(_)) {
                     // Destructuring assignment: validate each leaf target against element types.
                     self.check_unpack_target(target, &ty, Some(value), stmt.span)?;
@@ -185,8 +185,10 @@ impl<'a> TypeChecker<'a> {
                                 let outer_ty = self.lookup_nonlocal_var(name).ok_or_else(|| {
                                     self.error(stmt.span, "nonlocal binding not found")
                                 })?;
-                                if matches!(ty, Type::Unknown) && !matches!(outer_ty, Type::Unknown)
-                                {
+                                if ty.contains_unknown() && !outer_ty.contains_unknown() {
+                                    ty = self.check_expr(value, Some(&outer_ty))?;
+                                }
+                                if ty.contains_unknown() && !outer_ty.contains_unknown() {
                                     return Err(self
                                         .error(stmt.span, "Unable to infer type; add annotation"));
                                 }
@@ -201,9 +203,10 @@ impl<'a> TypeChecker<'a> {
                                             ),
                                         )
                                     })?;
-                                if matches!(ty, Type::Unknown)
-                                    && !matches!(global_ty, Type::Unknown)
-                                {
+                                if ty.contains_unknown() && !global_ty.contains_unknown() {
+                                    ty = self.check_expr(value, Some(&global_ty))?;
+                                }
+                                if ty.contains_unknown() && !global_ty.contains_unknown() {
                                     return Err(self
                                         .error(stmt.span, "Unable to infer type; add annotation"));
                                 }
@@ -213,6 +216,15 @@ impl<'a> TypeChecker<'a> {
                                 && !self.is_declared_nonlocal(name)
                             {
                                 if let Some(existing) = self.lookup_local_var(name) {
+                                    if ty.contains_unknown() && !existing.contains_unknown() {
+                                        ty = self.check_expr(value, Some(&existing))?;
+                                    }
+                                    if ty.contains_unknown() && !existing.contains_unknown() {
+                                        return Err(self.error(
+                                            stmt.span,
+                                            "Unable to infer type; add annotation",
+                                        ));
+                                    }
                                     self.ensure_assignable(&ty, &existing, stmt.span)?;
                                 } else {
                                     if matches!(ty, Type::Unknown) {
@@ -225,6 +237,13 @@ impl<'a> TypeChecker<'a> {
                                     self.insert_var(name, ty, stmt.span)?;
                                 }
                             } else if let Some(existing) = self.lookup_var(name) {
+                                if ty.contains_unknown() && !existing.contains_unknown() {
+                                    ty = self.check_expr(value, Some(&existing))?;
+                                }
+                                if ty.contains_unknown() && !existing.contains_unknown() {
+                                    return Err(self
+                                        .error(stmt.span, "Unable to infer type; add annotation"));
+                                }
                                 self.ensure_assignable(&ty, &existing, stmt.span)?;
                             } else {
                                 if matches!(ty, Type::Unknown) {

@@ -31,6 +31,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Simple list and set comprehensions
 - Call-site unpacking via `*args` and `**kwargs` (including mixed call forms)
 - Nested functions with closure capture and `nonlocal` writes
+- `global` declarations with CPython-compatible shadowing rules (local assignment shadows module names unless explicitly declared `global`)
 - Builtins: `abs`, `all`, `any`, `ascii`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `str`, `sum`, `tuple`, `type`, `zip`
 - Stdlib modules (registry-backed): `os.remove(path)` and `sys.exit([code])`
 - Stdlib imports: `import os`, `import os as o`, `from os import remove`, `from os import remove as rm`, `import sys`, `from sys import exit`
@@ -100,6 +101,7 @@ The generated Rust injects tiny helper functions only when needed:
 - Call-site `**kwargs` unpacking requires a `dict[str, T]` expression.
 - Positional-only parameters (`/`) are not supported.
 - Nested `def` lowering currently rejects advanced parameter forms (`*args`, keyword-only, `**kwargs`) inside nested local functions.
+- `global x` requires `x` to exist at module scope, and declaration order follows CPython rules (`global` must appear before first use in the function).
 - `__init__` is treated as a constructor; it must only assign `self` fields.
 - Class decorators and decorator calls are rejected (e.g. `@decorator()` or `@dataclass`).
 - Function decorators are limited to simple names on top-level functions.
