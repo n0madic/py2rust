@@ -824,6 +824,8 @@ impl<'a> Codegen<'a> {
             self.push_line("file.flush().map_err(|e| PyError::IOError(e.to_string()))");
             self.indent -= 1;
             self.push_line("}");
+        }
+        if self.uses.py_file || self.uses.py_os_remove {
             self.push_line("fn py_os_remove(path: &str) -> Result<(), PyError> {");
             self.indent += 1;
             self.push_line(
@@ -853,6 +855,7 @@ impl<'a> Codegen<'a> {
             || self.uses.py_list_slice_step
             || self.uses.py_str_slice_step
             || self.uses.py_file
+            || self.uses.py_os_remove
         {
             self.push_line("");
         }
@@ -876,6 +879,7 @@ impl<'a> Codegen<'a> {
             || self.uses.py_list_slice_step
             || self.uses.py_str_slice_step
             || self.uses.py_file
+            || self.uses.py_os_remove
             || self.uses.range3
     }
 

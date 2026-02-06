@@ -243,6 +243,8 @@ impl<'a> Codegen<'a> {
             Type::Tuple(_) => ty.clone(),
             // Option stays owned.
             Type::Option(_) => ty.clone(),
+            // Import bindings are compile-time only and should never be borrowed at runtime.
+            Type::Module(_) | Type::StdlibFunction { .. } => ty.clone(),
             // Custom/Union types get borrowed.
             Type::Custom(name) => Type::Ref(Box::new(Type::Custom(name.clone()))),
             Type::Union(name) => Type::Ref(Box::new(Type::Union(name.clone()))),

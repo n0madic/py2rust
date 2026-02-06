@@ -1,4 +1,5 @@
 use super::*;
+use crate::stdlib::registry::{resolve_method, resolve_module, StdlibMethodId, StdlibMethodSpec};
 use std::collections::HashSet;
 
 /// Function call type checking.
@@ -32,8 +33,11 @@ impl<'a> TypeChecker<'a> {
         match &mut func.kind {
             ExprKind::Name(name) => {
                 let builtin_accepts_keywords = matches!(name.as_str(), "print");
+                let stdlib_function_accepts_keywords =
+                    matches!(self.lookup_var(name), Some(Type::StdlibFunction { .. }));
                 if !keywords.is_empty()
                     && !builtin_accepts_keywords
+                    && !stdlib_function_accepts_keywords
                     && !self.ctx.functions.contains_key(name)
                     && !self.ctx.classes.contains_key(name)
                     && !matches!(self.lookup_var(name), Some(Type::Lambda { .. }))
@@ -595,6 +599,22 @@ impl<'a> TypeChecker<'a> {
                     return Ok(sig.ret.clone());
                 }
                 if let Some(var_ty) = self.lookup_var(name) {
+                    if let Type::StdlibFunction { module, method } = &var_ty {
+                        func.ty = Some(Type::StdlibFunction {
+                            module: module.clone(),
+                            method: method.clone(),
+                        });
+                        let module_id = resolve_module(module.as_str()).ok_or_else(|| {
+                            self.error(
+                                span,
+                                format!("module '{module}' is not registered in stdlib registry"),
+                            )
+                        })?;
+                        let spec = resolve_method(module_id, method.as_str()).ok_or_else(|| {
+                            self.error(span, format!("{module} has no supported member '{method}'"))
+                        })?;
+                        return self.check_stdlib_call(spec, args, keywords, span);
+                    }
                     if let Type::Lambda { params, ret } = var_ty {
                         if params.len() != args.len() && !params.is_empty() {
                             return Err(self.error(span, "Argument count mismatch"));
@@ -666,22 +686,30 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::Attr { value, attr } => {
                 if let ExprKind::Name(module_name) = &value.kind {
-                    if module_name == "os" && attr == "remove" {
-                        if !keywords.is_empty() {
-                            return Err(self.error(
-                                span,
-                                "Keyword arguments are not supported for os.remove()",
-                            ));
-                        }
-                        if args.len() != 1 {
-                            return Err(self.error(span, "os.remove() expects one argument"));
-                        }
-                        let path_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
-                        self.ensure_assignable(&path_ty, &Type::Str, span)?;
-                        return Ok(Type::None);
+                    if resolve_module(module_name.as_str()).is_some()
+                        && self.lookup_var(module_name).is_none()
+                    {
+                        return Err(
+                            self.error(span, format!("module '{module_name}' used without import"))
+                        );
                     }
                 }
                 let obj_ty = self.check_expr(value, None)?;
+                if let Type::Module(module_name) = &obj_ty {
+                    let module_id = resolve_module(module_name.as_str()).ok_or_else(|| {
+                        self.error(
+                            span,
+                            format!("module '{module_name}' is not registered in stdlib registry"),
+                        )
+                    })?;
+                    let method = resolve_method(module_id, attr.as_str()).ok_or_else(|| {
+                        self.error(
+                            span,
+                            format!("{module_name} has no supported member '{attr}'"),
+                        )
+                    })?;
+                    return self.check_stdlib_call(method, args, keywords, span);
+                }
                 if let Type::List(inner) = &obj_ty {
                     if attr == "append" {
                         if args.len() != 1 {
@@ -1541,6 +1569,81 @@ impl<'a> TypeChecker<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Type check a stdlib call resolved via the centralized registry.
+    fn check_stdlib_call(
+        &mut self,
+        spec: &StdlibMethodSpec,
+        args: &mut [Expr],
+        keywords: &mut [KeywordArg],
+        span: Span,
+    ) -> Result<Type, CompileError> {
+        if !spec.allow_keywords && !keywords.is_empty() {
+            return Err(self.error(
+                span,
+                format!(
+                    "Keyword arguments are not supported for {}.{}()",
+                    spec.module_name, spec.method_name
+                ),
+            ));
+        }
+        if args.len() < spec.min_args || args.len() > spec.max_args {
+            return Err(self.error(
+                span,
+                Self::stdlib_arity_message(
+                    spec.module_name,
+                    spec.method_name,
+                    spec.min_args,
+                    spec.max_args,
+                ),
+            ));
+        }
+
+        // Validate argument types for each registered method.
+        match spec.method_id {
+            StdlibMethodId::OsRemove => {
+                let path_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&path_ty, &Type::Str, span)?;
+            }
+            StdlibMethodId::SysExit => {
+                if args.len() == 1 {
+                    let code_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                    self.ensure_assignable(&code_ty, &Type::Int, span)?;
+                }
+            }
+        }
+
+        Ok(Self::stdlib_method_return_type(spec.method_id))
+    }
+
+    /// Render a stable "expects N argument(s)" diagnostic for stdlib calls.
+    fn stdlib_arity_message(
+        module_name: &str,
+        method_name: &str,
+        min_arity: usize,
+        max_arity: usize,
+    ) -> String {
+        if min_arity == max_arity {
+            if min_arity == 1 {
+                return format!("{module_name}.{method_name}() expects one argument");
+            }
+            return format!("{module_name}.{method_name}() expects {min_arity} arguments");
+        }
+        if min_arity == 0 && max_arity == 1 {
+            return format!("{module_name}.{method_name}() expects zero or one argument");
+        }
+        format!(
+            "{module_name}.{method_name}() expects between {min_arity} and {max_arity} arguments"
+        )
+    }
+
+    /// Return the static type of a stdlib method call.
+    fn stdlib_method_return_type(method_id: StdlibMethodId) -> Type {
+        match method_id {
+            StdlibMethodId::OsRemove => Type::None,
+            StdlibMethodId::SysExit => Type::None,
+        }
     }
 
     pub(super) fn infer_callable_return(

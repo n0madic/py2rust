@@ -141,6 +141,20 @@ pub struct Stmt {
     pub span: Span,
 }
 
+/// Import binding for `import module [as alias]`.
+#[derive(Debug, Clone)]
+pub struct ImportBinding {
+    pub module: String,
+    pub alias: Option<String>,
+}
+
+/// Import binding for `from module import name [as alias]`.
+#[derive(Debug, Clone)]
+pub struct ImportFromBinding {
+    pub name: String,
+    pub alias: Option<String>,
+}
+
 /// Statement kinds supported in the transpiler.
 ///
 /// Design notes:
@@ -182,6 +196,23 @@ pub enum StmtKind {
         target: ForTarget,
         iter: Expr,
         body: Vec<Stmt>,
+    },
+    /// Import module bindings.
+    ///
+    /// Examples:
+    /// - `import os`
+    /// - `import os as o`
+    Import {
+        names: Vec<ImportBinding>,
+    },
+    /// Import members from a module.
+    ///
+    /// Examples:
+    /// - `from os import remove`
+    /// - `from os import remove as rm`
+    ImportFrom {
+        module: String,
+        names: Vec<ImportFromBinding>,
     },
     /// Global declaration (limited support)
     Global {

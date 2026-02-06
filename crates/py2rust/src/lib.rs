@@ -7,6 +7,7 @@ pub mod diagnostic;
 pub mod hir;
 pub mod lower;
 pub mod span;
+pub mod stdlib;
 pub mod toolchain;
 pub mod typecheck;
 pub mod types;
@@ -248,7 +249,10 @@ fn rename_main_calls_in_stmt(stmt: &mut hir::Stmt, new_name: &str) {
                 rename_main_calls_in_expr(expr, new_name);
             }
         }
-        hir::StmtKind::Global { .. } | hir::StmtKind::Nonlocal { .. } => {}
+        hir::StmtKind::Import { .. }
+        | hir::StmtKind::ImportFrom { .. }
+        | hir::StmtKind::Global { .. }
+        | hir::StmtKind::Nonlocal { .. } => {}
         hir::StmtKind::Break | hir::StmtKind::Continue => {}
     }
 }

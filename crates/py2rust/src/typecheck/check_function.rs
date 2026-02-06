@@ -436,7 +436,10 @@ impl<'a> TypeChecker<'a> {
                             collect_names(expr, out);
                         }
                     }
-                    StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
+                    StmtKind::Import { .. }
+                    | StmtKind::ImportFrom { .. }
+                    | StmtKind::Global { .. }
+                    | StmtKind::Nonlocal { .. } => {}
                     StmtKind::Break | StmtKind::Continue => {}
                 }
             }
@@ -514,7 +517,10 @@ impl<'a> TypeChecker<'a> {
                             visit_expr(expr, out);
                         }
                     }
-                    StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
+                    StmtKind::Import { .. }
+                    | StmtKind::ImportFrom { .. }
+                    | StmtKind::Global { .. }
+                    | StmtKind::Nonlocal { .. } => {}
                     StmtKind::Break | StmtKind::Continue => {}
                 }
             }

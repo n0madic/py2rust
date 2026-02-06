@@ -1,4 +1,5 @@
 use super::*;
+use crate::stdlib::registry::{method_spec, resolve_member, resolve_module};
 
 /// Statement type checking.
 ///
@@ -487,6 +488,43 @@ impl<'a> TypeChecker<'a> {
 
                 for stmt in body {
                     self.check_stmt(stmt, expected_ret)?;
+                }
+            }
+            StmtKind::Import { names } => {
+                for binding in names {
+                    if binding.module == "typing" {
+                        // Typing imports are annotation-only and have no runtime binding.
+                        continue;
+                    }
+                    let _module_id = resolve_module(binding.module.as_str())
+                        .ok_or_else(|| self.error(stmt.span, "Unsupported import"))?;
+                    let bound_name = binding.alias.as_deref().unwrap_or(binding.module.as_str());
+                    self.insert_var(bound_name, Type::Module(binding.module.clone()), stmt.span)?;
+                }
+            }
+            StmtKind::ImportFrom { module, names } => {
+                if module != "typing" {
+                    let module_id = resolve_module(module.as_str())
+                        .ok_or_else(|| self.error(stmt.span, "Unsupported import"))?;
+                    for binding in names {
+                        let method_id = resolve_member(module_id, binding.name.as_str())
+                            .ok_or_else(|| {
+                                self.error(
+                                    stmt.span,
+                                    format!("{module} has no supported member '{}'", binding.name),
+                                )
+                            })?;
+                        let spec = method_spec(method_id);
+                        let bound_name = binding.alias.as_deref().unwrap_or(binding.name.as_str());
+                        self.insert_var(
+                            bound_name,
+                            Type::StdlibFunction {
+                                module: spec.module_name.to_string(),
+                                method: spec.method_name.to_string(),
+                            },
+                            stmt.span,
+                        )?;
+                    }
                 }
             }
             StmtKind::Global { names } => {

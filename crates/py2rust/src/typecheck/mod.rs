@@ -199,6 +199,10 @@ impl<'a> TypeChecker<'a> {
                 if name.as_str() == "__name__" {
                     continue;
                 }
+                if matches!(ty, Type::Module(_) | Type::StdlibFunction { .. }) {
+                    // Import bindings are compile-time only and must not become runtime globals.
+                    continue;
+                }
                 self.ctx.globals.insert(name.clone(), ty.clone());
             }
         }

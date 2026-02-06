@@ -83,6 +83,8 @@ impl<'a> Codegen<'a> {
                 "Option<{}>",
                 self.rust_type_with_lambda_depth(inner, lambda_depth)
             ),
+            // Import bindings are compile-time only and are never emitted as values.
+            Type::Module(_) | Type::StdlibFunction { .. } => "()".to_string(),
             Type::Custom(name) => {
                 if name == "__py2rust_file" {
                     "std::fs::File".to_string()
@@ -250,6 +252,7 @@ impl<'a> Codegen<'a> {
                 self.rust_type_for_global(err)
             ),
             Type::Unknown => "()".to_string(),
+            Type::Module(_) | Type::StdlibFunction { .. } => "()".to_string(),
             _ => self.rust_type(ty),
         }
     }

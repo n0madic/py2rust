@@ -29,6 +29,13 @@ pub enum Type {
     Tuple(Vec<Type>),
     Set(Box<Type>),
     Option(Box<Type>),
+    /// Imported stdlib module binding (for example: `import os`).
+    Module(String),
+    /// Imported stdlib callable binding (for example: `from os import remove`).
+    StdlibFunction {
+        module: String,
+        method: String,
+    },
     Custom(String),
     /// Union types are only allowed for enum-like classes (tagged unions).
     /// Inline union types like `int | str` are not supported except via Optional[T].
@@ -107,6 +114,10 @@ impl fmt::Display for Type {
             }
             Type::Set(inner) => write!(f, "set[{inner}]"),
             Type::Option(inner) => write!(f, "Optional[{inner}]"),
+            Type::Module(name) => write!(f, "module[{name}]"),
+            Type::StdlibFunction { module, method } => {
+                write!(f, "stdlib_function[{module}.{method}]")
+            }
             Type::Custom(name) => write!(f, "{name}"),
             Type::Union(name) => write!(f, "{name}"),
             Type::Iterator(inner) => write!(f, "Iterator[{inner}]"),

@@ -22,3 +22,12 @@ fn runtime_print_core_types() {
         ),
     );
 }
+
+#[test]
+fn runtime_sys_exit() {
+    run_py(
+        "sys_exit",
+        include_str!("sys_exit.py"),
+        Some("before sys.exit"),
+    );
+}

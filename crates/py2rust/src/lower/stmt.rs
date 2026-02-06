@@ -366,42 +366,55 @@ impl<'a> Lowerer<'a> {
                     cases: lowered_cases,
                 }
             }
-            // Import statement: import typing
+            // Import statement: import os, import os as o
             // We allow:
             // - typing (for annotations)
-            // - os (for runtime file cleanup helpers like os.remove)
+            // - os/sys (for supported stdlib calls)
             // All other imports are rejected.
             ast::Stmt::Import(import) => {
-                if import
-                    .names
-                    .iter()
-                    .all(|alias| matches!(alias.name.as_str(), "typing" | "os"))
-                {
-                    StmtKind::Expr(Expr {
-                        kind: ExprKind::Literal(Literal::None),
-                        span,
-                        ty: None,
-                    })
-                } else {
-                    return Err(self.error(stmt.range(), "Unsupported import"));
+                let mut names = Vec::new();
+                for alias in &import.names {
+                    let module = self.ident(alias.name.as_str());
+                    if !matches!(module.as_str(), "typing" | "os" | "sys") {
+                        return Err(self.error(stmt.range(), "Unsupported import"));
+                    }
+                    let alias = alias.asname.as_ref().map(|name| self.ident(name.as_str()));
+                    names.push(ImportBinding { module, alias });
                 }
+                StmtKind::Import { names }
             }
-            // From-import: from typing import List, Dict, ...
-            // Only allowed for typing module, all others rejected
+            // From-import: from os import remove, from os import remove as rm
+            // and from typing import ...
             ast::Stmt::ImportFrom(import) => {
-                let module_ok = import
+                let module_name = import
                     .module
                     .as_ref()
-                    .is_some_and(|m| m.as_str() == "typing");
+                    .map(|m| self.ident(m.as_str()))
+                    .ok_or_else(|| self.error(stmt.range(), "Unsupported import"))?;
                 let level_ok = import.level.map(|lvl| lvl.to_u32()).unwrap_or(0) == 0;
-                if module_ok && level_ok {
-                    StmtKind::Expr(Expr {
-                        kind: ExprKind::Literal(Literal::None),
-                        span,
-                        ty: None,
-                    })
-                } else {
+                if !level_ok {
                     return Err(self.error(stmt.range(), "Unsupported import"));
+                }
+                if !matches!(module_name.as_str(), "typing" | "os" | "sys") {
+                    return Err(self.error(stmt.range(), "Unsupported import"));
+                }
+                let mut names = Vec::new();
+                for alias in &import.names {
+                    let name = self.ident(alias.name.as_str());
+                    if name == "*" {
+                        if module_name == "os" {
+                            return Err(
+                                self.error(stmt.range(), "from os import * is not supported")
+                            );
+                        }
+                        return Err(self.error(stmt.range(), "from import * is not supported"));
+                    }
+                    let alias = alias.asname.as_ref().map(|id| self.ident(id.as_str()));
+                    names.push(ImportFromBinding { name, alias });
+                }
+                StmtKind::ImportFrom {
+                    module: module_name,
+                    names,
                 }
             }
             // Pass statement (no-op)

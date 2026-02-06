@@ -194,3 +194,70 @@ x: int = 5 @ 3
         error
     );
 }
+
+#[test]
+fn rejects_os_remove_without_import() {
+    let source = r#"
+os.remove("/tmp/py2rust_missing_import.txt")
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("module 'os' used without import"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_from_os_import_unknown_member() {
+    let source = r#"
+from os import unknown
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("os has no supported member 'unknown'"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_from_os_import_wildcard() {
+    let source = r#"
+from os import *
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("from os import * is not supported"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_wrong_arity_for_imported_os_remove() {
+    let source = r#"
+from os import remove
+remove()
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("os.remove() expects one argument"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_wrong_arity_for_sys_exit() {
+    let source = r#"
+import sys
+sys.exit(1, 2)
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("sys.exit() expects zero or one argument"),
+        "Error: {}",
+        error
+    );
+}

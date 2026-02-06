@@ -55,6 +55,7 @@ pub(crate) struct Uses {
     pub(crate) py_str_slice_step: bool,
     pub(crate) py_list_slice_step: bool,
     pub(crate) py_file: bool,
+    pub(crate) py_os_remove: bool,
     pub(crate) py_iter: bool,
     pub(crate) py_repr: bool,
     pub(crate) py_bytes_from_len: bool,
@@ -403,6 +404,14 @@ impl<'a> Codegen<'a> {
 
         // Internal globals (defaults, class attrs) aren't module vars but must be emitted.
         for name in self.ctx.globals.keys() {
+            if self
+                .ctx
+                .globals
+                .get(name)
+                .is_some_and(|ty| matches!(ty, Type::Module(_) | Type::StdlibFunction { .. }))
+            {
+                continue;
+            }
             if !module_vars.contains(name) {
                 used_by_functions.insert(name.clone());
             }
@@ -501,6 +510,8 @@ impl<'a> Codegen<'a> {
                 }
             }
             StmtKind::Return { .. }
+            | StmtKind::Import { .. }
+            | StmtKind::ImportFrom { .. }
             | StmtKind::Global { .. }
             | StmtKind::Nonlocal { .. }
             | StmtKind::Break
@@ -605,6 +616,8 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 StmtKind::Return { .. }
+                | StmtKind::Import { .. }
+                | StmtKind::ImportFrom { .. }
                 | StmtKind::Break
                 | StmtKind::Continue
                 | StmtKind::Expr(_)
@@ -862,7 +875,9 @@ impl<'a> Codegen<'a> {
                         );
                     }
                 }
-                StmtKind::Global { .. }
+                StmtKind::Import { .. }
+                | StmtKind::ImportFrom { .. }
+                | StmtKind::Global { .. }
                 | StmtKind::Nonlocal { .. }
                 | StmtKind::Break
                 | StmtKind::Continue => {}
@@ -1262,7 +1277,9 @@ impl<'a> Codegen<'a> {
                         self.collect_list_elem_types_in_expr(expr, inferred);
                     }
                 }
-                StmtKind::Global { .. }
+                StmtKind::Import { .. }
+                | StmtKind::ImportFrom { .. }
+                | StmtKind::Global { .. }
                 | StmtKind::Nonlocal { .. }
                 | StmtKind::Break
                 | StmtKind::Continue => {}
@@ -1566,7 +1583,9 @@ impl<'a> Codegen<'a> {
                         );
                     }
                 }
-                StmtKind::Global { .. }
+                StmtKind::Import { .. }
+                | StmtKind::ImportFrom { .. }
+                | StmtKind::Global { .. }
                 | StmtKind::Nonlocal { .. }
                 | StmtKind::Break
                 | StmtKind::Continue => {}
@@ -2118,7 +2137,9 @@ impl<'a> Codegen<'a> {
                         );
                     }
                 }
-                StmtKind::Global { .. }
+                StmtKind::Import { .. }
+                | StmtKind::ImportFrom { .. }
+                | StmtKind::Global { .. }
                 | StmtKind::Nonlocal { .. }
                 | StmtKind::Break
                 | StmtKind::Continue => {}
@@ -3226,7 +3247,9 @@ impl<'a> Codegen<'a> {
                             );
                         }
                     }
-                    StmtKind::Global { .. }
+                    StmtKind::Import { .. }
+                    | StmtKind::ImportFrom { .. }
+                    | StmtKind::Global { .. }
                     | StmtKind::Nonlocal { .. }
                     | StmtKind::Break
                     | StmtKind::Continue => {}

@@ -27,6 +27,10 @@ impl<'a> Codegen<'a> {
             if !self.shared_globals.contains(name) {
                 continue;
             }
+            if matches!(ty, Type::Module(_) | Type::StdlibFunction { .. }) {
+                // Import bindings are compile-time only and must not be emitted as runtime globals.
+                continue;
+            }
             let ty_str = self.rust_type_for_global(ty);
             let gname = self.global_name(name);
             self.push_line(&format!(

@@ -859,7 +859,9 @@ impl<'a> Codegen<'a> {
                                             .as_ref()
                                             .is_some_and(|expr| expr_mentions_name(expr, target))
                                 }
-                                StmtKind::Global { .. }
+                                StmtKind::Import { .. }
+                                | StmtKind::ImportFrom { .. }
+                                | StmtKind::Global { .. }
                                 | StmtKind::Nonlocal { .. }
                                 | StmtKind::Break
                                 | StmtKind::Continue => false,
@@ -1213,7 +1215,10 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.push_line("}");
             }
-            StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
+            StmtKind::Import { .. }
+            | StmtKind::ImportFrom { .. }
+            | StmtKind::Global { .. }
+            | StmtKind::Nonlocal { .. } => {}
             StmtKind::Break => self.push_line("break;"),
             StmtKind::Continue => self.push_line("continue;"),
             StmtKind::Assert { test, msg } => {

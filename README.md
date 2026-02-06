@@ -4,6 +4,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 
 ## Project Layout
 - `crates/py2rust` — compiler/transpiler (Rust)
+- `crates/py2rust/src/stdlib/registry.rs` — centralized stdlib module/member registry
 
 ## Features (MVP)
 - Functions with required type annotations
@@ -30,6 +31,8 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Call-site unpacking via `*args` and `**kwargs` (including mixed call forms)
 - Nested functions with closure capture and `nonlocal` writes
 - Builtins: `abs`, `all`, `any`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `str`, `sum`, `tuple`, `type`, `zip`
+- Stdlib modules (registry-backed): `os.remove(path)` and `sys.exit([code])`
+- Stdlib imports: `import os`, `import os as o`, `from os import remove`, `from os import remove as rm`, `import sys`, `from sys import exit`
 
 ## Usage
 
@@ -73,12 +76,17 @@ The generated Rust injects tiny helper functions only when needed:
 - `py_print`
 - `py_len`
 - `py_range`
-- `py_round` etc.
+- `py_round`
+- `py_os_remove` etc.
 
 ## Notes and Limitations
 - `self` can be unannotated in methods; other parameters require annotations.
 - `Union[A, B]` and `A | B` are allowed only for enum-like class unions.
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
+- Import support is intentionally strict: only `typing`, `os`, and `sys` modules are currently accepted.
+- For registry-backed stdlib calls, module import is required (`os.remove(...)` / `sys.exit(...)` without import is a compile error).
+- `from ... import *` is not supported for stdlib modules.
+- Supported stdlib members are currently limited to `os.remove` and `sys.exit`.
 - Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
 - Builtins are mostly positional-only; keyword arguments are currently supported only for `print(sep=...)`.
 - Call-site `**kwargs` unpacking requires a `dict[str, T]` expression.

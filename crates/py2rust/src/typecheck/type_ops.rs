@@ -145,6 +145,8 @@ impl<'a> TypeChecker<'a> {
             Type::Tuple(items) => TypeRef::Tuple(items.iter().map(Self::type_to_ref).collect()),
             Type::Set(inner) => TypeRef::Set(Box::new(Self::type_to_ref(inner))),
             Type::Option(inner) => TypeRef::Optional(Box::new(Self::type_to_ref(inner))),
+            // Import bindings are compile-time artifacts and have no source-level TypeRef form.
+            Type::Module(_) | Type::StdlibFunction { .. } => TypeRef::Unknown,
             Type::Custom(name) => TypeRef::Name(name.clone()),
             Type::Union(name) => TypeRef::Name(name.clone()),
             Type::Iterator(inner) => TypeRef::Iterator(Box::new(Self::type_to_ref(inner))),

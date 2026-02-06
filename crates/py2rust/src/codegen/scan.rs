@@ -69,6 +69,8 @@ impl<'a> Codegen<'a> {
             Type::Custom(_)
             | Type::Union(_)
             | Type::Exception(_)
+            | Type::Module(_)
+            | Type::StdlibFunction { .. }
             | Type::Int
             | Type::Float
             | Type::Bool
@@ -170,7 +172,10 @@ impl<'a> Codegen<'a> {
                         visit_expr(expr, ok);
                     }
                 }
-                StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
+                StmtKind::Import { .. }
+                | StmtKind::ImportFrom { .. }
+                | StmtKind::Global { .. }
+                | StmtKind::Nonlocal { .. } => {}
                 StmtKind::Break | StmtKind::Continue => {}
             }
         }
@@ -413,7 +418,10 @@ impl<'a> Codegen<'a> {
                     self.scan_expr(expr)?;
                 }
             }
-            StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
+            StmtKind::Import { .. }
+            | StmtKind::ImportFrom { .. }
+            | StmtKind::Global { .. }
+            | StmtKind::Nonlocal { .. } => {}
             StmtKind::Break | StmtKind::Continue => {}
         }
         Ok(())
