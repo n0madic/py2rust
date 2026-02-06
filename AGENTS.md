@@ -5,12 +5,38 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 **Goals:** Native executables, static typing, CPython-compatible behavior, good error diagnostics
 **Non-goals:** Full CPython compatibility, dynamic features (`eval/exec`, metaclasses)
 
-## Quick Start
-- Build: `cargo build --release`
-- Run transpiler: `./target/release/py2rust <input.py> --output <output.rs>`
-- Compile generated Rust: `./target/release/py2rust <input.py> --compile`
-- Compile and run: `./target/release/py2rust <input.py> --run`
-- HIR/Types debug: `--emit-hir`, `--emit-types`, `--pretty`
+## Build/Test/Lint Commands
+
+### Building
+- `cargo build` - debug build
+- `cargo build --release` - optimized build
+- `cargo build -p py2rust` - build only py2rust crate
+- `cargo check` - fast type checking without codegen (recommended during development)
+- `cargo check --all-targets` - check all targets including tests
+
+### Testing
+- `cargo test` - run all tests in workspace
+- `cargo test -p py2rust` - run tests for py2rust crate only
+- `cargo test <testname>` - run specific test containing name (e.g., `cargo test runtime_functions`)
+- `cargo test runtime::functions` - run specific test module
+- `cargo test -- --nocapture` - show stdout/stderr from tests
+- `cargo test -- --test-threads=1` - run tests serially (useful for debugging)
+
+### Linting and Formatting
+- `cargo clippy` - run linter (recommended before commits)
+- `cargo clippy --all-targets` - lint all targets including tests
+- `cargo clippy -- -D warnings` - treat warnings as errors
+- `cargo fmt` - format all code with rustfmt
+- `cargo fmt --check` - check formatting without modifying files
+
+### Running the Transpiler
+- `cargo run -p py2rust -- <input.py>` - transpile Python to Rust
+- `cargo run -p py2rust -- <input.py> --output <output.rs>` - specify output file
+- `cargo run -p py2rust -- <input.py> --compile` - transpile and compile with rustc
+- `cargo run -p py2rust -- <input.py> --run` - transpile, compile, and execute
+- `cargo run -p py2rust -- <input.py> --emit-hir` - show HIR representation
+- `cargo run -p py2rust -- <input.py> --emit-types` - show type information
+- `cargo run -p py2rust -- <input.py> --pretty` - format generated Rust with rustfmt
 
 ## Repo Layout
 - `crates/py2rust/src/lib.rs` core compile pipeline and `main` renaming.
@@ -107,13 +133,41 @@ After completing any code changes:
 4. If you add new functionality, add corresponding test coverage
 5. Update all relevant documentation and keep it in `docs/`
 
-## Code Documentation
+## Code Style Guidelines
+
+### General Principles
+- Follow Rust 2021 edition conventions
+- Keep `#![forbid(unsafe_code)]` across all crates - no unsafe code allowed
+- Use `#![allow(clippy::result_large_err)]` for crates with large error types (CompileError includes source text)
+- Prefer `expect()` with context over `unwrap()` - always provide error messages
+- Use proper error handling with `Result` and `miette::Report` for user-facing errors
+
+### Imports and Module Organization
+- Group imports: std library, external crates, internal crates, then local modules
+- Use explicit imports rather than glob imports (`use foo::*`)
+- Keep module hierarchy flat when possible (see `crates/py2rust/src/` structure)
+- Module files: use `mod.rs` for modules with submodules (e.g., `codegen/mod.rs`)
+
+### Type System and Naming
+- Enum types: use PascalCase variants (e.g., `Type::Int`, `Type::Float`)
+- Functions and variables: use snake_case (e.g., `check_call`, `user_main`)
+- Constants: use SCREAMING_SNAKE_CASE (e.g., `MAX_RENAME_ATTEMPTS`, `__NAME__`)
+- Type annotations: prefer explicit types in function signatures, allow inference locally
+- Use `Box<Type>` for recursive enum variants to prevent infinite size
+
+### Error Handling
+- User-facing errors: use `miette::Report` with `CompileError::new(message, span, source, filename)`
+- Internal errors: use `Result<T, E>` with meaningful error types (e.g., `thiserror`)
+- Always include span information for compile-time errors to show users where the problem is
+- Exception handling in codegen: functions with unhandled exceptions return `Result<T, PyError>`
+
+### Code Documentation
 **Always add comments to the code you write!**
 
-- Add doc comments (`///` in Rust) to all public functions, structs, enums, and traits
+- Add doc comments (`///`) to all public functions, structs, enums, and traits
 - Add inline comments (`//`) to explain complex logic, non-obvious decisions, or important invariants
-- Comment any tricky parts of the code that might not be immediately clear
-- When implementing new features, explain the "why" not just the "what"
+- Document why, not just what - explain design decisions and tradeoffs
+- Add examples in doc comments for non-obvious APIs
 - Keep comments concise but informative
 
 ## Rust Code Generation
