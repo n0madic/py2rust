@@ -440,6 +440,13 @@ impl<'a> TypeChecker<'a> {
                     let _ = self.check_expr(&mut args[0], None)?;
                     return Ok(Type::Str);
                 }
+                if name == "ascii" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, "ascii() expects one argument"));
+                    }
+                    let _ = self.check_expr(&mut args[0], None)?;
+                    return Ok(Type::Str);
+                }
                 if name == "isinstance" {
                     if args.len() != 2 {
                         return Err(self.error(span, "isinstance() expects two arguments"));
@@ -1150,59 +1157,180 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                // String method support for core casing helpers.
-                if matches!(obj_ty, Type::Str) && attr == "upper" {
-                    if !args.is_empty() {
-                        return Err(self.error(span, "str.upper() expects no arguments"));
-                    }
-                    return Ok(Type::Str);
-                }
-                if matches!(obj_ty, Type::Str) && attr == "lower" {
-                    if !args.is_empty() {
-                        return Err(self.error(span, "str.lower() expects no arguments"));
-                    }
-                    return Ok(Type::Str);
-                }
-                if matches!(obj_ty, Type::Str) && attr == "startswith" {
-                    if args.len() != 1 {
-                        return Err(self.error(span, "str.startswith() expects one argument"));
-                    }
-                    let arg_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
-                    self.ensure_assignable(&arg_ty, &Type::Str, span)?;
-                    return Ok(Type::Bool);
-                }
-                if matches!(obj_ty, Type::Str) && attr == "find" {
-                    if args.len() != 1 {
-                        return Err(self.error(span, "str.find() expects one argument"));
-                    }
-                    let arg_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
-                    self.ensure_assignable(&arg_ty, &Type::Str, span)?;
-                    return Ok(Type::Int);
-                }
-                if attr == "format" {
-                    if args.is_empty() {
+                // String method support.
+                if matches!(obj_ty, Type::Str) {
+                    if attr == "upper"
+                        || attr == "lower"
+                        || attr == "title"
+                        || attr == "capitalize"
+                        || attr == "swapcase"
+                    {
+                        if !keywords.is_empty() {
+                            return Err(self.error(span, "Keyword arguments are not supported"));
+                        }
+                        if !args.is_empty() {
+                            return Err(
+                                self.error(span, format!("str.{attr}() expects no arguments"))
+                            );
+                        }
                         return Ok(Type::Str);
                     }
-                    for arg in args.iter_mut() {
-                        let arg_ty = self.check_expr(arg, None)?;
-                        if !matches!(arg_ty, Type::Str) {
-                            let inner = arg.clone();
-                            *arg = Expr {
-                                kind: ExprKind::Call {
-                                    func: Box::new(Expr {
-                                        kind: ExprKind::Name("str".to_string()),
-                                        span: arg.span,
-                                        ty: Some(Type::Str),
-                                    }),
-                                    args: vec![inner],
-                                    keywords: Vec::new(),
-                                },
-                                span: arg.span,
-                                ty: Some(Type::Str),
-                            };
+                    if attr == "isdigit"
+                        || attr == "isalpha"
+                        || attr == "isalnum"
+                        || attr == "isspace"
+                        || attr == "isupper"
+                        || attr == "islower"
+                    {
+                        if !keywords.is_empty() {
+                            return Err(self.error(span, "Keyword arguments are not supported"));
                         }
+                        if !args.is_empty() {
+                            return Err(
+                                self.error(span, format!("str.{attr}() expects no arguments"))
+                            );
+                        }
+                        return Ok(Type::Bool);
                     }
-                    return Ok(Type::Str);
+                    if attr == "startswith"
+                        || attr == "endswith"
+                        || attr == "find"
+                        || attr == "count"
+                    {
+                        if !keywords.is_empty() {
+                            return Err(self.error(span, "Keyword arguments are not supported"));
+                        }
+                        if args.len() != 1 {
+                            return Err(
+                                self.error(span, format!("str.{attr}() expects one argument"))
+                            );
+                        }
+                        let arg_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                        self.ensure_assignable(&arg_ty, &Type::Str, span)?;
+                        return Ok(if attr == "find" || attr == "count" {
+                            Type::Int
+                        } else {
+                            Type::Bool
+                        });
+                    }
+                    if attr == "replace" {
+                        if !keywords.is_empty() {
+                            return Err(self.error(span, "Keyword arguments are not supported"));
+                        }
+                        if args.len() != 2 {
+                            return Err(self.error(span, "str.replace() expects two arguments"));
+                        }
+                        let old_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                        let new_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
+                        self.ensure_assignable(&old_ty, &Type::Str, span)?;
+                        self.ensure_assignable(&new_ty, &Type::Str, span)?;
+                        return Ok(Type::Str);
+                    }
+                    if attr == "strip" || attr == "lstrip" || attr == "rstrip" {
+                        if !keywords.is_empty() {
+                            return Err(self.error(span, "Keyword arguments are not supported"));
+                        }
+                        if args.len() > 1 {
+                            return Err(self.error(
+                                span,
+                                format!("str.{attr}() expects zero or one argument"),
+                            ));
+                        }
+                        if args.len() == 1 {
+                            let chars_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                            self.ensure_assignable(&chars_ty, &Type::Str, span)?;
+                        }
+                        return Ok(Type::Str);
+                    }
+                    if attr == "split" {
+                        if !keywords.is_empty() {
+                            return Err(self.error(span, "Keyword arguments are not supported"));
+                        }
+                        if args.len() > 2 {
+                            return Err(self.error(span, "str.split() expects up to two arguments"));
+                        }
+                        if !args.is_empty() {
+                            let sep_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                            self.ensure_assignable(&sep_ty, &Type::Str, span)?;
+                        }
+                        if args.len() == 2 {
+                            let max_ty = self.check_expr(&mut args[1], Some(&Type::Int))?;
+                            self.ensure_assignable(&max_ty, &Type::Int, span)?;
+                        }
+                        return Ok(Type::List(Box::new(Type::Str)));
+                    }
+                    if attr == "join" {
+                        if !keywords.is_empty() {
+                            return Err(self.error(span, "Keyword arguments are not supported"));
+                        }
+                        if args.len() != 1 {
+                            return Err(self.error(span, "str.join() expects one argument"));
+                        }
+                        let iter_ty = self.check_expr(&mut args[0], None)?;
+                        match iter_ty {
+                            Type::Str | Type::Unknown => {}
+                            Type::List(inner) | Type::Set(inner) | Type::Iterator(inner) => {
+                                if !matches!(inner.as_ref(), Type::Unknown) {
+                                    self.ensure_assignable(inner.as_ref(), &Type::Str, span)?;
+                                }
+                            }
+                            Type::Tuple(items) => {
+                                for item_ty in items {
+                                    if !matches!(item_ty, Type::Unknown) {
+                                        self.ensure_assignable(&item_ty, &Type::Str, span)?;
+                                    }
+                                }
+                            }
+                            _ => {
+                                return Err(
+                                    self.error(span, "str.join() expects an iterable of strings")
+                                )
+                            }
+                        }
+                        return Ok(Type::Str);
+                    }
+                    if attr == "center" || attr == "ljust" || attr == "rjust" {
+                        if !keywords.is_empty() {
+                            return Err(self.error(span, "Keyword arguments are not supported"));
+                        }
+                        if args.is_empty() || args.len() > 2 {
+                            return Err(self.error(
+                                span,
+                                format!("str.{attr}() expects one or two arguments"),
+                            ));
+                        }
+                        let width_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                        self.ensure_assignable(&width_ty, &Type::Int, span)?;
+                        if args.len() == 2 {
+                            let fill_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
+                            self.ensure_assignable(&fill_ty, &Type::Str, span)?;
+                        }
+                        return Ok(Type::Str);
+                    }
+                    if attr == "zfill" {
+                        if !keywords.is_empty() {
+                            return Err(self.error(span, "Keyword arguments are not supported"));
+                        }
+                        if args.len() != 1 {
+                            return Err(self.error(span, "str.zfill() expects one argument"));
+                        }
+                        let width_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                        self.ensure_assignable(&width_ty, &Type::Int, span)?;
+                        return Ok(Type::Str);
+                    }
+                    if attr == "format" {
+                        for arg in args.iter_mut() {
+                            let _ = self.check_expr(arg, None)?;
+                        }
+                        for kw in keywords.iter_mut() {
+                            if kw.name.is_none() {
+                                return Err(self
+                                    .error(span, "Call-site **kwargs unpacking is not supported"));
+                            }
+                            let _ = self.check_expr(&mut kw.value, None)?;
+                        }
+                        return Ok(Type::Str);
+                    }
                 }
                 if let Type::Custom(ref class_name) = obj_ty {
                     let class_info =

@@ -265,6 +265,19 @@ impl<'a> Codegen<'a> {
                     idx = idx_expr
                 )));
             }
+            if matches!(inner.as_ref(), Type::Str) {
+                let idx_expr = self.gen_expr(index)?;
+                self.uses.py_list_get = true;
+                let tmp = self.new_tmp();
+                let chars = self.new_tmp();
+                return Ok(self.wrap_result(format!(
+                    "{{ let {tmp} = {base}; let str_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {chars}: Vec<char> = str_ref.chars().collect(); py_list_get(&{chars}, {idx}).map(|ch| ch.to_string()) }}",
+                    tmp = tmp,
+                    base = base,
+                    chars = chars,
+                    idx = idx_expr
+                )));
+            }
         }
         if let Some(Type::Tuple(items)) = value.ty.as_ref() {
             let idx_opt = match &index.kind {
@@ -301,8 +314,18 @@ impl<'a> Codegen<'a> {
                 return Ok(self.wrap_result(format!("py_dict_get(&{}, &{})", base, idx)));
             }
             let guard = self.new_tmp();
+            if matches!(value.kind, ExprKind::Name(_)) {
+                return Ok(self.wrap_result(format!(
+                    "{{ let {guard} = {base}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                    guard = guard,
+                    base = base,
+                    idx = idx
+                )));
+            }
+            let dict_tmp = self.new_tmp();
             return Ok(self.wrap_result(format!(
-                "{{ let {guard} = {base}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                "{{ let {dict_tmp} = {base}; let {guard} = {dict_tmp}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                dict_tmp = dict_tmp,
                 guard = guard,
                 base = base,
                 idx = idx
@@ -321,6 +344,17 @@ impl<'a> Codegen<'a> {
                 return Ok(self.wrap_result(format!("py_list_get({}, {})", list_ref, idx_expr)));
             }
             return Ok(self.wrap_result(format!("py_list_get(&{}, {})", base, idx_expr)));
+        }
+        if matches!(value.ty.as_ref(), Some(Type::Str)) {
+            let idx_expr = self.gen_expr(index)?;
+            self.uses.py_list_get = true;
+            let chars = self.new_tmp();
+            return Ok(self.wrap_result(format!(
+                "{{ let {chars}: Vec<char> = {base}.chars().collect(); py_list_get(&{chars}, {idx}).map(|ch| ch.to_string()) }}",
+                chars = chars,
+                base = base,
+                idx = idx_expr
+            )));
         }
         let idx = self.gen_expr(index)?;
         Ok(format!("{}[{}]", base, idx))

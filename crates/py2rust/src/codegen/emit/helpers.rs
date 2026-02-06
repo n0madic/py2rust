@@ -253,6 +253,252 @@ fn py_str_repr(s: &str) -> String {
 }
 "#;
 
+/// Static helper body for Python `ascii(...)` escaping.
+const HELPER_PY_ASCII: &str = r#"
+fn py_ascii_escape(s: &str) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii() {
+            out.push(ch);
+            continue;
+        }
+        let code = ch as u32;
+        if code <= 0xFF {
+            out.push_str(&format!("\\x{:02x}", code));
+        } else if code <= 0xFFFF {
+            out.push_str(&format!("\\u{:04x}", code));
+        } else {
+            out.push_str(&format!("\\U{:08x}", code));
+        }
+    }
+    out
+}
+"#;
+
+/// Static helper body for Python string method compatibility.
+const HELPER_PY_STRING_METHODS: &str = r#"
+fn py_str_split_whitespace(s: &str, maxsplit: Option<i64>) -> Vec<String> {
+    let maxsplit = maxsplit.unwrap_or(-1);
+    if maxsplit < 0 {
+        return s.split_whitespace().map(|part| part.to_string()).collect();
+    }
+    let limit = maxsplit as usize;
+    if limit == 0 {
+        let trimmed = s.trim_start();
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+        return vec![trimmed.to_string()];
+    }
+    let mut raw: Vec<String> = s.split_whitespace().map(|part| part.to_string()).collect();
+    if raw.len() <= limit + 1 {
+        return raw;
+    }
+    let mut out: Vec<String> = raw.drain(..limit).collect();
+    out.push(raw.join(" "));
+    out
+}
+
+fn py_str_split_sep(s: &str, sep: &str, maxsplit: Option<i64>) -> Vec<String> {
+    if maxsplit.unwrap_or(-1) < 0 {
+        return s.split(sep).map(|part| part.to_string()).collect();
+    }
+    let limit = maxsplit.unwrap_or(-1).max(0) as usize + 1;
+    s.splitn(limit, sep).map(|part| part.to_string()).collect()
+}
+
+fn py_str_count(s: &str, needle: &str) -> i64 {
+    if needle.is_empty() {
+        return s.chars().count() as i64 + 1;
+    }
+    s.matches(needle).count() as i64
+}
+
+fn py_str_title(s: &str) -> String {
+    let mut out = String::new();
+    let mut at_word_start = true;
+    for ch in s.chars() {
+        if ch.is_alphabetic() {
+            if at_word_start {
+                for upper in ch.to_uppercase() {
+                    out.push(upper);
+                }
+                at_word_start = false;
+            } else {
+                for lower in ch.to_lowercase() {
+                    out.push(lower);
+                }
+            }
+        } else {
+            at_word_start = true;
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn py_str_capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    let mut out = String::new();
+    if let Some(first) = chars.next() {
+        for upper in first.to_uppercase() {
+            out.push(upper);
+        }
+        for ch in chars {
+            for lower in ch.to_lowercase() {
+                out.push(lower);
+            }
+        }
+    }
+    out
+}
+
+fn py_str_swapcase(s: &str) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        if ch.is_lowercase() {
+            for upper in ch.to_uppercase() {
+                out.push(upper);
+            }
+        } else if ch.is_uppercase() {
+            for lower in ch.to_lowercase() {
+                out.push(lower);
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn py_str_lstrip_chars(s: &str, chars: &str) -> String {
+    if chars.is_empty() {
+        return s.to_string();
+    }
+    let mut start = 0usize;
+    for (idx, ch) in s.char_indices() {
+        if chars.contains(ch) {
+            start = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    s[start..].to_string()
+}
+
+fn py_str_rstrip_chars(s: &str, chars: &str) -> String {
+    if chars.is_empty() {
+        return s.to_string();
+    }
+    let mut end = s.len();
+    for (idx, ch) in s.char_indices().rev() {
+        if chars.contains(ch) {
+            end = idx;
+        } else {
+            break;
+        }
+    }
+    s[..end].to_string()
+}
+
+fn py_fill_char(fill: &str) -> char {
+    fill.chars().next().unwrap_or(' ')
+}
+
+fn py_str_center(s: &str, width: i64, fill: char) -> String {
+    let len = s.chars().count() as i64;
+    if width <= len {
+        return s.to_string();
+    }
+    let pad = (width - len) as usize;
+    let left = pad / 2;
+    let right = pad - left;
+    let fill_s = fill.to_string();
+    format!("{}{}{}", fill_s.repeat(left), s, fill_s.repeat(right))
+}
+
+fn py_str_ljust(s: &str, width: i64, fill: char) -> String {
+    let len = s.chars().count() as i64;
+    if width <= len {
+        return s.to_string();
+    }
+    let pad = (width - len) as usize;
+    let fill_s = fill.to_string();
+    format!("{}{}", s, fill_s.repeat(pad))
+}
+
+fn py_str_rjust(s: &str, width: i64, fill: char) -> String {
+    let len = s.chars().count() as i64;
+    if width <= len {
+        return s.to_string();
+    }
+    let pad = (width - len) as usize;
+    let fill_s = fill.to_string();
+    format!("{}{}", fill_s.repeat(pad), s)
+}
+
+fn py_str_zfill(s: &str, width: i64) -> String {
+    let width = width.max(0) as usize;
+    let len = s.chars().count();
+    if len >= width {
+        return s.to_string();
+    }
+    let pad = width - len;
+    if let Some(first) = s.chars().next() {
+        if first == '+' || first == '-' {
+            let mut out = String::new();
+            out.push(first);
+            out.push_str(&"0".repeat(pad));
+            out.push_str(&s[first.len_utf8()..]);
+            return out;
+        }
+    }
+    format!("{}{}", "0".repeat(pad), s)
+}
+
+fn py_str_isdigit(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn py_str_isalpha(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|ch| ch.is_alphabetic())
+}
+
+fn py_str_isalnum(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|ch| ch.is_alphanumeric())
+}
+
+fn py_str_isspace(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|ch| ch.is_whitespace())
+}
+
+fn py_str_isupper(s: &str) -> bool {
+    let mut has_cased = false;
+    for ch in s.chars() {
+        if ch.is_alphabetic() {
+            has_cased = true;
+            if ch.is_lowercase() {
+                return false;
+            }
+        }
+    }
+    has_cased
+}
+
+fn py_str_islower(s: &str) -> bool {
+    let mut has_cased = false;
+    for ch in s.chars() {
+        if ch.is_alphabetic() {
+            has_cased = true;
+            if ch.is_uppercase() {
+                return false;
+            }
+        }
+    }
+    has_cased
+}
+"#;
+
 /// Static helper body for `range(start, end, step)`.
 const HELPER_PY_RANGE3: &str = r#"
 fn py_range3(start: i64, end: i64, step: i64) -> Result<Box<dyn Iterator<Item = i64>>, PyError> {
@@ -485,6 +731,12 @@ impl<'a> Codegen<'a> {
         }
         if self.uses.py_str_repr {
             self.push_block(HELPER_PY_STR_REPR);
+        }
+        if self.uses.py_ascii {
+            self.push_block(HELPER_PY_ASCII);
+        }
+        if self.uses.py_string_methods {
+            self.push_block(HELPER_PY_STRING_METHODS);
         }
         if self.uses.len {
             // Tuples have fixed arity, so provide PyLen impls for common tuple sizes.
@@ -750,6 +1002,8 @@ impl<'a> Codegen<'a> {
             || self.uses.py_dict_get
             || self.uses.py_list_get
             || self.uses.py_index
+            || self.uses.py_ascii
+            || self.uses.py_string_methods
             || self.uses.py_str_slice
             || self.uses.py_list_slice_step
             || self.uses.py_str_slice_step

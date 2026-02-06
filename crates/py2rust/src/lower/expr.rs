@@ -396,17 +396,10 @@ impl<'a> Lowerer<'a> {
                         },
                         // Formatted value: {name} or {value:.2f} in f-string
                         ast::Expr::FormattedValue(fv) => {
-                            // Python allows !s (str) and !r (repr) conversions
-                            // We only support !s and implicit (None)
-                            if !matches!(
-                                fv.conversion,
-                                ast::ConversionFlag::None | ast::ConversionFlag::Str
-                            ) {
-                                return Err(self.error(
-                                    value.range(),
-                                    "f-string conversions are not supported",
-                                ));
-                            }
+                            // Python supports conversion flags:
+                            // - !s -> str(...)
+                            // - !r -> repr(...)
+                            // - !a -> ascii(...)
                             let spec = if let Some(spec_expr) = &fv.format_spec {
                                 let raw = self.format_spec_literal(spec_expr)?;
                                 let mapped = self.map_format_spec(&raw, spec_expr.range())?;
@@ -424,7 +417,50 @@ impl<'a> Lowerer<'a> {
                                 fmt.push_str(&spec);
                             }
                             fmt.push('}');
-                            args.push(self.lower_expr(&fv.value)?);
+                            let lowered = self.lower_expr(&fv.value)?;
+                            let converted = match fv.conversion {
+                                ast::ConversionFlag::None => lowered,
+                                ast::ConversionFlag::Str => Expr {
+                                    kind: ExprKind::Call {
+                                        func: Box::new(Expr {
+                                            kind: ExprKind::Name("str".to_string()),
+                                            span: Span::from(value.range()),
+                                            ty: Some(Type::Str),
+                                        }),
+                                        args: vec![lowered],
+                                        keywords: Vec::new(),
+                                    },
+                                    span: Span::from(value.range()),
+                                    ty: Some(Type::Str),
+                                },
+                                ast::ConversionFlag::Repr => Expr {
+                                    kind: ExprKind::Call {
+                                        func: Box::new(Expr {
+                                            kind: ExprKind::Name("repr".to_string()),
+                                            span: Span::from(value.range()),
+                                            ty: Some(Type::Str),
+                                        }),
+                                        args: vec![lowered],
+                                        keywords: Vec::new(),
+                                    },
+                                    span: Span::from(value.range()),
+                                    ty: Some(Type::Str),
+                                },
+                                ast::ConversionFlag::Ascii => Expr {
+                                    kind: ExprKind::Call {
+                                        func: Box::new(Expr {
+                                            kind: ExprKind::Name("ascii".to_string()),
+                                            span: Span::from(value.range()),
+                                            ty: Some(Type::Str),
+                                        }),
+                                        args: vec![lowered],
+                                        keywords: Vec::new(),
+                                    },
+                                    span: Span::from(value.range()),
+                                    ty: Some(Type::Str),
+                                },
+                            };
+                            args.push(converted);
                         }
                         _ => return Err(self.error(value.range(), "Unsupported f-string element")),
                     }

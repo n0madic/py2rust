@@ -51,6 +51,8 @@ pub(crate) struct Uses {
     pub(crate) py_list_str: bool,
     pub(crate) py_float_str: bool,
     pub(crate) py_str_repr: bool,
+    pub(crate) py_ascii: bool,
+    pub(crate) py_string_methods: bool,
     pub(crate) py_str_slice: bool,
     pub(crate) py_str_slice_step: bool,
     pub(crate) py_list_slice_step: bool,

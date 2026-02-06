@@ -4,6 +4,14 @@ use super::super::*;
 use crate::stdlib::registry::{resolve_method, resolve_module, StdlibMethodSpec};
 use crate::typecheck::FunctionSig;
 
+/// Parsed format-literal rewrite output:
+/// rewritten Rust format string + placeholder spec metadata.
+type FormatLiteralRewrite = (
+    String,
+    std::collections::HashSet<usize>,
+    std::collections::HashMap<String, bool>,
+);
+
 impl<'a> Codegen<'a> {
     /// Lower a call expression, including builtins and method calls.
     pub(super) fn gen_call_expr(
@@ -622,6 +630,7 @@ impl<'a> Codegen<'a> {
                 | "oct"
                 | "repr"
                 | "str"
+                | "ascii"
                 | "isinstance"
                 | "type"
                 | "open"
@@ -671,6 +680,9 @@ impl<'a> Codegen<'a> {
                     return Ok(Some(format!("py_print(format!(\"{{:?}}\", {}))", arg_expr)));
                 }
                 let arg_expr = self.gen_expr(&args[0])?;
+                if matches!(args[0].ty.as_ref(), Some(Type::Str)) {
+                    return Ok(Some(format!("py_print(&{})", arg_expr)));
+                }
                 return Ok(Some(format!("py_print({})", arg_expr)));
             }
             if let Some(sep_expr) = sep_kw {
@@ -1597,6 +1609,16 @@ impl<'a> Codegen<'a> {
                 _ => format!("format!(\"{{:?}}\", {})", arg_expr),
             }));
         }
+        if name == "ascii" {
+            if args.len() != 1 {
+                return Err(self.error(expr.span, "ascii() expects one argument"));
+            }
+            let repr_expr = self
+                .gen_builtin_call(expr, "repr", args, &[])?
+                .ok_or_else(|| self.error(expr.span, "failed to lower ascii() via repr()"))?;
+            self.uses.py_ascii = true;
+            return Ok(Some(format!("py_ascii_escape(&{})", repr_expr)));
+        }
         if name == "isinstance" {
             if args.len() != 2 {
                 return Err(self.error(expr.span, "isinstance() expects two arguments"));
@@ -1738,47 +1760,69 @@ impl<'a> Codegen<'a> {
             })?;
             return self.gen_stdlib_call(value.span, spec, args, keywords);
         }
-        if attr == "upper" {
-            if let Some(Type::Str) = value.ty.as_ref() {
+        if let Some(Type::Str) = value.ty.as_ref() {
+            if attr == "upper" {
                 if !keywords.is_empty() {
                     return Err(self.error(value.span, "Keyword arguments are not supported"));
                 }
                 if !args.is_empty() {
                     return Err(self.error(value.span, "str.upper() expects no arguments"));
                 }
-                // Rust's to_uppercase() matches Python's str.upper() semantics.
                 return Ok(format!("{}.to_uppercase()", self.gen_expr(value)?));
             }
-        }
-        if attr == "lower" {
-            if let Some(Type::Str) = value.ty.as_ref() {
+            if attr == "lower" {
                 if !keywords.is_empty() {
                     return Err(self.error(value.span, "Keyword arguments are not supported"));
                 }
                 if !args.is_empty() {
                     return Err(self.error(value.span, "str.lower() expects no arguments"));
                 }
-                // Rust's to_lowercase() matches Python's str.lower() semantics.
                 return Ok(format!("{}.to_lowercase()", self.gen_expr(value)?));
             }
-        }
-        if attr == "startswith" {
-            if let Some(Type::Str) = value.ty.as_ref() {
+            if attr == "strip" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.len() > 1 {
+                    return Err(self.error(value.span, "str.strip() expects zero or one argument"));
+                }
+                if args.is_empty() {
+                    return Ok(format!("{}.trim().to_string()", self.gen_expr(value)?));
+                }
+                let source_expr = self.gen_expr(value)?;
+                let chars_expr = self.gen_expr(&args[0])?;
+                let source_tmp = self.new_tmp();
+                let chars_tmp = self.new_tmp();
+                return Ok(format!(
+                    "{{ let {source_tmp} = {source_expr}; let {chars_tmp} = {chars_expr}; {source_tmp}.trim_matches(|ch| {chars_tmp}.contains(ch)).to_string() }}",
+                    source_tmp = source_tmp,
+                    source_expr = source_expr,
+                    chars_tmp = chars_tmp,
+                    chars_expr = chars_expr
+                ));
+            }
+            if attr == "startswith" || attr == "endswith" {
                 if !keywords.is_empty() {
                     return Err(self.error(value.span, "Keyword arguments are not supported"));
                 }
                 if args.len() != 1 {
-                    return Err(self.error(value.span, "str.startswith() expects one argument"));
+                    return Err(
+                        self.error(value.span, format!("str.{attr}() expects one argument"))
+                    );
                 }
+                let method = if attr == "startswith" {
+                    "starts_with"
+                } else {
+                    "ends_with"
+                };
                 return Ok(format!(
-                    "{}.starts_with(&{})",
+                    "{}.{}(&{})",
                     self.gen_expr(value)?,
+                    method,
                     self.gen_expr(&args[0])?
                 ));
             }
-        }
-        if attr == "find" {
-            if let Some(Type::Str) = value.ty.as_ref() {
+            if attr == "find" {
                 if !keywords.is_empty() {
                     return Err(self.error(value.span, "Keyword arguments are not supported"));
                 }
@@ -1790,6 +1834,193 @@ impl<'a> Codegen<'a> {
                     self.gen_expr(value)?,
                     self.gen_expr(&args[0])?
                 ));
+            }
+            if attr == "replace" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.len() != 2 {
+                    return Err(self.error(value.span, "str.replace() expects two arguments"));
+                }
+                return Ok(format!(
+                    "{}.replace(&{}, &{})",
+                    self.gen_expr(value)?,
+                    self.gen_expr(&args[0])?,
+                    self.gen_expr(&args[1])?
+                ));
+            }
+            if attr == "split" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.len() > 2 {
+                    return Err(self.error(value.span, "str.split() expects up to two arguments"));
+                }
+                self.uses.py_string_methods = true;
+                let source_expr = self.gen_expr(value)?;
+                let split_expr = if args.is_empty() {
+                    format!("py_str_split_whitespace(&{}, None)", source_expr)
+                } else if args.len() == 1 {
+                    format!(
+                        "py_str_split_sep(&{}, &{}, None)",
+                        source_expr,
+                        self.gen_expr(&args[0])?
+                    )
+                } else {
+                    format!(
+                        "py_str_split_sep(&{}, &{}, Some({}))",
+                        source_expr,
+                        self.gen_expr(&args[0])?,
+                        self.gen_expr(&args[1])?
+                    )
+                };
+                return Ok(format!("Arc::new(Mutex::new({}))", split_expr));
+            }
+            if attr == "join" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "str.join() expects one argument"));
+                }
+                let sep_expr = self.gen_expr(value)?;
+                let iter_src = self.gen_iter_source(&args[0])?;
+                let body = format!(
+                    "({}).collect::<Vec<String>>().join(&{})",
+                    iter_src.expr, sep_expr
+                );
+                return Ok(iter_src.wrap(body));
+            }
+            if attr == "count" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "str.count() expects one argument"));
+                }
+                self.uses.py_string_methods = true;
+                return Ok(format!(
+                    "py_str_count(&{}, &{})",
+                    self.gen_expr(value)?,
+                    self.gen_expr(&args[0])?
+                ));
+            }
+            if attr == "title" || attr == "capitalize" || attr == "swapcase" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if !args.is_empty() {
+                    return Err(
+                        self.error(value.span, format!("str.{attr}() expects no arguments"))
+                    );
+                }
+                self.uses.py_string_methods = true;
+                let helper = if attr == "title" {
+                    "py_str_title"
+                } else if attr == "capitalize" {
+                    "py_str_capitalize"
+                } else {
+                    "py_str_swapcase"
+                };
+                return Ok(format!("{}(&{})", helper, self.gen_expr(value)?));
+            }
+            if attr == "lstrip" || attr == "rstrip" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.len() > 1 {
+                    return Err(self.error(
+                        value.span,
+                        format!("str.{attr}() expects zero or one argument"),
+                    ));
+                }
+                if args.is_empty() {
+                    let method = if attr == "lstrip" {
+                        "trim_start"
+                    } else {
+                        "trim_end"
+                    };
+                    return Ok(format!(
+                        "{}.{}().to_string()",
+                        self.gen_expr(value)?,
+                        method
+                    ));
+                }
+                self.uses.py_string_methods = true;
+                let helper = if attr == "lstrip" {
+                    "py_str_lstrip_chars"
+                } else {
+                    "py_str_rstrip_chars"
+                };
+                return Ok(format!(
+                    "{}(&{}, &{})",
+                    helper,
+                    self.gen_expr(value)?,
+                    self.gen_expr(&args[0])?
+                ));
+            }
+            if attr == "center" || attr == "ljust" || attr == "rjust" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.is_empty() || args.len() > 2 {
+                    return Err(self.error(
+                        value.span,
+                        format!("str.{attr}() expects one or two arguments"),
+                    ));
+                }
+                self.uses.py_string_methods = true;
+                let helper = if attr == "center" {
+                    "py_str_center"
+                } else if attr == "ljust" {
+                    "py_str_ljust"
+                } else {
+                    "py_str_rjust"
+                };
+                let fill_expr = if args.len() == 2 {
+                    format!("py_fill_char(&{})", self.gen_expr(&args[1])?)
+                } else {
+                    "' '".to_string()
+                };
+                return Ok(format!(
+                    "{}(&{}, {}, {})",
+                    helper,
+                    self.gen_expr(value)?,
+                    self.gen_expr(&args[0])?,
+                    fill_expr
+                ));
+            }
+            if attr == "zfill" {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "str.zfill() expects one argument"));
+                }
+                self.uses.py_string_methods = true;
+                return Ok(format!(
+                    "py_str_zfill(&{}, {})",
+                    self.gen_expr(value)?,
+                    self.gen_expr(&args[0])?
+                ));
+            }
+            if attr == "isdigit"
+                || attr == "isalpha"
+                || attr == "isalnum"
+                || attr == "isspace"
+                || attr == "isupper"
+                || attr == "islower"
+            {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if !args.is_empty() {
+                    return Err(
+                        self.error(value.span, format!("str.{attr}() expects no arguments"))
+                    );
+                }
+                self.uses.py_string_methods = true;
+                return Ok(format!("py_str_{}(&{})", attr, self.gen_expr(value)?));
             }
         }
         if let Some(Type::Custom(class_name)) = value.ty.as_ref() {
@@ -2799,59 +3030,26 @@ impl<'a> Codegen<'a> {
         }
         if attr == "format" {
             if let ExprKind::Literal(Literal::Str(fmt)) = &value.kind {
-                if !keywords.is_empty() {
-                    return Err(self.error(value.span, "Keyword arguments are not supported"));
-                }
-                let fmt_lit = format!("{fmt:?}");
-                if args.is_empty() {
-                    return Ok(format!("{}.to_string()", fmt_lit));
-                }
-                // Track which replacement fields explicitly specify a format spec.
-                // Float arguments without a spec should use Python's str(float) style.
-                let mut placeholder_has_spec = Vec::new();
-                let chars: Vec<char> = fmt.chars().collect();
-                let mut i = 0usize;
-                while i < chars.len() {
-                    if chars[i] == '{' {
-                        if i + 1 < chars.len() && chars[i + 1] == '{' {
-                            i += 2;
-                            continue;
-                        }
-                        i += 1;
-                        let mut has_spec = false;
-                        while i < chars.len() && chars[i] != '}' {
-                            if chars[i] == ':' {
-                                has_spec = true;
-                            }
-                            i += 1;
-                        }
-                        placeholder_has_spec.push(has_spec);
-                        if i < chars.len() {
-                            i += 1;
-                        }
-                        continue;
-                    }
-                    if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
+                let (rust_fmt, positional_with_spec, named_with_spec) =
+                    self.rewrite_python_format_literal(fmt, value.span)?;
+                let fmt_lit = format!("{rust_fmt:?}");
+                if args.is_empty() && keywords.is_empty() {
+                    return Ok(format!("format!({})", fmt_lit));
                 }
                 let mut vals = Vec::new();
                 for (idx, arg) in args.iter().enumerate() {
-                    if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
-                        vals.push(self.list_str_expr(arg)?);
-                    } else if self.print_needs_debug(arg) {
-                        let arg_expr = self.debug_arg_expr(arg)?;
-                        vals.push(format!("format!(\"{{:?}}\", {})", arg_expr));
-                    } else if matches!(arg.ty.as_ref(), Some(Type::Float))
-                        && !placeholder_has_spec.get(idx).copied().unwrap_or(false)
-                    {
-                        self.uses.py_float_str = true;
-                        vals.push(format!("py_float_str({})", self.gen_expr(arg)?));
-                    } else {
-                        vals.push(self.gen_expr(arg)?);
-                    }
+                    let has_spec = positional_with_spec.contains(&idx);
+                    vals.push(self.gen_format_arg_expr(arg, has_spec)?);
+                }
+                for kw in keywords {
+                    let Some(name) = kw.name.as_deref() else {
+                        return Err(
+                            self.error(value.span, "Call-site **kwargs unpacking is not supported")
+                        );
+                    };
+                    let has_spec = named_with_spec.get(name).copied().unwrap_or(false);
+                    let rendered = self.gen_format_arg_expr(&kw.value, has_spec)?;
+                    vals.push(format!("{name} = {rendered}"));
                 }
                 return Ok(format!("format!({}, {})", fmt_lit, vals.join(", ")));
             }
@@ -3001,6 +3199,162 @@ impl<'a> Codegen<'a> {
             attr,
             self.gen_args(args)?
         ))
+    }
+
+    /// Render one `.format(...)` argument with Python-like default string conversion.
+    fn gen_format_arg_expr(&mut self, arg: &Expr, has_spec: bool) -> Result<String, CompileError> {
+        if has_spec {
+            return self.gen_expr(arg);
+        }
+        if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
+            return self.list_str_expr(arg);
+        }
+        if matches!(arg.ty.as_ref(), Some(Type::Tuple(_))) {
+            self.uses.py_list_str = true;
+            return Ok(format!("{}.py_repr()", self.gen_expr(arg)?));
+        }
+        if matches!(arg.ty.as_ref(), Some(Type::Float)) {
+            self.uses.py_float_str = true;
+            return Ok(format!("py_float_str({})", self.gen_expr(arg)?));
+        }
+        if matches!(arg.ty.as_ref(), Some(Type::Bool)) {
+            let rendered = self.gen_expr(arg)?;
+            return Ok(format!(
+                "if {} {{ \"True\".to_string() }} else {{ \"False\".to_string() }}",
+                rendered
+            ));
+        }
+        if matches!(arg.ty.as_ref(), Some(Type::None)) {
+            return Ok("\"None\".to_string()".to_string());
+        }
+        if self.print_needs_debug(arg) {
+            let arg_expr = self.debug_arg_expr(arg)?;
+            return Ok(format!("format!(\"{{:?}}\", {})", arg_expr));
+        }
+        self.gen_expr(arg)
+    }
+
+    /// Rewrite a Python format literal to Rust format syntax and collect spec usage metadata.
+    fn rewrite_python_format_literal(
+        &self,
+        fmt: &str,
+        span: Span,
+    ) -> Result<FormatLiteralRewrite, CompileError> {
+        let chars: Vec<char> = fmt.chars().collect();
+        let mut out = String::new();
+        let mut i = 0usize;
+        let mut auto_index = 0usize;
+        let mut positional_with_spec = std::collections::HashSet::new();
+        let mut named_with_spec = std::collections::HashMap::new();
+
+        while i < chars.len() {
+            let ch = chars[i];
+            if ch == '{' {
+                if i + 1 < chars.len() && chars[i + 1] == '{' {
+                    out.push_str("{{");
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                let mut field = String::new();
+                while i < chars.len() && chars[i] != '}' {
+                    field.push(chars[i]);
+                    i += 1;
+                }
+                if i >= chars.len() {
+                    return Err(self.error(span, "Unmatched '{' in format string"));
+                }
+                i += 1;
+
+                let (field_name, spec_raw) = if let Some((name, spec)) = field.split_once(':') {
+                    (name, Some(spec))
+                } else {
+                    (field.as_str(), None)
+                };
+                let mapped_spec = spec_raw
+                    .map(Self::map_python_format_spec)
+                    .unwrap_or_default();
+                let has_spec = !mapped_spec.is_empty();
+
+                if field_name.is_empty() {
+                    if has_spec {
+                        positional_with_spec.insert(auto_index);
+                    }
+                    auto_index += 1;
+                } else if field_name.chars().all(|c| c.is_ascii_digit()) {
+                    if let Ok(pos) = field_name.parse::<usize>() {
+                        if has_spec {
+                            positional_with_spec.insert(pos);
+                        }
+                    }
+                } else if Self::is_simple_format_name(field_name) {
+                    named_with_spec
+                        .entry(field_name.to_string())
+                        .and_modify(|v| *v |= has_spec)
+                        .or_insert(has_spec);
+                }
+
+                out.push('{');
+                out.push_str(field_name);
+                if spec_raw.is_some() {
+                    out.push(':');
+                    out.push_str(&mapped_spec);
+                }
+                out.push('}');
+                continue;
+            }
+            if ch == '}' {
+                if i + 1 < chars.len() && chars[i + 1] == '}' {
+                    out.push_str("}}");
+                    i += 2;
+                    continue;
+                }
+                return Err(self.error(span, "Unmatched '}' in format string"));
+            }
+            out.push(ch);
+            i += 1;
+        }
+
+        Ok((out, positional_with_spec, named_with_spec))
+    }
+
+    /// Map Python `str.format` type suffixes to Rust's formatting syntax.
+    fn map_python_format_spec(spec: &str) -> String {
+        if spec.is_empty() {
+            return String::new();
+        }
+        let Some(last) = spec.chars().last() else {
+            return String::new();
+        };
+        if !matches!(last, 'd' | 'f' | 'x' | 'X' | 'o' | 'b') {
+            return spec.to_string();
+        }
+        let cut = spec.len() - last.len_utf8();
+        let body = &spec[..cut];
+        match last {
+            'd' => body.to_string(),
+            'f' => {
+                if body.is_empty() {
+                    ".6".to_string()
+                } else {
+                    body.to_string()
+                }
+            }
+            'x' | 'X' | 'o' | 'b' => spec.to_string(),
+            _ => spec.to_string(),
+        }
+    }
+
+    /// Decide whether a format field name can be treated as a named keyword.
+    fn is_simple_format_name(name: &str) -> bool {
+        let mut chars = name.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        if !(first == '_' || first.is_ascii_alphabetic()) {
+            return false;
+        }
+        chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
     }
 
     /// Emit a stdlib call resolved by registry metadata.

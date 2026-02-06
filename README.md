@@ -20,7 +20,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`
 - Dict methods: `get`, `pop`, `update`, `clear`, `copy`
 - Set methods: `add`, `remove`, `discard`, `clear`, `copy`
-- String methods: `upper`, `lower`
+- String operations: indexing/slicing, `upper`, `lower`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `find`, `replace`, `split`, `join`, `count`, `title`, `capitalize`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`, `islower`
 - Classes with fields, methods, and class attributes
 - Single inheritance with method overrides and `super().__init__` calls
 - Decorators: `@property` (getter/setter), `@staticmethod`, `@classmethod`, and simple top-level function decorators
@@ -30,7 +30,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Simple list and set comprehensions
 - Call-site unpacking via `*args` and `**kwargs` (including mixed call forms)
 - Nested functions with closure capture and `nonlocal` writes
-- Builtins: `abs`, `all`, `any`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `str`, `sum`, `tuple`, `type`, `zip`
+- Builtins: `abs`, `all`, `any`, `ascii`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `str`, `sum`, `tuple`, `type`, `zip`
 - Stdlib modules (registry-backed): `os.remove(path)` and `sys.exit([code])`
 - Stdlib imports: `import os`, `import os as o`, `from os import remove`, `from os import remove as rm`, `import sys`, `from sys import exit`
 
@@ -67,6 +67,7 @@ Runtime integration coverage lives in `crates/py2rust/tests/runtime/`:
 - `functions.rs` covers function calls, recursion, closures/nonlocal, variadics, call unpacking, and full `functions.py` regression.
 - `collections.rs` covers lists, tuples, dicts, sets, bytes.
 - `builtins.rs` covers builtin functions.
+- `strings.rs` covers comprehensive string behavior (`str.format`, f-strings, predicates, split/join, alignment/fill, indexing/slicing, conversions `!s`/`!r`/`!a`).
 - other files cover classes, control flow, operators, comprehensions, IO, assertions, and exceptions.
 
 Negative/compile-fail coverage lives in `crates/py2rust/tests/negative_tests.rs`.
@@ -102,8 +103,9 @@ The generated Rust injects tiny helper functions only when needed:
 - Function decorators are limited to simple names on top-level functions.
 - `dict` indexing raises `KeyError` (propagated as `PyError`).
 - Tuple slicing requires literal integer bounds (including negative literals).
-- String slicing is character-based (Unicode scalar values).
-- f-strings support literal-only format specs (limited subset).
+- String indexing/slicing is character-based (Unicode scalar values).
+- f-strings support literal-only format specs plus conversions `!s`, `!r`, and `!a`.
+- `str.format(...)` supports positional and named placeholders, escaped braces, and common width/alignment/precision/type specs used in runtime tests.
 
 ## Example
 

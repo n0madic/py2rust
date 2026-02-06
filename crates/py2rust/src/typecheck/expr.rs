@@ -598,6 +598,11 @@ impl<'a> TypeChecker<'a> {
                         self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
                         *inner
                     }
+                    Type::Str => {
+                        // String indexing returns a single-character string.
+                        self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
+                        Type::Str
+                    }
                     Type::Bytes => {
                         // Bytes indexing returns int
                         self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
@@ -647,6 +652,10 @@ impl<'a> TypeChecker<'a> {
                                 self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
                                 elem_ty.as_ref().clone()
                             }
+                            Type::Str => {
+                                self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
+                                Type::Str
+                            }
                             Type::Bytes => {
                                 self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
                                 Type::Int
@@ -693,15 +702,16 @@ impl<'a> TypeChecker<'a> {
                             _ => {
                                 return Err(self.error(
                                     expr.span,
-                                    "Indexing requires list, dict, tuple, or bytes",
+                                    "Indexing requires list, dict, tuple, str, or bytes",
                                 ));
                             }
                         }
                     }
                     _ => {
-                        return Err(
-                            self.error(expr.span, "Indexing requires list, dict, tuple, or bytes")
-                        )
+                        return Err(self.error(
+                            expr.span,
+                            "Indexing requires list, dict, tuple, str, or bytes",
+                        ))
                     }
                 }
             }
