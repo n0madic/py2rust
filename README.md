@@ -92,6 +92,7 @@ The generated Rust injects tiny helper functions only when needed:
 - Supported stdlib members are currently limited to `os.remove` and `sys.exit`.
 - Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
 - Builtins are mostly positional-only; keyword arguments are currently supported only for `print(sep=...)`.
+- `round(x)` with a float input currently keeps a float result (`round(3.0)` -> `3.0`), while integer inputs stay integer.
 - Call-site `**kwargs` unpacking requires a `dict[str, T]` expression.
 - Positional-only parameters (`/`) are not supported.
 - Nested `def` lowering currently rejects advanced parameter forms (`*args`, keyword-only, `**kwargs`) inside nested local functions.

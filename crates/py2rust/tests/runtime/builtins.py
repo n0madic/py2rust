@@ -256,6 +256,7 @@ assert round(-3.7) == -4, "round(-3.7) should equal -4"
 assert round(-3.5) == -4, "round(-3.5) should equal -4"
 assert round(0.4) == 0, "round(0.4) should equal 0"
 assert round(5.0) == 5, "round(5.0) should equal 5"
+assert str(round(7.5 / 2.5)) == "3.0", "str(round(7.5 / 2.5)) should equal '3.0'"
 
 # round(x, ndigits) with 2 arguments -> float
 assert round(3.14159, 2) == 3.14, "round(3.14159, 2) should equal 3.14"

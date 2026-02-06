@@ -776,7 +776,7 @@ impl<'a> Codegen<'a> {
                 let arg_expr = self.gen_expr(&args[0])?;
                 if matches!(args[0].ty.as_ref(), Some(Type::Float)) {
                     self.uses.round = true;
-                    return Ok(Some(format!("(py_round({}, 0) as i64)", arg_expr)));
+                    return Ok(Some(format!("py_round({}, 0)", arg_expr)));
                 }
                 return Ok(Some(arg_expr));
             }

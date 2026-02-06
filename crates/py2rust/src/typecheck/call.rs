@@ -122,7 +122,13 @@ impl<'a> TypeChecker<'a> {
                             Type::Int
                         });
                     }
-                    return Ok(Type::Int);
+                    // Keep float inputs as float for one-arg round().
+                    // This preserves stable formatting in string-heavy call sites.
+                    return Ok(if matches!(first_ty, Type::Float) {
+                        Type::Float
+                    } else {
+                        Type::Int
+                    });
                 }
                 if name == "list" {
                     if args.len() > 1 {

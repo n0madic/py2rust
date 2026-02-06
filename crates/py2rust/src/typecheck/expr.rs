@@ -562,31 +562,29 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Type::Unknown
                     }
-                } else {
-                    if let Some(Type::Dict(expected_key, expected_val)) = expected {
-                        // When annotation provides dict element hints, honor them so
-                        // union-like annotations can flow through as Unknown.
-                        let key_ty = (*expected_key.clone()).clone();
-                        let val_ty = (*expected_val.clone()).clone();
-                        for (k, v) in items.iter_mut() {
-                            let kt = self.check_expr(k, Some(&key_ty))?;
-                            let vt = self.check_expr(v, Some(&val_ty))?;
-                            self.ensure_assignable(&kt, &key_ty, expr.span)?;
-                            self.ensure_assignable(&vt, &val_ty, expr.span)?;
-                        }
-                        Type::Dict(Box::new(key_ty), Box::new(val_ty))
-                    } else {
-                        let (k0, v0) = &mut items[0];
-                        let key_ty = self.check_expr(k0, None)?;
-                        let val_ty = self.check_expr(v0, None)?;
-                        for (k, v) in &mut items[1..] {
-                            let kt = self.check_expr(k, Some(&key_ty))?;
-                            let vt = self.check_expr(v, Some(&val_ty))?;
-                            self.ensure_assignable(&kt, &key_ty, expr.span)?;
-                            self.ensure_assignable(&vt, &val_ty, expr.span)?;
-                        }
-                        Type::Dict(Box::new(key_ty), Box::new(val_ty))
+                } else if let Some(Type::Dict(expected_key, expected_val)) = expected {
+                    // When annotation provides dict element hints, honor them so
+                    // union-like annotations can flow through as Unknown.
+                    let key_ty = (*expected_key.clone()).clone();
+                    let val_ty = (*expected_val.clone()).clone();
+                    for (k, v) in items.iter_mut() {
+                        let kt = self.check_expr(k, Some(&key_ty))?;
+                        let vt = self.check_expr(v, Some(&val_ty))?;
+                        self.ensure_assignable(&kt, &key_ty, expr.span)?;
+                        self.ensure_assignable(&vt, &val_ty, expr.span)?;
                     }
+                    Type::Dict(Box::new(key_ty), Box::new(val_ty))
+                } else {
+                    let (k0, v0) = &mut items[0];
+                    let key_ty = self.check_expr(k0, None)?;
+                    let val_ty = self.check_expr(v0, None)?;
+                    for (k, v) in &mut items[1..] {
+                        let kt = self.check_expr(k, Some(&key_ty))?;
+                        let vt = self.check_expr(v, Some(&val_ty))?;
+                        self.ensure_assignable(&kt, &key_ty, expr.span)?;
+                        self.ensure_assignable(&vt, &val_ty, expr.span)?;
+                    }
+                    Type::Dict(Box::new(key_ty), Box::new(val_ty))
                 }
             }
             // Indexing: list[0], dict["key"], tuple[1]
