@@ -228,7 +228,12 @@ impl<'a> Codegen<'a> {
         value_ty: Option<&Type>,
         expected_ty: Option<&Type>,
     ) -> String {
-        let ty = expected_ty.or(value_ty);
+        let ty = match expected_ty {
+            // When expected type is unknown (for example wide inline union annotations),
+            // fall back to the expression type to preserve Python copy semantics.
+            Some(Type::Unknown) | None => value_ty,
+            Some(other) => Some(other),
+        };
         if matches!(
             ty,
             Some(Type::List(_)) | Some(Type::Dict(_, _)) | Some(Type::Str) | Some(Type::Bytes)

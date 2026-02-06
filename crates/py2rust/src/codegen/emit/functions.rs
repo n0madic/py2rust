@@ -104,6 +104,8 @@ impl<'a> Codegen<'a> {
         program: &Program,
         body: &[Stmt],
     ) -> Result<(), CompileError> {
+        // Track top-level locals so reassignments can reuse declared types.
+        self.local_vars = Some(HashMap::new());
         // Top-level code has no nonlocal bindings.
         self.nonlocal_decls = None;
         self.cell_locals = None;
@@ -153,6 +155,7 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
         }
 
+        self.local_vars = None;
         Ok(())
     }
 

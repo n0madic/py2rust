@@ -390,7 +390,7 @@ impl<'a> TypeChecker<'a> {
                         inner_ty
                     }
                     UnaryOp::Not => {
-                        self.ensure_assignable(&inner_ty, &Type::Bool, expr.span)?;
+                        // Python's `not` works on truthiness for any value type.
                         Type::Bool
                     }
                     UnaryOp::BitNot => {
@@ -563,16 +563,30 @@ impl<'a> TypeChecker<'a> {
                         Type::Unknown
                     }
                 } else {
-                    let (k0, v0) = &mut items[0];
-                    let key_ty = self.check_expr(k0, None)?;
-                    let val_ty = self.check_expr(v0, None)?;
-                    for (k, v) in &mut items[1..] {
-                        let kt = self.check_expr(k, Some(&key_ty))?;
-                        let vt = self.check_expr(v, Some(&val_ty))?;
-                        self.ensure_assignable(&kt, &key_ty, expr.span)?;
-                        self.ensure_assignable(&vt, &val_ty, expr.span)?;
+                    if let Some(Type::Dict(expected_key, expected_val)) = expected {
+                        // When annotation provides dict element hints, honor them so
+                        // union-like annotations can flow through as Unknown.
+                        let key_ty = (*expected_key.clone()).clone();
+                        let val_ty = (*expected_val.clone()).clone();
+                        for (k, v) in items.iter_mut() {
+                            let kt = self.check_expr(k, Some(&key_ty))?;
+                            let vt = self.check_expr(v, Some(&val_ty))?;
+                            self.ensure_assignable(&kt, &key_ty, expr.span)?;
+                            self.ensure_assignable(&vt, &val_ty, expr.span)?;
+                        }
+                        Type::Dict(Box::new(key_ty), Box::new(val_ty))
+                    } else {
+                        let (k0, v0) = &mut items[0];
+                        let key_ty = self.check_expr(k0, None)?;
+                        let val_ty = self.check_expr(v0, None)?;
+                        for (k, v) in &mut items[1..] {
+                            let kt = self.check_expr(k, Some(&key_ty))?;
+                            let vt = self.check_expr(v, Some(&val_ty))?;
+                            self.ensure_assignable(&kt, &key_ty, expr.span)?;
+                            self.ensure_assignable(&vt, &val_ty, expr.span)?;
+                        }
+                        Type::Dict(Box::new(key_ty), Box::new(val_ty))
                     }
-                    Type::Dict(Box::new(key_ty), Box::new(val_ty))
                 }
             }
             // Indexing: list[0], dict["key"], tuple[1]
@@ -624,6 +638,66 @@ impl<'a> TypeChecker<'a> {
                             items[adj as usize].clone()
                         } else {
                             return Err(self.error(expr.span, "Tuple indices must be literals"));
+                        }
+                    }
+                    Type::Option(inner) => {
+                        // Optional container indexing mirrors Python runtime behavior:
+                        // if the value is None, generated code will raise at runtime.
+                        // Type-wise we expose the inner indexed element type.
+                        match inner.as_ref() {
+                            Type::List(elem_ty) => {
+                                self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
+                                elem_ty.as_ref().clone()
+                            }
+                            Type::Bytes => {
+                                self.ensure_assignable(&index_ty, &Type::Int, expr.span)?;
+                                Type::Int
+                            }
+                            Type::Dict(key_ty, val_ty) => {
+                                self.ensure_assignable(&index_ty, key_ty.as_ref(), expr.span)?;
+                                val_ty.as_ref().clone()
+                            }
+                            Type::Tuple(items) => {
+                                let idx_opt = match &index.as_ref().kind {
+                                    ExprKind::Literal(Literal::Int(idx)) => Some(*idx),
+                                    ExprKind::Unary {
+                                        op: UnaryOp::Neg,
+                                        expr,
+                                    } => {
+                                        if let ExprKind::Literal(Literal::Int(idx)) =
+                                            &expr.as_ref().kind
+                                        {
+                                            Some(-idx)
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(idx) = idx_opt {
+                                    let len_i = items.len() as i64;
+                                    let mut adj = idx;
+                                    if adj < 0 {
+                                        adj += len_i;
+                                    }
+                                    if adj < 0 || adj >= len_i {
+                                        return Err(
+                                            self.error(expr.span, "Tuple index out of bounds")
+                                        );
+                                    }
+                                    items[adj as usize].clone()
+                                } else {
+                                    return Err(
+                                        self.error(expr.span, "Tuple indices must be literals")
+                                    );
+                                }
+                            }
+                            _ => {
+                                return Err(self.error(
+                                    expr.span,
+                                    "Indexing requires list, dict, tuple, or bytes",
+                                ));
+                            }
                         }
                     }
                     _ => {
@@ -1030,14 +1104,9 @@ impl<'a> TypeChecker<'a> {
                 Ok(Type::Bool)
             }
             // Identity comparison: x is None, x is not None
-            // We require left side to be Optional if comparing to None
             CmpOp::Is | CmpOp::IsNot => {
-                if matches!(right_ty, Type::None)
-                    && !left_ty.is_optional()
-                    && !matches!(left_ty, Type::None)
-                {
-                    return Err(self.error(span, "is None requires Optional type"));
-                }
+                // Python allows `is None` checks for any type; non-optional values
+                // are simply always not-None at runtime.
                 Ok(Type::Bool)
             }
             // General comparisons: <, <=, >, >=, ==, !=
@@ -1053,6 +1122,10 @@ impl<'a> TypeChecker<'a> {
                     return Ok(Type::Bool);
                 }
                 if left_ty != right_ty {
+                    // Python allows equality checks across unrelated types.
+                    if matches!(op, CmpOp::Eq | CmpOp::NotEq) {
+                        return Ok(Type::Bool);
+                    }
                     let opt_matches = match (&left_ty, &right_ty) {
                         (Type::Option(_), Type::None) | (Type::None, Type::Option(_)) => true,
                         (Type::Option(inner), other) => inner.as_ref() == other,

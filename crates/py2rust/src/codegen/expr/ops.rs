@@ -265,12 +265,52 @@ impl<'a> Codegen<'a> {
         op: &UnaryOp,
         inner: &Expr,
     ) -> Result<String, CompileError> {
-        let op_str = match op {
-            UnaryOp::Neg => "-",
-            UnaryOp::Not => "!",
-            UnaryOp::BitNot => "!",
-        };
-        Ok(format!("({}{})", op_str, self.gen_expr(inner)?))
+        match op {
+            UnaryOp::Neg => Ok(format!("(-{})", self.gen_expr(inner)?)),
+            UnaryOp::BitNot => Ok(format!("(!{})", self.gen_expr(inner)?)),
+            UnaryOp::Not => {
+                // Python `not` operates on truthiness, not just bool values.
+                let inner_expr = self.gen_expr(inner)?;
+                let rendered = match inner.ty.as_ref() {
+                    Some(Type::Bool) => format!("(!{})", inner_expr),
+                    Some(Type::None) => "true".to_string(),
+                    Some(Type::Option(_)) => format!("{}.is_none()", inner_expr),
+                    Some(Type::Int) => format!("({} == 0)", inner_expr),
+                    Some(Type::Float) => format!("({} == 0.0)", inner_expr),
+                    Some(Type::Str) => format!("{}.is_empty()", inner_expr),
+                    Some(Type::List(_)) => {
+                        if matches!(self.list_storage_for_expr(inner), ListStorage::Local) {
+                            format!("{}.is_empty()", inner_expr)
+                        } else {
+                            format!(
+                                "{}.lock().expect(\"list mutex poisoned\").is_empty()",
+                                inner_expr
+                            )
+                        }
+                    }
+                    Some(Type::Dict(_, _)) => {
+                        if matches!(self.dict_storage_for_expr(inner), DictStorage::Local) {
+                            format!("{}.is_empty()", inner_expr)
+                        } else {
+                            format!(
+                                "{}.lock().expect(\"dict mutex poisoned\").is_empty()",
+                                inner_expr
+                            )
+                        }
+                    }
+                    Some(Type::Set(_)) => format!("{}.is_empty()", inner_expr),
+                    Some(Type::Tuple(items)) => {
+                        if items.is_empty() {
+                            "true".to_string()
+                        } else {
+                            "false".to_string()
+                        }
+                    }
+                    _ => format!("(!{})", inner_expr),
+                };
+                Ok(rendered)
+            }
+        }
     }
 
     /// Escape braces so literal strings can be embedded into format! strings.
@@ -633,6 +673,30 @@ impl<'a> Codegen<'a> {
                     return Ok(format!("!{}.is_none()", right_expr));
                 }
             }
+            if let (Some(left_ty), Some(right_ty)) = (left.ty.as_ref(), right.ty.as_ref()) {
+                // Python equality across unrelated primitive types is always defined.
+                let primitive = |ty: &Type| {
+                    matches!(
+                        ty,
+                        Type::Int | Type::Float | Type::Bool | Type::Str | Type::None
+                    )
+                };
+                let numeric_pair = matches!(
+                    (left_ty, right_ty),
+                    (
+                        Type::Int | Type::Float | Type::Bool,
+                        Type::Int | Type::Float | Type::Bool
+                    )
+                );
+                if primitive(left_ty) && primitive(right_ty) && left_ty != right_ty && !numeric_pair
+                {
+                    return Ok(if matches!(op, CmpOp::Eq) {
+                        "false".to_string()
+                    } else {
+                        "true".to_string()
+                    });
+                }
+            }
         }
         if let (Some(Type::Tuple(left_items)), Some(Type::Tuple(right_items))) =
             (left.ty.as_ref(), right.ty.as_ref())
@@ -666,8 +730,11 @@ impl<'a> Codegen<'a> {
             CmpOp::IsNot => "!=",
             CmpOp::In | CmpOp::NotIn => unreachable!(),
         };
-        if matches!(left.ty.as_ref(), Some(Type::Int | Type::Float))
-            && matches!(right.ty.as_ref(), Some(Type::Int | Type::Float))
+        if matches!(left.ty.as_ref(), Some(Type::Int | Type::Float | Type::Bool))
+            && matches!(
+                right.ty.as_ref(),
+                Some(Type::Int | Type::Float | Type::Bool)
+            )
         {
             let is_float = matches!(left.ty.as_ref(), Some(Type::Float))
                 || matches!(right.ty.as_ref(), Some(Type::Float));

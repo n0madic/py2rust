@@ -66,19 +66,26 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - `Union` for enum-like classes, `match/case` limited to union variants.
 - `__iter__/next` for custom iterators.
 - `lambda`, `if` expression, `round`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`, `reversed`, `max`, `min`, `int`, `float`, `str`, `isinstance`, `type`.
+- String methods: `upper`, `lower`.
 - Decorators: one simple name decorator on top-level functions only (rewritten).
 - Exception handling: `try/except/else/finally`, `raise`, bare `raise` (re-raise), `except Exception` (catch-all), exception propagation through function calls.
 
 ## Type System Notes
 - `str` maps to `String` (not `&str`).
 - `int -> i64`, `float -> f64`, `None -> ()`, `Optional[T] -> Option<T>`.
-- `Union` is only for enum-like classes; inline unions only for `Optional`.
+- `bool` is accepted in numeric contexts as Python-compatible `int` subtype behavior.
+- `Union` aliases are for enum-like class unions.
+- Inline union annotations lower as:
+  - `T | None` -> `Optional[T]`
+  - wider `A | B` -> gradual typing (`Unknown`) fallback
 - Unknowns are allowed locally but resolved where possible.
 - Lambdas and callables use `Type::Lambda` and are emitted as `impl Fn(..) -> .. + 'static`.
 
 ## Codegen Notes
 - Numeric literals are emitted with suffixes (`i64`/`f64`) to avoid ambiguity.
 - Mixed int/float arithmetic casts ints to f64 when result is float.
+- Optional truthiness follows Python semantics (`Some(0)`, `Some("")`, etc. are falsy).
+- Control-flow checks (`x is None`, `x is not None`, `if x`) narrow Optional values in branch-local codegen.
 - Tuple concatenation:
   - Literal tuples are inlined directly: `tup + (1, 2)` → `(tup.0.clone(), tup.1.clone(), 1, 2)`
   - Variables use temporary bindings to avoid redundant clones

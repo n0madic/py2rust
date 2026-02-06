@@ -67,6 +67,17 @@ impl<'a> Codegen<'a> {
         Ok(format!("PyRepr(format!(\"{{:?}}\", {}))", elem_expr))
     }
 
+    /// Coerce heterogeneous dict keys/values into PyRepr for a uniform map type.
+    fn gen_unknown_dict_part(&mut self, expr: &Expr) -> Result<String, CompileError> {
+        if matches!(expr.ty.as_ref(), Some(Type::List(_))) {
+            // Nested list reprs already include brackets; avoid Debug-quoting the string.
+            let part_expr = self.list_str_expr(expr)?;
+            return Ok(format!("PyRepr({})", part_expr));
+        }
+        let part_expr = self.gen_expr(expr)?;
+        Ok(format!("PyRepr(format!(\"{{:?}}\", {}))", part_expr))
+    }
+
     /// Lower a tuple literal expression.
     pub(super) fn gen_tuple_expr(
         &mut self,
@@ -115,10 +126,23 @@ impl<'a> Codegen<'a> {
             Some(Type::Dict(k, v)) => (Some(k.as_ref()), Some(v.as_ref())),
             _ => (None, None),
         };
+        let unknown_key = matches!(expected_key, Some(Type::Unknown));
+        let unknown_val = matches!(expected_val, Some(Type::Unknown));
+        if unknown_key || unknown_val {
+            self.uses.py_repr = true;
+        }
         let mut pairs = Vec::new();
         for (k, v) in items {
-            let key_expr = self.gen_expr_with_expected(k, expected_key)?;
-            let val_expr = self.gen_expr_with_expected(v, expected_val)?;
+            let key_expr = if unknown_key {
+                self.gen_unknown_dict_part(k)?
+            } else {
+                self.gen_expr_with_expected(k, expected_key)?
+            };
+            let val_expr = if unknown_val {
+                self.gen_unknown_dict_part(v)?
+            } else {
+                self.gen_expr_with_expected(v, expected_val)?
+            };
             pairs.push(format!("({}, {})", key_expr, val_expr));
         }
         let base = format!("HashMap::from([{}])", pairs.join(", "));
@@ -154,6 +178,94 @@ impl<'a> Codegen<'a> {
         index: &Expr,
     ) -> Result<String, CompileError> {
         let base = self.gen_expr(value)?;
+        if let Some(Type::Option(inner)) = value.ty.as_ref() {
+            // Optional container indexing follows Python behavior:
+            // runtime unwrap is required and may fail if value is None.
+            if let Type::Tuple(items) = inner.as_ref() {
+                let idx_opt = match &index.kind {
+                    ExprKind::Literal(Literal::Int(idx)) => Some(*idx),
+                    ExprKind::Unary {
+                        op: UnaryOp::Neg,
+                        expr: inner,
+                    } => {
+                        if let ExprKind::Literal(Literal::Int(idx)) = &inner.as_ref().kind {
+                            Some(-idx)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(idx) = idx_opt {
+                    let len_i = items.len() as i64;
+                    let mut adj = idx;
+                    if adj < 0 {
+                        adj += len_i;
+                    }
+                    if adj >= 0 && adj < len_i {
+                        let tmp = self.new_tmp();
+                        return Ok(format!(
+                            "{{ let {tmp} = {base}; ({tmp}.as_ref().expect(\"optional value is None\")).{adj} }}",
+                            tmp = tmp,
+                            base = base,
+                            adj = adj
+                        ));
+                    }
+                    return Err(self.error(expr.span, "Tuple index out of bounds"));
+                }
+            }
+            if matches!(inner.as_ref(), Type::Dict(_, _)) {
+                let idx = self.gen_expr(index)?;
+                self.uses.py_dict_get = true;
+                self.uses.hash_map = true;
+                let tmp = self.new_tmp();
+                if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                    return Ok(self.wrap_result(format!(
+                        "{{ let {tmp} = {base}; let dict_ref = {tmp}.as_ref().expect(\"optional value is None\"); py_dict_get(dict_ref, &{idx}) }}",
+                        tmp = tmp,
+                        base = base,
+                        idx = idx
+                    )));
+                }
+                let guard = self.new_tmp();
+                return Ok(self.wrap_result(format!(
+                    "{{ let {tmp} = {base}; let dict_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {guard} = dict_ref.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                    tmp = tmp,
+                    base = base,
+                    guard = guard,
+                    idx = idx
+                )));
+            }
+            if matches!(inner.as_ref(), Type::List(_) | Type::Bytes) {
+                let idx_expr = self.gen_expr(index)?;
+                self.uses.py_list_get = true;
+                let tmp = self.new_tmp();
+                if matches!(inner.as_ref(), Type::List(_)) {
+                    if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
+                        return Ok(self.wrap_result(format!(
+                            "{{ let {tmp} = {base}; let list_ref = {tmp}.as_ref().expect(\"optional value is None\"); py_list_get(list_ref, {idx}) }}",
+                            tmp = tmp,
+                            base = base,
+                            idx = idx_expr
+                        )));
+                    }
+                    let guard = self.new_tmp();
+                    return Ok(self.wrap_result(format!(
+                        "{{ let {tmp} = {base}; let list_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.lock().expect(\"list mutex poisoned\"); py_list_get(&{guard}, {idx}) }}",
+                        tmp = tmp,
+                        base = base,
+                        guard = guard,
+                        idx = idx_expr
+                    )));
+                }
+                return Ok(self.wrap_result(format!(
+                    "{{ let {tmp} = {base}; let bytes_ref = {tmp}.as_ref().expect(\"optional value is None\"); py_list_get(bytes_ref, {idx}) }}",
+                    tmp = tmp,
+                    base = base,
+                    idx = idx_expr
+                )));
+            }
+        }
         if let Some(Type::Tuple(items)) = value.ty.as_ref() {
             let idx_opt = match &index.kind {
                 ExprKind::Literal(Literal::Int(idx)) => Some(*idx),

@@ -53,11 +53,12 @@ impl<'a> TypeChecker<'a> {
     /// - Generic types (List, Dict, Tuple, Set, Optional)
     /// - Function types (Lambda)
     /// - Iterator types (only valid as return type)
-    /// - Inline unions (only Optional[T] = T | None allowed)
+    /// - Inline unions (`T | U`) with graceful fallback to gradual typing
     ///
-    /// Why reject most inline unions?
-    /// Rust doesn't have union types, only enums. We only support
-    /// Union classes (which become Rust enums) and Optional (which becomes Option).
+    /// Inline union handling strategy:
+    /// - `T | None` maps to `Option<T>` (native Optional lowering)
+    /// - Wider unions (for example `int | str`) resolve to `Unknown`
+    ///   so later inference can still use concrete RHS values.
     pub(super) fn resolve_type_ref(&self, ty: &TypeRef, span: Span) -> Result<Type, CompileError> {
         match ty {
             TypeRef::Name(name) => Ok(match name.as_str() {
@@ -109,9 +110,9 @@ impl<'a> TypeChecker<'a> {
                 })
             }
             TypeRef::Union(parts) => {
-                // Inline union type: T | U | None
-                // We only support T | None (which becomes Option<T>)
-                // Other union combinations must use Union class syntax
+                // Inline union type: T | U | None.
+                // Keep Optional lowering for the common `T | None` form, and
+                // fall back to gradual typing for wider unions.
                 let mut has_none = false;
                 let mut other = Vec::new();
                 for part in parts {
@@ -122,12 +123,13 @@ impl<'a> TypeChecker<'a> {
                         other.push(t);
                     }
                 }
-                // Accept T | None (becomes Option<T>)
                 if has_none && other.len() == 1 {
                     Ok(Type::Option(Box::new(other.remove(0))))
+                } else if !has_none && other.len() == 1 {
+                    Ok(other.remove(0))
                 } else {
-                    // Reject A | B, A | B | C, etc.
-                    Err(self.error(span, "Inline unions are only allowed for Optional[T]"))
+                    // `A | B` (and wider) currently relies on value-driven inference.
+                    Ok(Type::Unknown)
                 }
             }
             TypeRef::Result(ok, err) => Ok(Type::Result(

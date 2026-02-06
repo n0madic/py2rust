@@ -1151,6 +1151,12 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Ok(Type::Str);
                 }
+                if matches!(obj_ty, Type::Str) && attr == "lower" {
+                    if !args.is_empty() {
+                        return Err(self.error(span, "str.lower() expects no arguments"));
+                    }
+                    return Ok(Type::Str);
+                }
                 if matches!(obj_ty, Type::Str) && attr == "startswith" {
                     if args.len() != 1 {
                         return Err(self.error(span, "str.startswith() expects one argument"));

@@ -32,6 +32,21 @@ impl<'a> Lowerer<'a> {
             ast::Expr::Subscript(sub) => {
                 let base = match &*sub.value {
                     ast::Expr::Name(name) => name.id.as_ref(),
+                    ast::Expr::Attribute(attr) => {
+                        // Support `typing.X[...]` form in addition to direct imports.
+                        // We intentionally keep this strict to `typing` so arbitrary
+                        // attribute paths in type position remain rejected.
+                        match &*attr.value {
+                            ast::Expr::Name(mod_name) if mod_name.id.as_str() == "typing" => {
+                                attr.attr.as_str()
+                            }
+                            _ => {
+                                return Err(
+                                    self.error(sub.value.range(), "Unsupported type constructor")
+                                );
+                            }
+                        }
+                    }
                     _ => {
                         return Err(self.error(sub.value.range(), "Unsupported type constructor"));
                     }

@@ -156,12 +156,19 @@ impl<'a> Codegen<'a> {
                     // Assign through the RefCell, guarding against self-references.
                     let current = self.new_tmp();
                     self.push_line(&format!("let {} = {}.borrow().clone();", current, name));
+                    let expected_is_optional_collection = matches!(
+                        expected.as_ref(),
+                        Some(Type::Option(inner))
+                            if matches!(inner.as_ref(), Type::List(_) | Type::Dict(_, _))
+                    );
                     let expr = self.with_name_override(name, current, |this| {
-                        if let Some(local_expr) = this.gen_list_assignment_expr(name, value)? {
-                            return Ok(local_expr);
-                        }
-                        if let Some(local_expr) = this.gen_dict_assignment_expr(name, value)? {
-                            return Ok(local_expr);
+                        if !expected_is_optional_collection {
+                            if let Some(local_expr) = this.gen_list_assignment_expr(name, value)? {
+                                return Ok(local_expr);
+                            }
+                            if let Some(local_expr) = this.gen_dict_assignment_expr(name, value)? {
+                                return Ok(local_expr);
+                            }
                         }
                         let expr = this.gen_expr_with_expected(value, expected.as_ref())?;
                         Ok(this.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref()))
@@ -245,14 +252,21 @@ impl<'a> Codegen<'a> {
                     }
                 } else {
                     let expected = self.local_var_type(name).cloned();
+                    let expected_is_optional_collection = matches!(
+                        expected.as_ref(),
+                        Some(Type::Option(inner))
+                            if matches!(inner.as_ref(), Type::List(_) | Type::Dict(_, _))
+                    );
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                    if let Some(local_expr) = self.gen_list_assignment_expr(name, value)? {
-                        self.push_line(&format!("{} = {};", name, local_expr));
-                        return Ok(());
-                    }
-                    if let Some(local_expr) = self.gen_dict_assignment_expr(name, value)? {
-                        self.push_line(&format!("{} = {};", name, local_expr));
-                        return Ok(());
+                    if !expected_is_optional_collection {
+                        if let Some(local_expr) = self.gen_list_assignment_expr(name, value)? {
+                            self.push_line(&format!("{} = {};", name, local_expr));
+                            return Ok(());
+                        }
+                        if let Some(local_expr) = self.gen_dict_assignment_expr(name, value)? {
+                            self.push_line(&format!("{} = {};", name, local_expr));
+                            return Ok(());
+                        }
                     }
                     let expr =
                         self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref());
@@ -623,6 +637,232 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Render a statement condition using Python truthiness semantics.
+    fn gen_condition_expr(&mut self, test: &Expr) -> Result<String, CompileError> {
+        let test_expr = self.gen_expr(test)?;
+        let rendered = match test.ty.as_ref() {
+            Some(Type::Bool) => test_expr,
+            Some(Type::None) => "false".to_string(),
+            Some(Type::Option(inner)) => match inner.as_ref() {
+                // Option truthiness follows Python semantics: Some(v) is truthy
+                // only when v itself is truthy.
+                Type::Bool => format!("{}.as_ref().is_some_and(|v| *v)", test_expr),
+                Type::Int => format!("{}.as_ref().is_some_and(|v| *v != 0)", test_expr),
+                Type::Float => format!("{}.as_ref().is_some_and(|v| *v != 0.0)", test_expr),
+                Type::Str => format!("{}.as_ref().is_some_and(|v| !v.is_empty())", test_expr),
+                Type::List(_) => format!(
+                    "{}.as_ref().is_some_and(|v| !v.lock().expect(\"list mutex poisoned\").is_empty())",
+                    test_expr
+                ),
+                Type::Dict(_, _) => format!(
+                    "{}.as_ref().is_some_and(|v| !v.lock().expect(\"dict mutex poisoned\").is_empty())",
+                    test_expr
+                ),
+                Type::Set(_) => format!("{}.as_ref().is_some_and(|v| !v.is_empty())", test_expr),
+                Type::Tuple(items) => {
+                    if items.is_empty() {
+                        "false".to_string()
+                    } else {
+                        format!("{}.is_some()", test_expr)
+                    }
+                }
+                Type::None => "false".to_string(),
+                _ => format!("{}.is_some()", test_expr),
+            },
+            Some(Type::Int) => format!("({} != 0)", test_expr),
+            Some(Type::Float) => format!("({} != 0.0)", test_expr),
+            Some(Type::Str) => format!("!{}.is_empty()", test_expr),
+            Some(Type::List(_)) => {
+                if matches!(self.list_storage_for_expr(test), ListStorage::Local) {
+                    format!("!{}.is_empty()", test_expr)
+                } else {
+                    format!(
+                        "!{}.lock().expect(\"list mutex poisoned\").is_empty()",
+                        test_expr
+                    )
+                }
+            }
+            Some(Type::Dict(_, _)) => {
+                if matches!(self.dict_storage_for_expr(test), DictStorage::Local) {
+                    format!("!{}.is_empty()", test_expr)
+                } else {
+                    format!(
+                        "!{}.lock().expect(\"dict mutex poisoned\").is_empty()",
+                        test_expr
+                    )
+                }
+            }
+            Some(Type::Set(_)) => format!("!{}.is_empty()", test_expr),
+            Some(Type::Tuple(items)) => {
+                if items.is_empty() {
+                    "false".to_string()
+                } else {
+                    "true".to_string()
+                }
+            }
+            _ => test_expr,
+        };
+        Ok(rendered)
+    }
+
+    /// Detect Optional narrowing implied by a condition expression.
+    ///
+    /// Returns `(name, then_ty, else_ty)` when a simple Optional narrowing applies.
+    fn optional_narrowing_from_test(&self, test: &Expr) -> Option<(String, Type, Type)> {
+        let lookup_optional_inner = |name: &str| -> Option<Type> {
+            let var_ty = self.local_var_type(name).cloned().or_else(|| {
+                if self.is_global(name) {
+                    self.ctx.globals.get(name).cloned()
+                } else {
+                    None
+                }
+            })?;
+            if let Type::Option(inner) = var_ty {
+                Some(*inner)
+            } else {
+                None
+            }
+        };
+
+        let narrow_none_compare =
+            |name_expr: &Expr, none_expr: &Expr, op: &CmpOp| -> Option<(String, Type, Type)> {
+                if !matches!(none_expr.kind, ExprKind::Literal(Literal::None)) {
+                    return None;
+                }
+                let ExprKind::Name(name) = &name_expr.kind else {
+                    return None;
+                };
+                let inner_ty = lookup_optional_inner(name)?;
+                match op {
+                    CmpOp::IsNot => Some((name.clone(), inner_ty, Type::None)),
+                    CmpOp::Is => Some((name.clone(), Type::None, inner_ty)),
+                    _ => None,
+                }
+            };
+
+        if let ExprKind::Compare { op, left, right } = &test.kind {
+            let (name_expr, none_expr) = match (&left.kind, &right.kind) {
+                (ExprKind::Name(_), ExprKind::Literal(Literal::None)) => {
+                    (left.as_ref(), right.as_ref())
+                }
+                (ExprKind::Literal(Literal::None), ExprKind::Name(_)) => {
+                    (right.as_ref(), left.as_ref())
+                }
+                _ => (left.as_ref(), right.as_ref()),
+            };
+            if let Some(narrowed) = narrow_none_compare(name_expr, none_expr, op) {
+                return Some(narrowed);
+            }
+        }
+
+        if let ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: inner,
+        } = &test.kind
+        {
+            if let ExprKind::Compare { op, left, right } = &inner.kind {
+                let inverted = match op {
+                    CmpOp::Is => Some(CmpOp::IsNot),
+                    CmpOp::IsNot => Some(CmpOp::Is),
+                    _ => None,
+                }?;
+                let (name_expr, none_expr) = match (&left.kind, &right.kind) {
+                    (ExprKind::Name(_), ExprKind::Literal(Literal::None)) => {
+                        (left.as_ref(), right.as_ref())
+                    }
+                    (ExprKind::Literal(Literal::None), ExprKind::Name(_)) => {
+                        (right.as_ref(), left.as_ref())
+                    }
+                    _ => (left.as_ref(), right.as_ref()),
+                };
+                if let Some(narrowed) = narrow_none_compare(name_expr, none_expr, &inverted) {
+                    return Some(narrowed);
+                }
+            }
+        }
+
+        if let ExprKind::Name(name) = &test.kind {
+            if let Some(inner_ty) = lookup_optional_inner(name) {
+                return Some((
+                    name.clone(),
+                    inner_ty.clone(),
+                    Type::Option(Box::new(inner_ty)),
+                ));
+            }
+        }
+
+        if let ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: inner,
+        } = &test.kind
+        {
+            if let ExprKind::Name(name) = &inner.kind {
+                if let Some(inner_ty) = lookup_optional_inner(name) {
+                    return Some((
+                        name.clone(),
+                        Type::Option(Box::new(inner_ty.clone())),
+                        inner_ty,
+                    ));
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Build a name override expression that unwraps an Optional variable.
+    fn optional_unwrap_override_expr(&self, name: &str, narrowed_ty: &Type) -> Option<String> {
+        let var_ty = self.local_var_type(name).cloned().or_else(|| {
+            if self.is_global(name) {
+                self.ctx.globals.get(name).cloned()
+            } else {
+                None
+            }
+        })?;
+        let Type::Option(inner) = var_ty else {
+            return None;
+        };
+        if inner.as_ref() != narrowed_ty {
+            return None;
+        }
+        let base = if let Some(override_expr) = self.name_override(name) {
+            override_expr.to_string()
+        } else if self.is_cell_local(name) || self.is_nonlocal_decl(name) {
+            format!("{}.borrow().clone()", name)
+        } else if self.is_global(name) {
+            format!("{}.clone()", self.global_lock_expr(name))
+        } else {
+            name.to_string()
+        };
+        Some(format!(
+            "({}).as_ref().expect(\"optional value '{}' is None\").clone()",
+            base, name
+        ))
+    }
+
+    /// Emit a list of statements with an optional variable-read override.
+    fn emit_stmts_with_optional_override(
+        &mut self,
+        narrowed: Option<(&str, &Type)>,
+        stmts: &[Stmt],
+        mut_counts: &HashMap<String, usize>,
+    ) -> Result<(), CompileError> {
+        if let Some((name, ty)) = narrowed {
+            if let Some(override_expr) = self.optional_unwrap_override_expr(name, ty) {
+                return self.with_name_override(name, override_expr, |this| {
+                    for stmt in stmts {
+                        this.emit_stmt(stmt, mut_counts)?;
+                    }
+                    Ok(())
+                });
+            }
+        }
+        for stmt in stmts {
+            self.emit_stmt(stmt, mut_counts)?;
+        }
+        Ok(())
+    }
+
     /// Emit a statement into the output buffer.
     pub(crate) fn emit_stmt(
         &mut self,
@@ -673,19 +913,61 @@ impl<'a> Codegen<'a> {
                         } else {
                             expected.clone()
                         };
-                    let expr = if let Some(local_expr) =
-                        self.gen_list_assignment_expr(name, value)?
-                    {
-                        local_expr
-                    } else if let Some(local_expr) = self.gen_dict_assignment_expr(name, value)? {
-                        local_expr
+                    let declared_is_optional_collection = matches!(
+                        declared.as_ref(),
+                        Some(Type::Option(inner))
+                            if matches!(inner.as_ref(), Type::List(_) | Type::Dict(_, _))
+                    );
+                    let (expr, used_collection_fast_path) = if !declared_is_optional_collection {
+                        if let Some(local_expr) = self.gen_list_assignment_expr(name, value)? {
+                            (local_expr, true)
+                        } else if let Some(local_expr) =
+                            self.gen_dict_assignment_expr(name, value)?
+                        {
+                            (local_expr, true)
+                        } else {
+                            let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                            (
+                                self.maybe_clone_list_expr(
+                                    expr,
+                                    value.ty.as_ref(),
+                                    declared.as_ref(),
+                                ),
+                                false,
+                            )
+                        }
                     } else {
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                        self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref())
+                        (
+                            self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref()),
+                            false,
+                        )
+                    };
+                    let expr = if let Some(Type::Option(inner)) = declared.as_ref() {
+                        // Keep Option wrapping when collection assignment used the
+                        // specialized fast path (which returns bare collection values).
+                        if matches!(inner.as_ref(), Type::List(_) | Type::Dict(_, _))
+                            && used_collection_fast_path
+                        {
+                            format!("Some({})", expr)
+                        } else {
+                            expr
+                        }
+                    } else {
+                        expr
                     };
                     let expr = format!("Rc::new(RefCell::new({}))", expr);
                     let mut_kw = mut_kw_for_name(name, mut_counts);
                     if let Some(declared) = declared.clone() {
+                        // Wide inline unions resolve to Unknown during annotation lowering;
+                        // only for those annotations we refine from the RHS.
+                        let union_ann_unknown =
+                            ann.as_ref().is_some_and(|a| matches!(a, TypeRef::Union(_)));
+                        let declared = if matches!(declared, Type::Unknown) && union_ann_unknown {
+                            value.ty.clone().unwrap_or(declared)
+                        } else {
+                            declared
+                        };
                         // Choose a storage-aware type for lists/dicts; everything else uses rust_type().
                         let ty_str = match declared {
                             Type::List(_) => {
@@ -990,17 +1272,55 @@ impl<'a> Codegen<'a> {
                     } else {
                         expected.clone()
                     };
-                let expr = if let Some(local_expr) = self.gen_list_assignment_expr(name, value)? {
-                    local_expr
-                } else if let Some(local_expr) = self.gen_dict_assignment_expr(name, value)? {
-                    local_expr
+                let declared_is_optional_collection = matches!(
+                    declared.as_ref(),
+                    Some(Type::Option(inner))
+                        if matches!(inner.as_ref(), Type::List(_) | Type::Dict(_, _))
+                );
+                let (expr, used_collection_fast_path) = if !declared_is_optional_collection {
+                    if let Some(local_expr) = self.gen_list_assignment_expr(name, value)? {
+                        (local_expr, true)
+                    } else if let Some(local_expr) = self.gen_dict_assignment_expr(name, value)? {
+                        (local_expr, true)
+                    } else {
+                        let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                        (
+                            self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref()),
+                            false,
+                        )
+                    }
                 } else {
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                    self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref())
+                    (
+                        self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref()),
+                        false,
+                    )
+                };
+                let expr = if let Some(Type::Option(inner)) = declared.as_ref() {
+                    // Keep Option wrapping when collection assignment used the
+                    // specialized fast path (which returns bare collection values).
+                    if matches!(inner.as_ref(), Type::List(_) | Type::Dict(_, _))
+                        && used_collection_fast_path
+                    {
+                        format!("Some({})", expr)
+                    } else {
+                        expr
+                    }
+                } else {
+                    expr
                 };
                 let mut_kw = mut_kw_for_name(name, mut_counts);
                 if ann.is_some() {
                     let ty = declared.expect("resolved above");
+                    // Wide inline unions resolve to Unknown during annotation lowering;
+                    // only for those annotations we refine from the RHS.
+                    let union_ann_unknown =
+                        ann.as_ref().is_some_and(|a| matches!(a, TypeRef::Union(_)));
+                    let ty = if matches!(ty, Type::Unknown) && union_ann_unknown {
+                        value.ty.clone().unwrap_or(ty)
+                    } else {
+                        ty
+                    };
                     // Choose a storage-aware type for lists/dicts; everything else uses rust_type().
                     let ty_str = match ty {
                         Type::List(_) => {
@@ -1101,7 +1421,7 @@ impl<'a> Codegen<'a> {
                     ) = (extract(&body[0]), extract(&orelse[0]))
                     {
                         if name_left == name_right && (left_is_let || right_is_let) {
-                            let test_expr = self.gen_expr(test)?;
+                            let test_expr = self.gen_condition_expr(test)?;
                             let left_expr = self.gen_expr(&val_left)?;
                             let right_expr = self.gen_expr(&val_right)?;
                             let mut_kw = mut_kw_for_name(&name_left, mut_counts);
@@ -1127,32 +1447,45 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                let test_expr = self.gen_expr(test)?;
+                let narrowed = self.optional_narrowing_from_test(test);
+                let test_expr = self.gen_condition_expr(test)?;
                 self.push_line(&format!("if {} {{", test_expr));
                 self.indent += 1;
-                for stmt in body {
-                    self.emit_stmt(stmt, mut_counts)?;
-                }
+                let true_narrow = narrowed
+                    .as_ref()
+                    .map(|(name, true_ty, _)| (name.as_str(), true_ty));
+                self.emit_stmts_with_optional_override(true_narrow, body, mut_counts)?;
                 self.indent -= 1;
                 if orelse.is_empty() {
                     self.push_line("}");
                 } else {
                     self.push_line("} else {");
                     self.indent += 1;
-                    for stmt in orelse {
-                        self.emit_stmt(stmt, mut_counts)?;
-                    }
+                    let false_narrow = narrowed
+                        .as_ref()
+                        .map(|(name, _, false_ty)| (name.as_str(), false_ty));
+                    self.emit_stmts_with_optional_override(false_narrow, orelse, mut_counts)?;
                     self.indent -= 1;
                     self.push_line("}");
                 }
             }
             StmtKind::While { test, body } => {
-                let test_expr = self.gen_expr(test)?;
+                let test_expr = self.gen_condition_expr(test)?;
                 self.push_line(&format!("while {} {{", test_expr));
                 self.indent += 1;
-                for stmt in body {
-                    self.emit_stmt(stmt, mut_counts)?;
-                }
+                let narrowed: Option<(String, Type)> = if let ExprKind::Name(name) = &test.kind {
+                    self.local_var_type(name).and_then(|ty| {
+                        if let Type::Option(inner) = ty {
+                            Some((name.clone(), inner.as_ref().clone()))
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                };
+                let narrowed_ref = narrowed.as_ref().map(|(name, ty)| (name.as_str(), ty));
+                self.emit_stmts_with_optional_override(narrowed_ref, body, mut_counts)?;
                 self.indent -= 1;
                 self.push_line("}");
             }

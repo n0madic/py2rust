@@ -58,10 +58,11 @@ pub enum Type {
 }
 
 impl Type {
-    /// Check if this type is numeric (int or float).
+    /// Check if this type is numeric (int, float, or bool).
     /// Used for determining valid arithmetic operations.
     pub fn is_numeric(&self) -> bool {
-        matches!(self, Type::Int | Type::Float)
+        // Python treats bool as a subtype of int for arithmetic purposes.
+        matches!(self, Type::Int | Type::Float | Type::Bool)
     }
 
     pub fn is_optional(&self) -> bool {

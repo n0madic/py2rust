@@ -20,7 +20,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`
 - Dict methods: `get`, `pop`, `update`, `clear`, `copy`
 - Set methods: `add`, `remove`, `discard`, `clear`, `copy`
-- String methods: `upper`
+- String methods: `upper`, `lower`
 - Classes with fields, methods, and class attributes
 - Single inheritance with method overrides and `super().__init__` calls
 - Decorators: `@property` (getter/setter), `@staticmethod`, `@classmethod`, and simple top-level function decorators
@@ -81,7 +81,10 @@ The generated Rust injects tiny helper functions only when needed:
 
 ## Notes and Limitations
 - `self` can be unannotated in methods; other parameters require annotations.
-- `Union[A, B]` and `A | B` are allowed only for enum-like class unions.
+- `Optional[T]` can be written as `Optional[T]` or `T | None` and lowers to `Option<T>`.
+- Enum-like class unions are supported via `Union[A, B]` / `A | B` aliases.
+- Wider inline unions in annotations (for example `int | str`) currently degrade to gradual typing (`Unknown`) rather than a fully static union type.
+- `bool` follows Python numeric compatibility in arithmetic/comparison contexts (subtype of `int`) while remaining `bool` in boolean-only flows.
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
 - Import support is intentionally strict: only `typing`, `os`, and `sys` modules are currently accepted.
 - For registry-backed stdlib calls, module import is required (`os.remove(...)` / `sys.exit(...)` without import is a compile error).

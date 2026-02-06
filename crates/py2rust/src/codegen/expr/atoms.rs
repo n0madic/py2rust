@@ -93,11 +93,15 @@ impl<'a> Codegen<'a> {
                                 Some(prop.getter.clone())
                             }
                         });
-                        let base_name = self.name_override(name).unwrap_or(name);
-                        let base = format!(
-                            "{}.as_ref().expect(\"optional value '{}' is None\")",
-                            base_name, name
-                        );
+                        let base = if let Some(override_expr) = self.name_override(name) {
+                            // Narrowing overrides already yield an unwrapped inner value.
+                            override_expr.to_string()
+                        } else {
+                            format!(
+                                "{}.as_ref().expect(\"optional value '{}' is None\")",
+                                name, name
+                            )
+                        };
                         if let Some(getter) = getter {
                             return Ok(format!("{}.{}()", base, getter));
                         }
@@ -119,11 +123,15 @@ impl<'a> Codegen<'a> {
                                 Some(prop.getter.clone())
                             }
                         });
-                        let base_name = self.name_override(name).unwrap_or(name);
-                        let base = format!(
-                            "{}.as_ref().expect(\"optional value '{}' is None\")",
-                            base_name, name
-                        );
+                        let base = if let Some(override_expr) = self.name_override(name) {
+                            // Narrowing overrides already yield an unwrapped inner value.
+                            override_expr.to_string()
+                        } else {
+                            format!(
+                                "{}.as_ref().expect(\"optional value '{}' is None\")",
+                                name, name
+                            )
+                        };
                         if let Some(getter) = getter {
                             return Ok(format!("{}.{}()", base, getter));
                         }
@@ -142,11 +150,15 @@ impl<'a> Codegen<'a> {
                     }
                 });
                 if let ExprKind::Name(name) = &value.kind {
-                    let base_name = self.name_override(name).unwrap_or(name);
-                    let base = format!(
-                        "{}.as_ref().expect(\"optional value '{}' is None\")",
-                        base_name, name
-                    );
+                    let base = if let Some(override_expr) = self.name_override(name) {
+                        // Narrowing overrides already yield an unwrapped inner value.
+                        override_expr.to_string()
+                    } else {
+                        format!(
+                            "{}.as_ref().expect(\"optional value '{}' is None\")",
+                            name, name
+                        )
+                    };
                     if let Some(getter) = getter {
                         return Ok(format!("{}.{}()", base, getter));
                     }

@@ -110,12 +110,21 @@ impl<'a> TypeChecker<'a> {
                 Type::Lambda { params, ret }
             }
             (left, right) => {
-                // Numeric types: int + float = float
+                // Keep bool stable for bool-only flows (e.g. boolean vars/returns).
+                if matches!(left, Type::Bool) && matches!(right, Type::Bool) {
+                    return Type::Bool;
+                }
+                // Numeric promotion for arithmetic-like flows.
                 if left.is_numeric() && right.is_numeric() {
                     if matches!(left, Type::Float) || matches!(right, Type::Float) {
                         return Type::Float;
                     }
-                    return Type::Int;
+                    // Remaining numeric combinations (int/bool) unify to int.
+                    if matches!(left, Type::Int | Type::Bool)
+                        && matches!(right, Type::Int | Type::Bool)
+                    {
+                        return Type::Int;
+                    }
                 }
                 // Otherwise keep left side (no better option)
                 left
@@ -196,6 +205,9 @@ impl<'a> TypeChecker<'a> {
         match (expected, actual) {
             // Numeric promotion: int can be used as float
             (Type::Float, Type::Int) => Ok(()),
+            // Python bool is a subtype of int and is accepted in numeric contexts.
+            (Type::Int, Type::Bool) => Ok(()),
+            (Type::Float, Type::Bool) => Ok(()),
             // None is assignable to any Optional type
             (Type::Option(_inner), Type::None) => Ok(()),
             // Optional to Optional: check inner types

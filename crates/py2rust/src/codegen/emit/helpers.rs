@@ -468,7 +468,7 @@ impl<'a> Codegen<'a> {
         }
         if self.uses.py_repr {
             // PyRepr wraps preformatted strings so list Debug output matches Python repr style.
-            self.push_line("#[derive(Clone, PartialEq, PartialOrd)]");
+            self.push_line("#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]");
             self.push_line("struct PyRepr(String);");
             self.push_line("impl std::fmt::Debug for PyRepr {");
             self.indent += 1;

@@ -313,6 +313,8 @@ impl<'a> Codegen<'a> {
             TypeRef::Exception(name) => Ok(Type::Exception(name.clone())),
             TypeRef::Unknown => Ok(Type::Unknown),
             TypeRef::Union(parts) => {
+                // Mirror typecheck-side behavior so codegen can continue even when
+                // annotations use wide inline unions.
                 let mut has_none = false;
                 let mut other = Vec::new();
                 for part in parts {
@@ -325,8 +327,10 @@ impl<'a> Codegen<'a> {
                 }
                 if has_none && other.len() == 1 {
                     Ok(Type::Option(Box::new(other.remove(0))))
+                } else if !has_none && other.len() == 1 {
+                    Ok(other.remove(0))
                 } else {
-                    Err(self.error(span, "Inline unions are only allowed for Optional[T]"))
+                    Ok(Type::Unknown)
                 }
             }
         }

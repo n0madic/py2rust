@@ -154,6 +154,9 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         expected.clone()
                     };
+                    // Preserve explicit annotation constraints, but allow Unknown annotations
+                    // (for example, wide inline unions) to refine from the initializer.
+                    let declared = Self::merge_types(declared, ty.clone());
                     self.insert_var(name, declared, stmt.span)?;
                 } else {
                     if matches!(ty, Type::Unknown) {
@@ -337,15 +340,14 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             StmtKind::If { test, body, orelse } => {
-                let cond_ty = self.check_expr(test, Some(&Type::Bool))?;
-                self.ensure_assignable(&cond_ty, &Type::Bool, stmt.span)?;
+                // Python if-conditions use truthiness, not strict bool typing.
+                let _cond_ty = self.check_expr(test, Some(&Type::Bool))?;
                 let mut narrowed: Option<(String, Type, Type)> = None;
-                if let ExprKind::Compare { op, left, right } = &test.kind {
-                    let (name_expr, none_expr) = match (&left.kind, &right.kind) {
-                        (ExprKind::Name(_), ExprKind::Literal(Literal::None)) => (left, right),
-                        (ExprKind::Literal(Literal::None), ExprKind::Name(_)) => (right, left),
-                        _ => (left, right),
-                    };
+                // Optional narrowing for identity and truthiness checks.
+                let narrow_none_compare = |name_expr: &Expr,
+                                           none_expr: &Expr,
+                                           op: &CmpOp|
+                 -> Option<(String, Type, Type)> {
                     if let ExprKind::Name(name) = &name_expr.kind {
                         if matches!(none_expr.kind, ExprKind::Literal(Literal::None)) {
                             if let Some(orig_ty) = self.lookup_var(name) {
@@ -354,14 +356,78 @@ impl<'a> TypeChecker<'a> {
                                     let none_ty = Type::None;
                                     match op {
                                         CmpOp::IsNot => {
-                                            narrowed = Some((name.clone(), some_ty, none_ty));
+                                            return Some((name.clone(), some_ty, none_ty));
                                         }
                                         CmpOp::Is => {
-                                            narrowed = Some((name.clone(), none_ty, some_ty));
+                                            return Some((name.clone(), none_ty, some_ty));
                                         }
                                         _ => {}
                                     }
                                 }
+                            }
+                        }
+                    }
+                    None
+                };
+
+                if let ExprKind::Compare { op, left, right } = &test.kind {
+                    let (name_expr, none_expr) = match (&left.kind, &right.kind) {
+                        (ExprKind::Name(_), ExprKind::Literal(Literal::None)) => (left, right),
+                        (ExprKind::Literal(Literal::None), ExprKind::Name(_)) => (right, left),
+                        _ => (left, right),
+                    };
+                    narrowed = narrow_none_compare(name_expr, none_expr, op);
+                }
+                if narrowed.is_none() {
+                    if let ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: inner,
+                    } = &test.kind
+                    {
+                        if let ExprKind::Compare { op, left, right } = &inner.kind {
+                            // `not (x is None)` and `not (x is not None)` invert branches.
+                            let inverted = match op {
+                                CmpOp::Is => Some(CmpOp::IsNot),
+                                CmpOp::IsNot => Some(CmpOp::Is),
+                                _ => None,
+                            };
+                            if let Some(inverted) = inverted.as_ref() {
+                                let (name_expr, none_expr) = match (&left.kind, &right.kind) {
+                                    (ExprKind::Name(_), ExprKind::Literal(Literal::None)) => {
+                                        (left, right)
+                                    }
+                                    (ExprKind::Literal(Literal::None), ExprKind::Name(_)) => {
+                                        (right, left)
+                                    }
+                                    _ => (left, right),
+                                };
+                                narrowed = narrow_none_compare(name_expr, none_expr, inverted);
+                            }
+                        }
+                    }
+                }
+                if narrowed.is_none() {
+                    if let ExprKind::Name(name) = &test.kind {
+                        if let Some(Type::Option(inner)) = self.lookup_var(name) {
+                            // Truthy branch excludes None; falsy branch keeps the original union.
+                            narrowed = Some((name.clone(), *inner.clone(), Type::Option(inner)));
+                        }
+                    }
+                }
+                if narrowed.is_none() {
+                    if let ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: inner,
+                    } = &test.kind
+                    {
+                        if let ExprKind::Name(name) = &inner.kind {
+                            if let Some(Type::Option(inner_ty)) = self.lookup_var(name) {
+                                // `if not x:` keeps Optional in then-branch and narrows else-branch.
+                                narrowed = Some((
+                                    name.clone(),
+                                    Type::Option(inner_ty.clone()),
+                                    *inner_ty.clone(),
+                                ));
                             }
                         }
                     }
@@ -393,10 +459,28 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             StmtKind::While { test, body } => {
-                let cond_ty = self.check_expr(test, Some(&Type::Bool))?;
-                self.ensure_assignable(&cond_ty, &Type::Bool, stmt.span)?;
-                for stmt in body {
-                    self.check_stmt(stmt, expected_ret)?;
+                // Python while-conditions use truthiness, not strict bool typing.
+                let _cond_ty = self.check_expr(test, Some(&Type::Bool))?;
+                let mut narrowed: Option<(String, Type)> = None;
+                if let ExprKind::Name(name) = &test.kind {
+                    if let Some(Type::Option(inner)) = self.lookup_var(name) {
+                        // Truthy while-branch excludes None for Optional values.
+                        narrowed = Some((name.clone(), *inner.clone()));
+                    }
+                }
+                if let Some((name, narrowed_ty)) = narrowed {
+                    self.scopes.push(HashMap::new());
+                    if let Some(scope) = self.scopes.last_mut() {
+                        scope.insert(name, narrowed_ty);
+                    }
+                    for stmt in body {
+                        self.check_stmt(stmt, expected_ret)?;
+                    }
+                    self.scopes.pop();
+                } else {
+                    for stmt in body {
+                        self.check_stmt(stmt, expected_ret)?;
+                    }
                 }
             }
             StmtKind::For { target, iter, body } => {

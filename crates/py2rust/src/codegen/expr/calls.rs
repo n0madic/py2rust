@@ -1554,6 +1554,30 @@ impl<'a> Codegen<'a> {
             }
             let arg_expr = self.gen_expr(&args[0])?;
             return Ok(Some(match args[0].ty.as_ref() {
+                Some(Type::Option(inner)) => {
+                    let opt_tmp = self.new_tmp();
+                    let val_tmp = self.new_tmp();
+                    let some_expr = match inner.as_ref() {
+                        Type::Str => format!("{val}.clone()", val = val_tmp),
+                        Type::Bool => format!(
+                            "if {val} {{ \"True\".to_string() }} else {{ \"False\".to_string() }}",
+                            val = val_tmp
+                        ),
+                        Type::Int => format!("{val}.to_string()", val = val_tmp),
+                        Type::Float => {
+                            self.uses.py_float_str = true;
+                            format!("py_float_str({val})", val = val_tmp)
+                        }
+                        _ => format!("format!(\"{{:?}}\", {val})", val = val_tmp),
+                    };
+                    format!(
+                        "{{ let {opt} = {arg}; match {opt} {{ Some({val}) => {some}, None => \"None\".to_string() }} }}",
+                        opt = opt_tmp,
+                        arg = arg_expr,
+                        val = val_tmp,
+                        some = some_expr
+                    )
+                }
                 Some(Type::Str) => arg_expr,
                 Some(Type::Bool) => format!(
                     "if {} {{ \"True\".to_string() }} else {{ \"False\".to_string() }}",
@@ -1724,6 +1748,18 @@ impl<'a> Codegen<'a> {
                 }
                 // Rust's to_uppercase() matches Python's str.upper() semantics.
                 return Ok(format!("{}.to_uppercase()", self.gen_expr(value)?));
+            }
+        }
+        if attr == "lower" {
+            if let Some(Type::Str) = value.ty.as_ref() {
+                if !keywords.is_empty() {
+                    return Err(self.error(value.span, "Keyword arguments are not supported"));
+                }
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "str.lower() expects no arguments"));
+                }
+                // Rust's to_lowercase() matches Python's str.lower() semantics.
+                return Ok(format!("{}.to_lowercase()", self.gen_expr(value)?));
             }
         }
         if attr == "startswith" {

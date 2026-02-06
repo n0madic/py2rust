@@ -86,8 +86,25 @@ impl<'a> Codegen<'a> {
             if matches!(expr.kind, ExprKind::Literal(Literal::None)) {
                 return Ok("None".to_string());
             }
-            let inner = self.gen_expr(expr)?;
+            let Some(Type::Option(inner_ty)) = expected else {
+                unreachable!("matched above")
+            };
+            let inner = self.gen_expr_with_expected(expr, Some(inner_ty.as_ref()))?;
             return Ok(format!("Some({})", inner));
+        }
+        if let Some(Type::Float) = expected {
+            if matches!(expr.ty.as_ref(), Some(Type::Int)) {
+                return Ok(format!("({} as f64)", self.gen_expr(expr)?));
+            }
+            if matches!(expr.ty.as_ref(), Some(Type::Bool)) {
+                let rendered = self.gen_expr(expr)?;
+                return Ok(format!("(({} as i64) as f64)", rendered));
+            }
+        }
+        if let Some(Type::Int) = expected {
+            if matches!(expr.ty.as_ref(), Some(Type::Bool)) {
+                return Ok(format!("({} as i64)", self.gen_expr(expr)?));
+            }
         }
         self.gen_expr(expr)
     }
@@ -166,8 +183,17 @@ impl<'a> Codegen<'a> {
         target_float: bool,
     ) -> Result<String, CompileError> {
         let rendered = self.gen_expr(expr)?;
-        if target_float && matches!(expr.ty.as_ref(), Some(Type::Int)) {
-            return Ok(format!("({} as f64)", rendered));
+        if target_float {
+            if matches!(expr.ty.as_ref(), Some(Type::Int)) {
+                return Ok(format!("({} as f64)", rendered));
+            }
+            if matches!(expr.ty.as_ref(), Some(Type::Bool)) {
+                return Ok(format!("(({} as i64) as f64)", rendered));
+            }
+            return Ok(rendered);
+        }
+        if matches!(expr.ty.as_ref(), Some(Type::Bool)) {
+            return Ok(format!("({} as i64)", rendered));
         }
         Ok(rendered)
     }
