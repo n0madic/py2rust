@@ -2,7 +2,433 @@
 
 use super::super::*;
 
+/// Static helper body for `print(...)` calls.
+const HELPER_PY_PRINT: &str = r#"
+fn py_print<T: std::fmt::Display>(v: T) {
+    println!("{v}");
+}
+"#;
+
+/// Static helper body for Python `type(...)` name extraction.
+const HELPER_PY_TYPE_NAME: &str = r#"
+fn py_type_name<T: ?Sized>(value: &T) -> String {
+    std::any::type_name_of_val(value).to_string()
+}
+"#;
+
+/// Static helper body for iterator `next(...)` behavior.
+const HELPER_PY_NEXT: &str = r#"
+fn py_next<T>(value: Option<T>) -> Result<T, PyError> {
+    value.ok_or_else(|| PyError::StopIteration(String::new()))
+}
+"#;
+
+/// Static helper body for `os.remove(path)`.
+const HELPER_PY_OS_REMOVE: &str = r#"
+fn py_os_remove(path: &str) -> Result<(), PyError> {
+    std::fs::remove_file(path).map_err(|e| PyError::IOError(e.to_string()))
+}
+"#;
+
+/// Static helper body for clonable iterator wrapper.
+const HELPER_PY_ITER: &str = r#"
+#[derive(Clone)]
+struct PyIter<T> {
+    inner: Arc<Mutex<Box<dyn Iterator<Item = T> + Send>>>,
+}
+impl<T> PyIter<T> {
+    fn new<I: Iterator<Item = T> + Send + 'static>(iter: I) -> Self {
+        Self { inner: Arc::new(Mutex::new(Box::new(iter))) }
+    }
+}
+impl<T> Iterator for PyIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.lock().expect("PyIter mutex poisoned").next()
+    }
+}
+fn py_iter<T, I>(iter: I) -> PyIter<T>
+where
+    I: Iterator<Item = T> + Send + 'static,
+{
+    PyIter::new(iter)
+}
+"#;
+
+/// Static helper body for `len(...)` support across core collection types.
+const HELPER_PY_LEN: &str = r#"
+trait PyLen {
+    fn py_len(&self) -> i64;
+}
+impl<T> PyLen for Vec<T> {
+    fn py_len(&self) -> i64 { self.len() as i64 }
+}
+impl<T> PyLen for Arc<Mutex<Vec<T>>> {
+    fn py_len(&self) -> i64 { self.lock().expect("list mutex poisoned").len() as i64 }
+}
+impl PyLen for String {
+    fn py_len(&self) -> i64 { self.chars().count() as i64 }
+}
+impl PyLen for &str {
+    fn py_len(&self) -> i64 { self.chars().count() as i64 }
+}
+impl<K, V> PyLen for std::collections::HashMap<K, V> {
+    fn py_len(&self) -> i64 { self.len() as i64 }
+}
+impl<K, V> PyLen for Arc<Mutex<std::collections::HashMap<K, V>>> {
+    fn py_len(&self) -> i64 { self.lock().expect("dict mutex poisoned").len() as i64 }
+}
+impl<T> PyLen for std::collections::HashSet<T> {
+    fn py_len(&self) -> i64 { self.len() as i64 }
+}
+impl PyLen for () {
+    fn py_len(&self) -> i64 { 0 }
+}
+impl<T1> PyLen for (T1,) {
+    fn py_len(&self) -> i64 { 1 }
+}
+impl<T1, T2> PyLen for (T1, T2) {
+    fn py_len(&self) -> i64 { 2 }
+}
+impl<T1, T2, T3> PyLen for (T1, T2, T3) {
+    fn py_len(&self) -> i64 { 3 }
+}
+impl<T1, T2, T3, T4> PyLen for (T1, T2, T3, T4) {
+    fn py_len(&self) -> i64 { 4 }
+}
+impl<T1, T2, T3, T4, T5> PyLen for (T1, T2, T3, T4, T5) {
+    fn py_len(&self) -> i64 { 5 }
+}
+impl<T1, T2, T3, T4, T5, T6> PyLen for (T1, T2, T3, T4, T5, T6) {
+    fn py_len(&self) -> i64 { 6 }
+}
+impl<T1, T2, T3, T4, T5, T6, T7> PyLen for (T1, T2, T3, T4, T5, T6, T7) {
+    fn py_len(&self) -> i64 { 7 }
+}
+impl<T1, T2, T3, T4, T5, T6, T7, T8> PyLen for (T1, T2, T3, T4, T5, T6, T7, T8) {
+    fn py_len(&self) -> i64 { 8 }
+}
+fn py_len<T: PyLen>(v: &T) -> i64 { v.py_len() }
+"#;
+
+/// Static helper body for list slicing with arbitrary step.
+const HELPER_PY_LIST_SLICE_STEP: &str = r#"
+fn py_list_slice_step<T: Clone>(items: &[T], start: Option<i64>, end: Option<i64>, step: i64) -> Result<Vec<T>, PyError> {
+    if step == 0 { return Err(PyError::ValueError("slice step cannot be zero".to_string())); }
+    let len = items.len() as i64;
+    let mut out = Vec::new();
+    if step > 0 {
+        let mut i = match start {
+            Some(s) => { let s = if s < 0 { len + s } else { s }; s.max(0).min(len) },
+            None => 0,
+        };
+        let end = match end {
+            Some(e) => { let e = if e < 0 { len + e } else { e }; e.max(0).min(len) },
+            None => len,
+        };
+        while i < end {
+            out.push(items[i as usize].clone());
+            i += step;
+        }
+    } else {
+        let mut i = match start {
+            Some(s) => { let s = if s < 0 { len + s } else { s }; if s < 0 { -1 } else if s >= len { len - 1 } else { s } },
+            None => len - 1,
+        };
+        let end = match end {
+            Some(e) => { let e = if e < 0 { len + e } else { e }; if e < 0 { -1 } else if e >= len { len - 1 } else { e } },
+            None => -1,
+        };
+        while i > end {
+            if i >= 0 && i < len { out.push(items[i as usize].clone()); }
+            i += step;
+        }
+    }
+    Ok(out)
+}
+"#;
+
+/// Static helper body for string slicing with arbitrary step.
+const HELPER_PY_STR_SLICE_STEP: &str = r#"
+fn py_str_slice_step(s: &str, start: Option<i64>, end: Option<i64>, step: i64) -> Result<String, PyError> {
+    let chars: Vec<char> = s.chars().collect();
+    let sliced = py_list_slice_step(&chars, start, end, step)?;
+    Ok(sliced.into_iter().collect())
+}
+"#;
+
+/// Static helper body for file open/read/write helpers.
+const HELPER_PY_FILE: &str = r#"
+fn py_open(path: &str, mode: &str) -> Result<std::fs::File, PyError> {
+    match mode {
+        "r" => std::fs::File::open(path).map_err(|e| PyError::IOError(e.to_string())),
+        "w" => std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path).map_err(|e| PyError::IOError(e.to_string())),
+        "a" => std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| PyError::IOError(e.to_string())),
+        _ => Err(PyError::ValueError(format!("unsupported file mode: {}", mode))),
+    }
+}
+fn py_file_read(file: &mut std::fs::File, n: Option<i64>) -> Result<String, PyError> {
+    use std::io::Read;
+    if let Some(limit) = n {
+        if limit >= 0 {
+            let mut buf = vec![0u8; limit as usize];
+            let read = file.read(&mut buf).map_err(|e| PyError::IOError(e.to_string()))?;
+            buf.truncate(read);
+            return String::from_utf8(buf).map_err(|e| PyError::IOError(e.to_string()));
+        }
+    }
+    let mut out = String::new();
+    file.read_to_string(&mut out).map_err(|e| PyError::IOError(e.to_string()))?;
+    Ok(out)
+}
+fn py_file_readline(file: &mut std::fs::File) -> Result<String, PyError> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        let read = file.read(&mut byte).map_err(|e| PyError::IOError(e.to_string()))?;
+        if read == 0 { break; }
+        bytes.push(byte[0]);
+        if byte[0] == b'\n' { break; }
+    }
+    String::from_utf8(bytes).map_err(|e| PyError::IOError(e.to_string()))
+}
+fn py_file_readlines(file: &mut std::fs::File) -> Result<Vec<String>, PyError> {
+    let mut lines = Vec::new();
+    loop {
+        let line = py_file_readline(file)?;
+        if line.is_empty() { break; }
+        lines.push(line);
+    }
+    Ok(lines)
+}
+fn py_file_write(file: &mut std::fs::File, data: &str) -> Result<i64, PyError> {
+    use std::io::Write;
+    file.write_all(data.as_bytes()).map_err(|e| PyError::IOError(e.to_string()))?;
+    Ok(data.len() as i64)
+}
+fn py_file_close(file: &mut std::fs::File) -> Result<(), PyError> {
+    use std::io::Write;
+    file.flush().map_err(|e| PyError::IOError(e.to_string()))
+}
+"#;
+
+/// Static helper body for Python-compatible float string formatting.
+const HELPER_PY_FLOAT_STR: &str = r#"
+fn py_float_str(v: f64) -> String {
+    if v.is_nan() { return "nan".to_string(); }
+    if v.is_infinite() {
+        return if v.is_sign_negative() { "-inf".to_string() } else { "inf".to_string() };
+    }
+    let mut s = v.to_string();
+    if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+        s.push_str(".0");
+    }
+    s
+}
+"#;
+
+/// Static helper body for Python-style string repr escaping.
+const HELPER_PY_STR_REPR: &str = r#"
+fn py_str_repr(s: &str) -> String {
+    let use_double = s.contains('\'') && !s.contains('"');
+    let quote = if use_double { '"' } else { '\'' };
+    let mut out = String::new();
+    out.push(quote);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\x08"),
+            '\x0c' => out.push_str("\\x0c"),
+            '\'' if quote == '\'' => out.push_str("\\'"),
+            '"' if quote == '"' => out.push_str("\\\""),
+            _ => out.push(ch),
+        }
+    }
+    out.push(quote);
+    out
+}
+"#;
+
+/// Static helper body for `range(start, end, step)`.
+const HELPER_PY_RANGE3: &str = r#"
+fn py_range3(start: i64, end: i64, step: i64) -> Result<Box<dyn Iterator<Item = i64>>, PyError> {
+    if step == 0 { return Err(PyError::ValueError("range() arg 3 must not be zero".to_string())); }
+    if step > 0 {
+        Ok(Box::new((start..end).step_by(step as usize)))
+    } else {
+        let step = (-step) as usize;
+        if start <= end {
+            Ok(Box::new(std::iter::empty::<i64>()))
+        } else {
+            Ok(Box::new(((end + 1)..=start).rev().step_by(step)))
+        }
+    }
+}
+"#;
+
+/// Static helper body for Python-style banker rounding.
+const HELPER_PY_ROUND: &str = r#"
+fn py_round_ties_even(value: f64) -> f64 {
+    let rounded = value.round();
+    let diff = (value - rounded).abs();
+    if (diff - 0.5).abs() < 1e-12 {
+        let floor = value.floor();
+        if (floor as i64) % 2 == 0 { floor } else { floor + 1.0 }
+    } else {
+        rounded
+    }
+}
+fn py_round(value: f64, ndigits: i64) -> f64 {
+    let factor = 10f64.powi(ndigits as i32);
+    py_round_ties_even(value * factor) / factor
+}
+"#;
+
+/// Static helper body for `max(...)` over iterables.
+const HELPER_PY_MAX: &str = r#"
+fn py_max<T: PartialOrd, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {
+    let mut iter = iter.into_iter();
+    let mut best = iter.next().ok_or_else(|| PyError::ValueError("max() arg is an empty sequence".to_string()))?;
+    for item in iter {
+        if item.partial_cmp(&best).unwrap_or(std::cmp::Ordering::Equal) == std::cmp::Ordering::Greater {
+            best = item;
+        }
+    }
+    Ok(best)
+}
+"#;
+
+/// Static helper body for `min(...)` over iterables.
+const HELPER_PY_MIN: &str = r#"
+fn py_min<T: PartialOrd, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {
+    let mut iter = iter.into_iter();
+    let mut best = iter.next().ok_or_else(|| PyError::ValueError("min() arg is an empty sequence".to_string()))?;
+    for item in iter {
+        if item.partial_cmp(&best).unwrap_or(std::cmp::Ordering::Equal) == std::cmp::Ordering::Less {
+            best = item;
+        }
+    }
+    Ok(best)
+}
+"#;
+
+/// Static helper body for `list` string representation helpers (part 1).
+const HELPER_PY_LIST_REPR_HEAD: &str = r#"
+trait PyListRepr {
+    fn py_repr(&self) -> String;
+}
+impl PyListRepr for i64 {
+    fn py_repr(&self) -> String { self.to_string() }
+}
+impl PyListRepr for f64 {
+    fn py_repr(&self) -> String { py_float_str(*self) }
+}
+impl PyListRepr for bool {
+    fn py_repr(&self) -> String { if *self { "True".to_string() } else { "False".to_string() } }
+}
+impl PyListRepr for String {
+    fn py_repr(&self) -> String { py_str_repr(self) }
+}
+"#;
+
+/// Static helper body for `PyRepr` list representation support.
+const HELPER_PY_LIST_REPR_PY_REPR: &str = r#"
+impl PyListRepr for PyRepr {
+    fn py_repr(&self) -> String { self.0.clone() }
+}
+"#;
+
+/// Static helper body for `list` string representation helpers (part 2).
+const HELPER_PY_LIST_REPR_TAIL: &str = r#"
+impl<T1: PyListRepr> PyListRepr for (T1,) {
+    fn py_repr(&self) -> String { format!("({},)", self.0.py_repr()) }
+}
+impl<T1: PyListRepr, T2: PyListRepr> PyListRepr for (T1, T2) {
+    fn py_repr(&self) -> String { format!("({}, {})", self.0.py_repr(), self.1.py_repr()) }
+}
+impl<T1: PyListRepr, T2: PyListRepr, T3: PyListRepr> PyListRepr for (T1, T2, T3) {
+    fn py_repr(&self) -> String { format!("({}, {}, {})", self.0.py_repr(), self.1.py_repr(), self.2.py_repr()) }
+}
+impl<T1: PyListRepr, T2: PyListRepr, T3: PyListRepr, T4: PyListRepr> PyListRepr for (T1, T2, T3, T4) {
+    fn py_repr(&self) -> String { format!("({}, {}, {}, {})", self.0.py_repr(), self.1.py_repr(), self.2.py_repr(), self.3.py_repr()) }
+}
+impl<T: PyListRepr> PyListRepr for Vec<T> {
+    fn py_repr(&self) -> String { py_list_str_vec(self) }
+}
+impl<T: PyListRepr> PyListRepr for Arc<Mutex<Vec<T>>> {
+    fn py_repr(&self) -> String { py_list_str(self) }
+}
+fn py_list_str_vec<T: PyListRepr>(list: &[T]) -> String {
+    let mut out = "[".to_string();
+    for (idx, item) in list.iter().enumerate() {
+        if idx > 0 { out.push_str(", "); }
+        out.push_str(&item.py_repr());
+    }
+    out.push(']');
+    out
+}
+fn py_list_str<T: PyListRepr>(list: &Arc<Mutex<Vec<T>>>) -> String {
+    let guard = list.lock().expect("list mutex poisoned");
+    py_list_str_vec(&guard)
+}
+"#;
+
+/// Static helper body for PyError enum and trait impls.
+const HELPER_PY_ERROR_ENUM: &str = r#"
+#[derive(Debug, Clone)]
+pub enum PyError {
+    ValueError(String),
+    TypeError(String),
+    RuntimeError(String),
+    KeyError(String),
+    IndexError(String),
+    AttributeError(String),
+    ZeroDivisionError(String),
+    NameError(String),
+    AssertionError(String),
+    StopIteration(String),
+    NotImplementedError(String),
+    IOError(String),
+    OverflowError(String),
+}
+
+impl std::fmt::Display for PyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            PyError::ValueError(msg) => write!(f, "ValueError: {}", msg),
+            PyError::TypeError(msg) => write!(f, "TypeError: {}", msg),
+            PyError::RuntimeError(msg) => write!(f, "RuntimeError: {}", msg),
+            PyError::KeyError(msg) => write!(f, "KeyError: {}", msg),
+            PyError::IndexError(msg) => write!(f, "IndexError: {}", msg),
+            PyError::AttributeError(msg) => write!(f, "AttributeError: {}", msg),
+            PyError::ZeroDivisionError(msg) => write!(f, "ZeroDivisionError: {}", msg),
+            PyError::NameError(msg) => write!(f, "NameError: {}", msg),
+            PyError::AssertionError(msg) => write!(f, "AssertionError: {}", msg),
+            PyError::StopIteration(msg) => write!(f, "StopIteration: {}", msg),
+            PyError::NotImplementedError(msg) => write!(f, "NotImplementedError: {}", msg),
+            PyError::IOError(msg) => write!(f, "IOError: {}", msg),
+            PyError::OverflowError(msg) => write!(f, "OverflowError: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for PyError {}
+"#;
+
 impl<'a> Codegen<'a> {
+    /// Emit a raw helper block line-by-line with current indentation.
+    ///
+    /// The input block should be left-aligned Rust source.
+    fn push_block(&mut self, block: &str) {
+        for line in block.trim_matches('\n').lines() {
+            self.push_line(line);
+        }
+    }
+
     /// Emit all helper functions needed by the generated code.
     ///
     /// Helpers are only emitted if their corresponding `uses.*` flag is set.
@@ -33,51 +459,12 @@ impl<'a> Codegen<'a> {
 
         // PyIter wrapper makes iterators clonable (Python's for loops clone iterators).
         if self.uses.py_iter {
-            self.push_line("#[derive(Clone)]");
-            self.push_line("struct PyIter<T> {");
-            self.indent += 1;
-            self.push_line("inner: Arc<Mutex<Box<dyn Iterator<Item = T> + Send>>>,");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T> PyIter<T> {");
-            self.indent += 1;
-            self.push_line("fn new<I: Iterator<Item = T> + Send + 'static>(iter: I) -> Self {");
-            self.indent += 1;
-            self.push_line("Self { inner: Arc::new(Mutex::new(Box::new(iter))) }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T> Iterator for PyIter<T> {");
-            self.indent += 1;
-            self.push_line("type Item = T;");
-            self.push_line("fn next(&mut self) -> Option<Self::Item> {");
-            self.indent += 1;
             // Poisoned mutex means iterator state is invalid; panic with context.
-            self.push_line("self.inner.lock().expect(\"PyIter mutex poisoned\").next()");
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("fn py_iter<T, I>(iter: I) -> PyIter<T>");
-            self.indent += 1;
-            self.push_line("where");
-            self.indent += 1;
-            self.push_line("I: Iterator<Item = T> + Send + 'static,");
-            self.indent -= 1;
-            self.push_line("{");
-            self.indent += 1;
-            self.push_line("PyIter::new(iter)");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_ITER);
         }
 
         if self.uses.print {
-            self.push_line("fn py_print<T: std::fmt::Display>(v: T) {");
-            self.indent += 1;
-            self.push_line("println!(\"{v}\");");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_PRINT);
         }
         if self.uses.py_repr {
             // PyRepr wraps preformatted strings so list Debug output matches Python repr style.
@@ -94,150 +481,14 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
         }
         if self.uses.py_float_str {
-            self.push_line("fn py_float_str(v: f64) -> String {");
-            self.indent += 1;
-            self.push_line("if v.is_nan() { return \"nan\".to_string(); }");
-            self.push_line("if v.is_infinite() {");
-            self.indent += 1;
-            self.push_line(
-                "return if v.is_sign_negative() { \"-inf\".to_string() } else { \"inf\".to_string() };",
-            );
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("let mut s = v.to_string();");
-            self.push_line("if !s.contains('.') && !s.contains('e') && !s.contains('E') {");
-            self.indent += 1;
-            self.push_line("s.push_str(\".0\");");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("s");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_FLOAT_STR);
         }
         if self.uses.py_str_repr {
-            self.push_line("fn py_str_repr(s: &str) -> String {");
-            self.indent += 1;
-            self.push_line("let use_double = s.contains('\\'') && !s.contains('\"');");
-            self.push_line("let quote = if use_double { '\"' } else { '\\'' };");
-            self.push_line("let mut out = String::new();");
-            self.push_line("out.push(quote);");
-            self.push_line("for ch in s.chars() {");
-            self.indent += 1;
-            self.push_line("match ch {");
-            self.indent += 1;
-            self.push_line("'\\\\' => out.push_str(\"\\\\\\\\\"),");
-            self.push_line("'\\n' => out.push_str(\"\\\\n\"),");
-            self.push_line("'\\r' => out.push_str(\"\\\\r\"),");
-            self.push_line("'\\t' => out.push_str(\"\\\\t\"),");
-            self.push_line("'\\x08' => out.push_str(\"\\\\x08\"),");
-            self.push_line("'\\x0c' => out.push_str(\"\\\\x0c\"),");
-            self.push_line("'\\'' if quote == '\\'' => out.push_str(\"\\\\'\"),");
-            self.push_line("'\"' if quote == '\"' => out.push_str(\"\\\\\\\"\"),");
-            self.push_line("_ => out.push(ch),");
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("out.push(quote);");
-            self.push_line("out");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_STR_REPR);
         }
         if self.uses.len {
-            self.push_line("trait PyLen {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64;");
-            self.indent -= 1;
-            self.push_line("}");
             // Tuples have fixed arity, so provide PyLen impls for common tuple sizes.
-            self.push_line("impl<T> PyLen for Vec<T> {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { self.len() as i64 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T> PyLen for Arc<Mutex<Vec<T>>> {");
-            self.indent += 1;
-            // Lock the list to obtain a consistent length snapshot.
-            self.push_line("fn py_len(&self) -> i64 { self.lock().expect(\"list mutex poisoned\").len() as i64 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl PyLen for String {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { self.chars().count() as i64 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl PyLen for &str {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { self.chars().count() as i64 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<K, V> PyLen for std::collections::HashMap<K, V> {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { self.len() as i64 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<K, V> PyLen for Arc<Mutex<std::collections::HashMap<K, V>>> {");
-            self.indent += 1;
-            self.push_line(
-                "fn py_len(&self) -> i64 { self.lock().expect(\"dict mutex poisoned\").len() as i64 }",
-            );
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T> PyLen for std::collections::HashSet<T> {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { self.len() as i64 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl PyLen for () {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { 0 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T1> PyLen for (T1,) {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { 1 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T1, T2> PyLen for (T1, T2) {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { 2 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T1, T2, T3> PyLen for (T1, T2, T3) {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { 3 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T1, T2, T3, T4> PyLen for (T1, T2, T3, T4) {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { 4 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T1, T2, T3, T4, T5> PyLen for (T1, T2, T3, T4, T5) {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { 5 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T1, T2, T3, T4, T5, T6> PyLen for (T1, T2, T3, T4, T5, T6) {");
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { 6 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line(
-                "impl<T1, T2, T3, T4, T5, T6, T7> PyLen for (T1, T2, T3, T4, T5, T6, T7) {",
-            );
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { 7 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line(
-                "impl<T1, T2, T3, T4, T5, T6, T7, T8> PyLen for (T1, T2, T3, T4, T5, T6, T7, T8) {",
-            );
-            self.indent += 1;
-            self.push_line("fn py_len(&self) -> i64 { 8 }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("fn py_len<T: PyLen>(v: &T) -> i64 { v.py_len() }");
+            self.push_block(HELPER_PY_LEN);
         }
         if self.uses.range {
             self.push_line("fn py_range(end: i64) -> std::ops::Range<i64> { 0..end }");
@@ -252,120 +503,25 @@ impl<'a> Codegen<'a> {
             // Positive step: count up from start to end.
             // Negative step: count down from start to end.
             // Step of 0 is an error (would create infinite loop).
-            self.push_line(
-                "fn py_range3(start: i64, end: i64, step: i64) -> Result<Box<dyn Iterator<Item = i64>>, PyError> {",
-            );
-            self.indent += 1;
-            self.push_line(
-                "if step == 0 { return Err(PyError::ValueError(\"range() arg 3 must not be zero\".to_string())); }",
-            );
-            self.push_line("if step > 0 {");
-            self.indent += 1;
-            self.push_line("Ok(Box::new((start..end).step_by(step as usize)))");
-            self.indent -= 1;
-            self.push_line("} else {");
-            self.indent += 1;
-            self.push_line("let step = (-step) as usize;");
-            self.push_line("if start <= end {");
-            self.indent += 1;
-            self.push_line("Ok(Box::new(std::iter::empty::<i64>()))");
-            self.indent -= 1;
-            self.push_line("} else {");
-            self.indent += 1;
-            self.push_line("Ok(Box::new(((end + 1)..=start).rev().step_by(step)))");
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_RANGE3);
         }
         if self.uses.round {
             // Python's round() uses "round half to even" (banker's rounding).
             // Unlike Rust's f64::round() which uses "round half away from zero".
             // Example: round(0.5) = 0, round(1.5) = 2, round(2.5) = 2
             // This minimizes bias in repeated rounding operations.
-            self.push_line("fn py_round_ties_even(value: f64) -> f64 {");
-            self.indent += 1;
-            self.push_line("let rounded = value.round();");
-            self.push_line("let diff = (value - rounded).abs();");
-            // Check if we're exactly at 0.5 (within floating point epsilon).
-            self.push_line("if (diff - 0.5).abs() < 1e-12 {");
-            self.indent += 1;
-            self.push_line("let floor = value.floor();");
-            // Round to nearest even number.
-            self.push_line("if (floor as i64) % 2 == 0 { floor } else { floor + 1.0 }");
-            self.indent -= 1;
-            self.push_line("} else {");
-            self.indent += 1;
-            self.push_line("rounded");
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("fn py_round(value: f64, ndigits: i64) -> f64 {");
-            self.indent += 1;
-            self.push_line("let factor = 10f64.powi(ndigits as i32);");
-            self.push_line("py_round_ties_even(value * factor) / factor");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_ROUND);
         }
         if self.uses.type_name {
-            self.push_line("fn py_type_name<T: ?Sized>(value: &T) -> String {");
-            self.indent += 1;
-            self.push_line("std::any::type_name_of_val(value).to_string()");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_TYPE_NAME);
         }
         if self.uses.py_max {
             // Use PartialOrd to support floats and fall back to equality on NaN comparisons.
-            self.push_line(
-                "fn py_max<T: PartialOrd, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {",
-            );
-            self.indent += 1;
-            self.push_line("let mut iter = iter.into_iter();");
-            self.push_line(
-                "let mut best = iter.next().ok_or_else(|| PyError::ValueError(\"max() arg is an empty sequence\".to_string()))?;",
-            );
-            self.push_line("for item in iter {");
-            self.indent += 1;
-            self.push_line(
-                "if item.partial_cmp(&best).unwrap_or(std::cmp::Ordering::Equal) == std::cmp::Ordering::Greater {",
-            );
-            self.indent += 1;
-            self.push_line("best = item;");
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("Ok(best)");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_MAX);
         }
         if self.uses.py_min {
             // Use PartialOrd to support floats and fall back to equality on NaN comparisons.
-            self.push_line(
-                "fn py_min<T: PartialOrd, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {",
-            );
-            self.indent += 1;
-            self.push_line("let mut iter = iter.into_iter();");
-            self.push_line(
-                "let mut best = iter.next().ok_or_else(|| PyError::ValueError(\"min() arg is an empty sequence\".to_string()))?;",
-            );
-            self.push_line("for item in iter {");
-            self.indent += 1;
-            self.push_line(
-                "if item.partial_cmp(&best).unwrap_or(std::cmp::Ordering::Equal) == std::cmp::Ordering::Less {",
-            );
-            self.indent += 1;
-            self.push_line("best = item;");
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("Ok(best)");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_MIN);
         }
         if self.uses.py_parse_int {
             self.push_line("fn py_parse_int(s: &str) -> Result<i64, PyError> {");
@@ -454,11 +610,7 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
         }
         if self.uses.py_next {
-            self.push_line("fn py_next<T>(value: Option<T>) -> Result<T, PyError> {");
-            self.indent += 1;
-            self.push_line("value.ok_or_else(|| PyError::StopIteration(String::new()))");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_NEXT);
         }
         if self.uses.py_dict_get {
             self.push_line(
@@ -518,97 +670,11 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
         }
         if self.uses.py_list_str {
-            self.push_line("trait PyListRepr {");
-            self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String;");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl PyListRepr for i64 {");
-            self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { self.to_string() }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl PyListRepr for f64 {");
-            self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { py_float_str(*self) }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl PyListRepr for bool {");
-            self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { if *self { \"True\".to_string() } else { \"False\".to_string() } }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl PyListRepr for String {");
-            self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { py_str_repr(self) }");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_LIST_REPR_HEAD);
             if self.uses.py_repr {
-                self.push_line("impl PyListRepr for PyRepr {");
-                self.indent += 1;
-                self.push_line("fn py_repr(&self) -> String { self.0.clone() }");
-                self.indent -= 1;
-                self.push_line("}");
+                self.push_block(HELPER_PY_LIST_REPR_PY_REPR);
             }
-            self.push_line("impl<T1: PyListRepr> PyListRepr for (T1,) {");
-            self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { format!(\"({},)\", self.0.py_repr()) }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T1: PyListRepr, T2: PyListRepr> PyListRepr for (T1, T2) {");
-            self.indent += 1;
-            self.push_line(
-                "fn py_repr(&self) -> String { format!(\"({}, {})\", self.0.py_repr(), self.1.py_repr()) }",
-            );
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line(
-                "impl<T1: PyListRepr, T2: PyListRepr, T3: PyListRepr> PyListRepr for (T1, T2, T3) {",
-            );
-            self.indent += 1;
-            self.push_line(
-                "fn py_repr(&self) -> String { format!(\"({}, {}, {})\", self.0.py_repr(), self.1.py_repr(), self.2.py_repr()) }",
-            );
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line(
-                "impl<T1: PyListRepr, T2: PyListRepr, T3: PyListRepr, T4: PyListRepr> PyListRepr for (T1, T2, T3, T4) {",
-            );
-            self.indent += 1;
-            self.push_line(
-                "fn py_repr(&self) -> String { format!(\"({}, {}, {}, {})\", self.0.py_repr(), self.1.py_repr(), self.2.py_repr(), self.3.py_repr()) }",
-            );
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T: PyListRepr> PyListRepr for Vec<T> {");
-            self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { py_list_str_vec(self) }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("impl<T: PyListRepr> PyListRepr for Arc<Mutex<Vec<T>>> {");
-            self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { py_list_str(self) }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("fn py_list_str_vec<T: PyListRepr>(list: &[T]) -> String {");
-            self.indent += 1;
-            self.push_line("let mut out = \"[\".to_string();");
-            self.push_line("for (idx, item) in list.iter().enumerate() {");
-            self.indent += 1;
-            self.push_line("if idx > 0 { out.push_str(\", \"); }");
-            self.push_line("out.push_str(&item.py_repr());");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("out.push(']');");
-            self.push_line("out");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("fn py_list_str<T: PyListRepr>(list: &Arc<Mutex<Vec<T>>>) -> String {");
-            self.indent += 1;
-            self.push_line("let guard = list.lock().expect(\"list mutex poisoned\");");
-            self.push_line("py_list_str_vec(&guard)");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_LIST_REPR_TAIL);
         }
         if self.uses.py_index {
             // Python supports negative indices: list[-1] is the last element.
@@ -656,183 +722,16 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
         }
         if self.uses.py_list_slice_step {
-            self.push_line(
-                "fn py_list_slice_step<T: Clone>(items: &[T], start: Option<i64>, end: Option<i64>, step: i64) -> Result<Vec<T>, PyError> {",
-            );
-            self.indent += 1;
-            self.push_line(
-                "if step == 0 { return Err(PyError::ValueError(\"slice step cannot be zero\".to_string())); }",
-            );
-            self.push_line("let len = items.len() as i64;");
-            self.push_line("let mut out = Vec::new();");
-            self.push_line("if step > 0 {");
-            self.indent += 1;
-            self.push_line("let mut i = match start {");
-            self.indent += 1;
-            self.push_line(
-                "Some(s) => { let s = if s < 0 { len + s } else { s }; s.max(0).min(len) },",
-            );
-            self.push_line("None => 0,");
-            self.indent -= 1;
-            self.push_line("};");
-            self.push_line("let end = match end {");
-            self.indent += 1;
-            self.push_line(
-                "Some(e) => { let e = if e < 0 { len + e } else { e }; e.max(0).min(len) },",
-            );
-            self.push_line("None => len,");
-            self.indent -= 1;
-            self.push_line("};");
-            self.push_line("while i < end {");
-            self.indent += 1;
-            self.push_line("out.push(items[i as usize].clone());");
-            self.push_line("i += step;");
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("} else {");
-            self.indent += 1;
-            self.push_line("let mut i = match start {");
-            self.indent += 1;
-            self.push_line("Some(s) => { let s = if s < 0 { len + s } else { s }; if s < 0 { -1 } else if s >= len { len - 1 } else { s } },");
-            self.push_line("None => len - 1,");
-            self.indent -= 1;
-            self.push_line("};");
-            self.push_line("let end = match end {");
-            self.indent += 1;
-            self.push_line("Some(e) => { let e = if e < 0 { len + e } else { e }; if e < 0 { -1 } else if e >= len { len - 1 } else { e } },");
-            self.push_line("None => -1,");
-            self.indent -= 1;
-            self.push_line("};");
-            self.push_line("while i > end {");
-            self.indent += 1;
-            self.push_line("if i >= 0 && i < len { out.push(items[i as usize].clone()); }");
-            self.push_line("i += step;");
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("Ok(out)");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_LIST_SLICE_STEP);
         }
         if self.uses.py_str_slice_step {
-            self.push_line(
-                "fn py_str_slice_step(s: &str, start: Option<i64>, end: Option<i64>, step: i64) -> Result<String, PyError> {",
-            );
-            self.indent += 1;
-            self.push_line("let chars: Vec<char> = s.chars().collect();");
-            self.push_line("let sliced = py_list_slice_step(&chars, start, end, step)?;");
-            self.push_line("Ok(sliced.into_iter().collect())");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_STR_SLICE_STEP);
         }
         if self.uses.py_file {
-            self.push_line(
-                "fn py_open(path: &str, mode: &str) -> Result<std::fs::File, PyError> {",
-            );
-            self.indent += 1;
-            self.push_line("match mode {");
-            self.indent += 1;
-            self.push_line(
-                "\"r\" => std::fs::File::open(path).map_err(|e| PyError::IOError(e.to_string())),",
-            );
-            self.push_line("\"w\" => std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path).map_err(|e| PyError::IOError(e.to_string())),");
-            self.push_line("\"a\" => std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| PyError::IOError(e.to_string())),");
-            self.push_line(
-                "_ => Err(PyError::ValueError(format!(\"unsupported file mode: {}\", mode))),",
-            );
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("fn py_file_read(file: &mut std::fs::File, n: Option<i64>) -> Result<String, PyError> {");
-            self.indent += 1;
-            self.push_line("use std::io::Read;");
-            self.push_line("if let Some(limit) = n {");
-            self.indent += 1;
-            self.push_line("if limit >= 0 {");
-            self.indent += 1;
-            self.push_line("let mut buf = vec![0u8; limit as usize];");
-            self.push_line(
-                "let read = file.read(&mut buf).map_err(|e| PyError::IOError(e.to_string()))?;",
-            );
-            self.push_line("buf.truncate(read);");
-            self.push_line(
-                "return String::from_utf8(buf).map_err(|e| PyError::IOError(e.to_string()));",
-            );
-            self.indent -= 1;
-            self.push_line("}");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("let mut out = String::new();");
-            self.push_line(
-                "file.read_to_string(&mut out).map_err(|e| PyError::IOError(e.to_string()))?;",
-            );
-            self.push_line("Ok(out)");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line(
-                "fn py_file_readline(file: &mut std::fs::File) -> Result<String, PyError> {",
-            );
-            self.indent += 1;
-            self.push_line("use std::io::Read;");
-            self.push_line("let mut bytes = Vec::new();");
-            self.push_line("let mut byte = [0u8; 1];");
-            self.push_line("loop {");
-            self.indent += 1;
-            self.push_line(
-                "let read = file.read(&mut byte).map_err(|e| PyError::IOError(e.to_string()))?;",
-            );
-            self.push_line("if read == 0 { break; }");
-            self.push_line("bytes.push(byte[0]);");
-            self.push_line("if byte[0] == b'\\n' { break; }");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("String::from_utf8(bytes).map_err(|e| PyError::IOError(e.to_string()))");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line(
-                "fn py_file_readlines(file: &mut std::fs::File) -> Result<Vec<String>, PyError> {",
-            );
-            self.indent += 1;
-            self.push_line("let mut lines = Vec::new();");
-            self.push_line("loop {");
-            self.indent += 1;
-            self.push_line("let line = py_file_readline(file)?;");
-            self.push_line("if line.is_empty() { break; }");
-            self.push_line("lines.push(line);");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("Ok(lines)");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line(
-                "fn py_file_write(file: &mut std::fs::File, data: &str) -> Result<i64, PyError> {",
-            );
-            self.indent += 1;
-            self.push_line("use std::io::Write;");
-            self.push_line(
-                "file.write_all(data.as_bytes()).map_err(|e| PyError::IOError(e.to_string()))?;",
-            );
-            self.push_line("Ok(data.len() as i64)");
-            self.indent -= 1;
-            self.push_line("}");
-            self.push_line("fn py_file_close(file: &mut std::fs::File) -> Result<(), PyError> {");
-            self.indent += 1;
-            self.push_line("use std::io::Write;");
-            self.push_line("file.flush().map_err(|e| PyError::IOError(e.to_string()))");
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_FILE);
         }
         if self.uses.py_file || self.uses.py_os_remove {
-            self.push_line("fn py_os_remove(path: &str) -> Result<(), PyError> {");
-            self.indent += 1;
-            self.push_line(
-                "std::fs::remove_file(path).map_err(|e| PyError::IOError(e.to_string()))",
-            );
-            self.indent -= 1;
-            self.push_line("}");
+            self.push_block(HELPER_PY_OS_REMOVE);
         }
         if self.uses.print
             || self.uses.len
@@ -885,63 +784,7 @@ impl<'a> Codegen<'a> {
 
     /// Emit the PyError enum plus Display/Error implementations.
     fn emit_py_error_enum(&mut self) {
-        self.push_line("#[derive(Debug, Clone)]");
-        self.push_line("pub enum PyError {");
-        self.indent += 1;
-
-        // Built-in exceptions.
-        self.push_line("ValueError(String),");
-        self.push_line("TypeError(String),");
-        self.push_line("RuntimeError(String),");
-        self.push_line("KeyError(String),");
-        self.push_line("IndexError(String),");
-        self.push_line("AttributeError(String),");
-        self.push_line("ZeroDivisionError(String),");
-        self.push_line("NameError(String),");
-        self.push_line("AssertionError(String),");
-        self.push_line("StopIteration(String),");
-        self.push_line("NotImplementedError(String),");
-        self.push_line("IOError(String),");
-        self.push_line("OverflowError(String),");
-
-        self.indent -= 1;
-        self.push_line("}");
-        self.push_line("");
-
-        // Implement Display.
-        self.push_line("impl std::fmt::Display for PyError {");
-        self.indent += 1;
-        self.push_line("fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {");
-        self.indent += 1;
-        self.push_line("match self {");
-        self.indent += 1;
-        self.push_line("PyError::ValueError(msg) => write!(f, \"ValueError: {}\", msg),");
-        self.push_line("PyError::TypeError(msg) => write!(f, \"TypeError: {}\", msg),");
-        self.push_line("PyError::RuntimeError(msg) => write!(f, \"RuntimeError: {}\", msg),");
-        self.push_line("PyError::KeyError(msg) => write!(f, \"KeyError: {}\", msg),");
-        self.push_line("PyError::IndexError(msg) => write!(f, \"IndexError: {}\", msg),");
-        self.push_line("PyError::AttributeError(msg) => write!(f, \"AttributeError: {}\", msg),");
-        self.push_line(
-            "PyError::ZeroDivisionError(msg) => write!(f, \"ZeroDivisionError: {}\", msg),",
-        );
-        self.push_line("PyError::NameError(msg) => write!(f, \"NameError: {}\", msg),");
-        self.push_line("PyError::AssertionError(msg) => write!(f, \"AssertionError: {}\", msg),");
-        self.push_line("PyError::StopIteration(msg) => write!(f, \"StopIteration: {}\", msg),");
-        self.push_line(
-            "PyError::NotImplementedError(msg) => write!(f, \"NotImplementedError: {}\", msg),",
-        );
-        self.push_line("PyError::IOError(msg) => write!(f, \"IOError: {}\", msg),");
-        self.push_line("PyError::OverflowError(msg) => write!(f, \"OverflowError: {}\", msg),");
-        self.indent -= 1;
-        self.push_line("}");
-        self.indent -= 1;
-        self.push_line("}");
-        self.indent -= 1;
-        self.push_line("}");
-        self.push_line("");
-
-        // Implement std::error::Error.
-        self.push_line("impl std::error::Error for PyError {}");
+        self.push_block(HELPER_PY_ERROR_ENUM);
         self.push_line("");
     }
 }
