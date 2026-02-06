@@ -558,7 +558,7 @@ class MatchPoint:
         self.y = y
 
 
-# Test class without __match_args__ (uses declaration order).
+# Test class without __match_args__ (uses keyword patterns in CPython).
 class MatchColor:
     r: int
     g: int
@@ -578,8 +578,8 @@ def describe_match_coord(c: MatchCoord) -> str:
         case MatchPoint(y_val, x_val):
             # Due to __match_args__ = ("y", "x"), first binding is y, second is x.
             return f"Point: y={y_val}, x={x_val}"
-        case MatchColor(r_val, g_val, b_val):
-            # No __match_args__, so declaration order is used: r, g, b.
+        case MatchColor(r=r_val, g=g_val, b=b_val):
+            # No __match_args__, so CPython supports keyword patterns.
             return f"Color: r={r_val}, g={g_val}, b={b_val}"
 
 

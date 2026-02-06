@@ -247,7 +247,12 @@ def test_lists() -> None:
         else:
             non_nan.append(value)
     assert nan_seen, "sorted float list should still contain NaN"
-    assert non_nan == [-2.0, 1.0], "non-NaN values should remain sorted"
+    # CPython does not guarantee a total ordering when NaN participates in sort.
+    assert len(non_nan) == 2, "expected two non-NaN values"
+    assert (
+        (non_nan[0] == -2.0 and non_nan[1] == 1.0)
+        or (non_nan[0] == 1.0 and non_nan[1] == -2.0)
+    ), "non-NaN values should be preserved"
 
     # List unpacking
     pairs: list[list[int]] = [[10, 20], [30, 40]]
@@ -593,7 +598,7 @@ def test_printing() -> None:
     assert str(print_int_list) == "[1, 2, 3]"
 
     print_str_list: list[str] = ["a", "b"]
-    assert str(print_str_list) == '["a", "b"]'
+    assert str(print_str_list) == "['a', 'b']"
 
     print_empty_list: list[int] = []
     assert str(print_empty_list) == "[]"
@@ -602,7 +607,7 @@ def test_printing() -> None:
     assert str(print_nested_list) == "[[1, 2], [3, 4]]"
 
     print_mixed_list = [1, 2, ["string"]]
-    assert str(print_mixed_list) == '[1, 2, ["string"]]'
+    assert str(print_mixed_list) == "[1, 2, ['string']]"
 
     print_tuple: tuple[int, int, int] = (1, 2, 3)
     assert str(print_tuple) == "(1, 2, 3)"
@@ -611,7 +616,7 @@ def test_printing() -> None:
     assert str(print_single_tuple) == "(42,)"
 
     print_str_tuple: tuple[str, str] = ("hello", "world")
-    assert str(print_str_tuple) == '("hello", "world")'
+    assert str(print_str_tuple) == "('hello', 'world')"
 
 # Dictionary operations
 def test_dicts() -> None:

@@ -546,30 +546,59 @@ impl<'a> TypeChecker<'a> {
                         )
                     })?;
 
-                    // Determine field order: use __match_args__ if present, otherwise declaration order
-                    let field_order: Vec<String> =
-                        if let Some(ref match_args) = class_info.match_args {
-                            match_args.clone()
+                    let fields: Vec<(String, Type)> =
+                        if let Some(binding_fields) = &case.binding_fields {
+                            // Keyword patterns bind by explicit field names, independent of
+                            // __match_args__ ordering.
+                            if binding_fields.len() != case.bindings.len() {
+                                return Err(self.error(
+                                    case.span,
+                                    "Case keyword field count does not match bindings",
+                                ));
+                            }
+                            let mut seen = HashSet::new();
+                            let mut resolved = Vec::new();
+                            for field_name in binding_fields {
+                                if !seen.insert(field_name.clone()) {
+                                    return Err(
+                                        self.error(case.span, "Duplicate keyword field in pattern")
+                                    );
+                                }
+                                let field_ty =
+                                    class_info.fields.get(field_name).ok_or_else(|| {
+                                        self.error(
+                                            case.span,
+                                            format!("Unknown field in pattern: {}", field_name),
+                                        )
+                                    })?;
+                                resolved.push((field_name.clone(), field_ty.clone()));
+                            }
+                            resolved
                         } else {
-                            class_info.fields.keys().cloned().collect()
+                            // Positional patterns follow __match_args__ when present, otherwise
+                            // declaration order.
+                            let field_order: Vec<String> =
+                                if let Some(ref match_args) = class_info.match_args {
+                                    match_args.clone()
+                                } else {
+                                    class_info.fields.keys().cloned().collect()
+                                };
+                            let resolved: Vec<(String, Type)> = field_order
+                                .iter()
+                                .filter_map(|name| {
+                                    class_info
+                                        .fields
+                                        .get(name)
+                                        .map(|ty| (name.clone(), ty.clone()))
+                                })
+                                .collect();
+                            if resolved.len() != case.bindings.len() {
+                                return Err(self
+                                    .error(case.span, "Case binding count does not match fields"));
+                            }
+                            resolved
                         };
 
-                    // Build ordered fields list
-                    let fields: Vec<(String, Type)> = field_order
-                        .iter()
-                        .filter_map(|name| {
-                            class_info
-                                .fields
-                                .get(name)
-                                .map(|ty| (name.clone(), ty.clone()))
-                        })
-                        .collect();
-
-                    if fields.len() != case.bindings.len() {
-                        return Err(
-                            self.error(case.span, "Case binding count does not match fields")
-                        );
-                    }
                     self.scopes.push(HashMap::new());
                     for (binding, (_, field_ty)) in case.bindings.iter().zip(fields.iter()) {
                         if let Some(existing) = self.lookup_var(binding) {

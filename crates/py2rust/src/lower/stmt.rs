@@ -1,5 +1,11 @@
 use super::*;
 
+/// Lowered `match` pattern payload:
+/// - variant class name
+/// - bound variable names
+/// - optional field names for keyword patterns
+type LoweredMatchPattern = (String, Vec<String>, Option<Vec<String>>);
+
 /// Statement lowering from RustPython AST to HIR.
 ///
 /// Statements are the imperative building blocks of Python programs.
@@ -384,8 +390,9 @@ impl<'a> Lowerer<'a> {
 
     /// Lower a match case pattern.
     ///
-    /// We only support matching on Union variant constructors:
-    /// case Constructor(x, y):
+    /// We support matching on Union variant constructors:
+    /// - positional patterns: case Constructor(x, y):
+    /// - keyword patterns: case Constructor(x=a, y=b):
     ///
     /// Guards (case X if condition:) are not supported.
     pub(super) fn lower_match_case(
@@ -393,7 +400,7 @@ impl<'a> Lowerer<'a> {
         case: &ast::MatchCase,
     ) -> Result<MatchCase, CompileError> {
         let span = Span::from(case.pattern.range());
-        let (variant, bindings) = self.lower_pattern(&case.pattern)?;
+        let (variant, bindings, binding_fields) = self.lower_pattern(&case.pattern)?;
         if case.guard.is_some() {
             return Err(self.error(case.pattern.range(), "Match guards are not supported"));
         }
@@ -404,6 +411,7 @@ impl<'a> Lowerer<'a> {
         Ok(MatchCase {
             variant,
             bindings,
+            binding_fields,
             body,
             span,
         })
@@ -452,8 +460,14 @@ impl<'a> Lowerer<'a> {
 
     /// Lower a match pattern.
     ///
-    /// We only support class constructor patterns: Constructor(x, y)
-    /// Returns: (variant_name, list_of_binding_names)
+    /// We support class constructor patterns:
+    /// - positional: Constructor(x, y)
+    /// - keyword: Constructor(x=a, y=b)
+    ///
+    /// Returns:
+    /// - variant name
+    /// - binding names
+    /// - optional field-name mapping for keyword patterns
     ///
     /// Not supported:
     /// - Literal patterns (case 1:, case "hello":)
@@ -463,12 +477,9 @@ impl<'a> Lowerer<'a> {
     pub(super) fn lower_pattern(
         &self,
         pattern: &ast::Pattern,
-    ) -> Result<(String, Vec<String>), CompileError> {
+    ) -> Result<LoweredMatchPattern, CompileError> {
         match pattern {
             ast::Pattern::MatchClass(cls_pat) => {
-                if !cls_pat.kwd_attrs.is_empty() || !cls_pat.kwd_patterns.is_empty() {
-                    return Err(self.error(pattern.range(), "Keyword patterns are not supported"));
-                }
                 let variant = match &*cls_pat.cls {
                     ast::Expr::Name(name) => self.ident(name.id.as_str()),
                     _ => {
@@ -478,7 +489,15 @@ impl<'a> Lowerer<'a> {
                         ))
                     }
                 };
-                let mut bindings = Vec::new();
+
+                if !cls_pat.patterns.is_empty() && !cls_pat.kwd_patterns.is_empty() {
+                    return Err(self.error(
+                        pattern.range(),
+                        "Mixed positional and keyword patterns are not supported",
+                    ));
+                }
+
+                let mut positional_bindings = Vec::new();
                 for pat in &cls_pat.patterns {
                     match pat {
                         ast::Pattern::MatchAs(as_pat) => {
@@ -490,7 +509,7 @@ impl<'a> Lowerer<'a> {
                             let name = as_pat.name.as_ref().ok_or_else(|| {
                                 self.error(pat.range(), "Unnamed bindings are not supported")
                             })?;
-                            bindings.push(self.ident(name.as_str()));
+                            positional_bindings.push(self.ident(name.as_str()));
                         }
                         _ => {
                             return Err(
@@ -499,7 +518,43 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 }
-                Ok((variant, bindings))
+
+                if cls_pat.kwd_patterns.is_empty() {
+                    return Ok((variant, positional_bindings, None));
+                }
+
+                if cls_pat.kwd_attrs.len() != cls_pat.kwd_patterns.len() {
+                    return Err(self.error(
+                        pattern.range(),
+                        "Keyword pattern attribute and binding counts do not match",
+                    ));
+                }
+
+                let mut keyword_fields = Vec::new();
+                let mut keyword_bindings = Vec::new();
+                for (attr, pat) in cls_pat.kwd_attrs.iter().zip(cls_pat.kwd_patterns.iter()) {
+                    match pat {
+                        ast::Pattern::MatchAs(as_pat) => {
+                            if as_pat.pattern.is_some() {
+                                return Err(
+                                    self.error(pat.range(), "Nested patterns are not supported")
+                                );
+                            }
+                            let name = as_pat.name.as_ref().ok_or_else(|| {
+                                self.error(pat.range(), "Unnamed bindings are not supported")
+                            })?;
+                            keyword_fields.push(self.ident(attr.as_str()));
+                            keyword_bindings.push(self.ident(name.as_str()));
+                        }
+                        _ => {
+                            return Err(
+                                self.error(pat.range(), "Only simple bindings are supported")
+                            )
+                        }
+                    }
+                }
+
+                Ok((variant, keyword_bindings, Some(keyword_fields)))
             }
             _ => Err(self.error(pattern.range(), "Unsupported match pattern")),
         }

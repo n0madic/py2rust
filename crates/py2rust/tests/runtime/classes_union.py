@@ -48,7 +48,7 @@ def format_shape(s: ShapeU) -> str:
     return f"{s.describe()}: {a}"
 
 assert format_shape(c) == "CircleU: 12.56", "f-string with CircleU method"
-assert format_shape(r) == "RectU: 12", "f-string with RectU method"
+assert format_shape(r) == "RectU: 12.0", "f-string with RectU method"
 
 # Test direct method calls (not through function)
 circle_direct: ShapeU = CircleU(5.0)

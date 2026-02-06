@@ -13,18 +13,23 @@ impl<'a> Codegen<'a> {
             )
         })?;
 
-        // Determine which fields to bind: use __match_args__ if present, otherwise all fields
-        let fields_to_bind: Vec<String> = if let Some(ref match_args) = class_info.match_args {
-            match_args.clone()
-        } else {
-            class_info.fields.keys().cloned().collect()
-        };
-
         // Build field binding map (field_name -> binding_name)
         let mut field_bindings: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        for (field, binding) in fields_to_bind.iter().zip(case.bindings.iter()) {
-            field_bindings.insert(field.clone(), binding.clone());
+        if let Some(binding_fields) = &case.binding_fields {
+            for (field, binding) in binding_fields.iter().zip(case.bindings.iter()) {
+                field_bindings.insert(field.clone(), binding.clone());
+            }
+        } else {
+            // Positional patterns use __match_args__ when present, otherwise declaration order.
+            let fields_to_bind: Vec<String> = if let Some(ref match_args) = class_info.match_args {
+                match_args.clone()
+            } else {
+                class_info.fields.keys().cloned().collect()
+            };
+            for (field, binding) in fields_to_bind.iter().zip(case.bindings.iter()) {
+                field_bindings.insert(field.clone(), binding.clone());
+            }
         }
 
         // Generate pattern for ALL fields (required by Rust), using bindings or _ for each

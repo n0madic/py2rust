@@ -1424,6 +1424,25 @@ impl<'a> Codegen<'a> {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "next() expects one argument"));
             }
+            if let ExprKind::Call {
+                func,
+                args: range_args,
+                keywords,
+            } = &args[0].kind
+            {
+                if let ExprKind::Name(range_name) = &func.kind {
+                    if range_name == "range"
+                        && keywords.is_empty()
+                        && (1..=3).contains(&range_args.len())
+                    {
+                        self.uses.py_error = true;
+                        return Ok(Some(self.wrap_result(
+                            "Err::<_, PyError>(PyError::TypeError(\"'range' object is not an iterator\".to_string()))"
+                                .to_string(),
+                        )));
+                    }
+                }
+            }
             self.uses.py_next = true;
             let arg_expr = self.gen_expr(&args[0])?;
             return Ok(Some(
@@ -1478,14 +1497,25 @@ impl<'a> Codegen<'a> {
             }
             let arg_expr = self.gen_expr(&args[0])?;
             return Ok(Some(match args[0].ty.as_ref() {
-                Some(Type::Int | Type::Float) => format!("format!(\"{{}}\", {})", arg_expr),
+                Some(Type::Int) => format!("format!(\"{{}}\", {})", arg_expr),
+                Some(Type::Float) => {
+                    self.uses.py_float_str = true;
+                    format!("py_float_str({})", arg_expr)
+                }
                 Some(Type::Bool) => format!(
                     "if {} {{ \"True\".to_string() }} else {{ \"False\".to_string() }}",
                     arg_expr
                 ),
                 Some(Type::None) => "\"None\".to_string()".to_string(),
-                Some(Type::Str) => format!("format!(\"'{{}}'\", {})", arg_expr),
+                Some(Type::Str) => {
+                    self.uses.py_str_repr = true;
+                    format!("py_str_repr(&{})", arg_expr)
+                }
                 Some(Type::List(_)) => self.list_str_expr(&args[0])?,
+                Some(Type::Tuple(_)) => {
+                    self.uses.py_list_str = true;
+                    format!("{}.py_repr()", arg_expr)
+                }
                 _ => format!("format!(\"{{:?}}\", {})", arg_expr),
             }));
         }
@@ -1513,8 +1543,16 @@ impl<'a> Codegen<'a> {
                     arg_expr
                 ),
                 Some(Type::None) => "\"None\".to_string()".to_string(),
-                Some(Type::Int | Type::Float) => format!("{}.to_string()", arg_expr),
+                Some(Type::Int) => format!("{}.to_string()", arg_expr),
+                Some(Type::Float) => {
+                    self.uses.py_float_str = true;
+                    format!("py_float_str({})", arg_expr)
+                }
                 Some(Type::List(_)) => self.list_str_expr(&args[0])?,
+                Some(Type::Tuple(_)) => {
+                    self.uses.py_list_str = true;
+                    format!("{}.py_repr()", arg_expr)
+                }
                 _ => format!("format!(\"{{:?}}\", {})", arg_expr),
             }));
         }
@@ -2602,13 +2640,49 @@ impl<'a> Codegen<'a> {
                 if args.is_empty() {
                     return Ok(format!("{}.to_string()", fmt_lit));
                 }
+                // Track which replacement fields explicitly specify a format spec.
+                // Float arguments without a spec should use Python's str(float) style.
+                let mut placeholder_has_spec = Vec::new();
+                let chars: Vec<char> = fmt.chars().collect();
+                let mut i = 0usize;
+                while i < chars.len() {
+                    if chars[i] == '{' {
+                        if i + 1 < chars.len() && chars[i + 1] == '{' {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        let mut has_spec = false;
+                        while i < chars.len() && chars[i] != '}' {
+                            if chars[i] == ':' {
+                                has_spec = true;
+                            }
+                            i += 1;
+                        }
+                        placeholder_has_spec.push(has_spec);
+                        if i < chars.len() {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                }
                 let mut vals = Vec::new();
-                for arg in args {
+                for (idx, arg) in args.iter().enumerate() {
                     if matches!(arg.ty.as_ref(), Some(Type::List(_))) {
                         vals.push(self.list_str_expr(arg)?);
                     } else if self.print_needs_debug(arg) {
                         let arg_expr = self.debug_arg_expr(arg)?;
                         vals.push(format!("format!(\"{{:?}}\", {})", arg_expr));
+                    } else if matches!(arg.ty.as_ref(), Some(Type::Float))
+                        && !placeholder_has_spec.get(idx).copied().unwrap_or(false)
+                    {
+                        self.uses.py_float_str = true;
+                        vals.push(format!("py_float_str({})", self.gen_expr(arg)?));
                     } else {
                         vals.push(self.gen_expr(arg)?);
                     }

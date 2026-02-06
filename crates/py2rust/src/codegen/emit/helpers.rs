@@ -20,6 +20,12 @@ impl<'a> Codegen<'a> {
     ///
     /// We accept these tradeoffs because py2rust targets single-file transpilation.
     pub(crate) fn emit_helpers(&mut self) {
+        // List/tuple repr relies on shared float/string repr helpers.
+        if self.uses.py_list_str {
+            self.uses.py_float_str = true;
+            self.uses.py_str_repr = true;
+        }
+
         // PyError enum is needed for exception handling.
         if self.needs_py_error() {
             self.emit_py_error_enum();
@@ -84,6 +90,56 @@ impl<'a> Codegen<'a> {
             self.push_line("write!(f, \"{}\", self.0)");
             self.indent -= 1;
             self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_float_str {
+            self.push_line("fn py_float_str(v: f64) -> String {");
+            self.indent += 1;
+            self.push_line("if v.is_nan() { return \"nan\".to_string(); }");
+            self.push_line("if v.is_infinite() {");
+            self.indent += 1;
+            self.push_line(
+                "return if v.is_sign_negative() { \"-inf\".to_string() } else { \"inf\".to_string() };",
+            );
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("let mut s = v.to_string();");
+            self.push_line("if !s.contains('.') && !s.contains('e') && !s.contains('E') {");
+            self.indent += 1;
+            self.push_line("s.push_str(\".0\");");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("s");
+            self.indent -= 1;
+            self.push_line("}");
+        }
+        if self.uses.py_str_repr {
+            self.push_line("fn py_str_repr(s: &str) -> String {");
+            self.indent += 1;
+            self.push_line("let use_double = s.contains('\\'') && !s.contains('\"');");
+            self.push_line("let quote = if use_double { '\"' } else { '\\'' };");
+            self.push_line("let mut out = String::new();");
+            self.push_line("out.push(quote);");
+            self.push_line("for ch in s.chars() {");
+            self.indent += 1;
+            self.push_line("match ch {");
+            self.indent += 1;
+            self.push_line("'\\\\' => out.push_str(\"\\\\\\\\\"),");
+            self.push_line("'\\n' => out.push_str(\"\\\\n\"),");
+            self.push_line("'\\r' => out.push_str(\"\\\\r\"),");
+            self.push_line("'\\t' => out.push_str(\"\\\\t\"),");
+            self.push_line("'\\x08' => out.push_str(\"\\\\x08\"),");
+            self.push_line("'\\x0c' => out.push_str(\"\\\\x0c\"),");
+            self.push_line("'\\'' if quote == '\\'' => out.push_str(\"\\\\'\"),");
+            self.push_line("'\"' if quote == '\"' => out.push_str(\"\\\\\\\"\"),");
+            self.push_line("_ => out.push(ch),");
+            self.indent -= 1;
+            self.push_line("}");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("out.push(quote);");
+            self.push_line("out");
             self.indent -= 1;
             self.push_line("}");
         }
@@ -474,7 +530,7 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
             self.push_line("impl PyListRepr for f64 {");
             self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
+            self.push_line("fn py_repr(&self) -> String { py_float_str(*self) }");
             self.indent -= 1;
             self.push_line("}");
             self.push_line("impl PyListRepr for bool {");
@@ -484,7 +540,7 @@ impl<'a> Codegen<'a> {
             self.push_line("}");
             self.push_line("impl PyListRepr for String {");
             self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
+            self.push_line("fn py_repr(&self) -> String { py_str_repr(self) }");
             self.indent -= 1;
             self.push_line("}");
             if self.uses.py_repr {
@@ -494,30 +550,34 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.push_line("}");
             }
-            self.push_line("impl<T1: std::fmt::Debug> PyListRepr for (T1,) {");
+            self.push_line("impl<T1: PyListRepr> PyListRepr for (T1,) {");
             self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
+            self.push_line("fn py_repr(&self) -> String { format!(\"({},)\", self.0.py_repr()) }");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("impl<T1: PyListRepr, T2: PyListRepr> PyListRepr for (T1, T2) {");
+            self.indent += 1;
+            self.push_line(
+                "fn py_repr(&self) -> String { format!(\"({}, {})\", self.0.py_repr(), self.1.py_repr()) }",
+            );
             self.indent -= 1;
             self.push_line("}");
             self.push_line(
-                "impl<T1: std::fmt::Debug, T2: std::fmt::Debug> PyListRepr for (T1, T2) {",
+                "impl<T1: PyListRepr, T2: PyListRepr, T3: PyListRepr> PyListRepr for (T1, T2, T3) {",
             );
             self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
+            self.push_line(
+                "fn py_repr(&self) -> String { format!(\"({}, {}, {})\", self.0.py_repr(), self.1.py_repr(), self.2.py_repr()) }",
+            );
             self.indent -= 1;
             self.push_line("}");
             self.push_line(
-                "impl<T1: std::fmt::Debug, T2: std::fmt::Debug, T3: std::fmt::Debug> PyListRepr for (T1, T2, T3) {",
+                "impl<T1: PyListRepr, T2: PyListRepr, T3: PyListRepr, T4: PyListRepr> PyListRepr for (T1, T2, T3, T4) {",
             );
             self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
-            self.indent -= 1;
-            self.push_line("}");
             self.push_line(
-                "impl<T1: std::fmt::Debug, T2: std::fmt::Debug, T3: std::fmt::Debug, T4: std::fmt::Debug> PyListRepr for (T1, T2, T3, T4) {",
+                "fn py_repr(&self) -> String { format!(\"({}, {}, {}, {})\", self.0.py_repr(), self.1.py_repr(), self.2.py_repr(), self.3.py_repr()) }",
             );
-            self.indent += 1;
-            self.push_line("fn py_repr(&self) -> String { format!(\"{:?}\", self) }");
             self.indent -= 1;
             self.push_line("}");
             self.push_line("impl<T: PyListRepr> PyListRepr for Vec<T> {");

@@ -269,9 +269,9 @@ def test_builtin_errors() -> None:
     caught = False
     try:
         next(range(0))
-    except StopIteration:
+    except TypeError:
         caught = True
-    assert caught, "next() should raise StopIteration on empty iterator"
+    assert caught, "next() should raise TypeError on non-iterator range object"
 
     caught = False
     try:

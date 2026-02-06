@@ -233,7 +233,11 @@ pub enum StmtKind {
 #[derive(Debug, Clone)]
 pub struct MatchCase {
     pub variant: String,
+    /// Positional binding names in source order or keyword binding names in keyword order.
     pub bindings: Vec<String>,
+    /// Field names for each binding when the source pattern uses keyword arguments.
+    /// For positional patterns this is None and field order comes from __match_args__/declaration.
+    pub binding_fields: Option<Vec<String>>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
