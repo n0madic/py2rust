@@ -109,14 +109,17 @@ impl<'a> Codegen<'a> {
         self.try_block_return_type = prev_try_return_type;
         self.try_block_returns_option = prev_try_returns_option;
 
-        if has_value_return {
-            if try_returns_option {
-                self.push_line("Ok(None)");
+        let body_always_exits = self.try_body_always_exits(body);
+        if !body_always_exits {
+            if has_value_return {
+                if try_returns_option {
+                    self.push_line("Ok(None)");
+                } else {
+                    self.push_line("unreachable!()");
+                }
             } else {
-                self.push_line("unreachable!()");
+                self.push_line("Ok(())");
             }
-        } else {
-            self.push_line("Ok(())");
         }
         self.indent -= 1;
         self.push_line("})();");
@@ -189,13 +192,37 @@ impl<'a> Codegen<'a> {
                 self.push_line("}");
             }
 
+            // Skip duplicate handlers for the same effective variant. Python takes
+            // the first matching handler, so later duplicates are dead code.
+            let mut emitted_catch_all = false;
+            let mut emitted_specific = HashSet::new();
             for handler in handlers {
-                self.emit_except_handler(handler, mut_counts)?;
+                if emitted_catch_all {
+                    break;
+                }
+                match handler.exc_type.as_deref() {
+                    None | Some("Exception") => {
+                        self.emit_except_handler(handler, mut_counts)?;
+                        emitted_catch_all = true;
+                    }
+                    Some(exc_type) => {
+                        let variant =
+                            self.resolve_exception_variant_name(exc_type)
+                                .ok_or_else(|| {
+                                    self.error(
+                                        handler.span,
+                                        format!("Unknown exception type for handler: {exc_type}"),
+                                    )
+                                })?;
+                        if emitted_specific.insert(variant.to_string()) {
+                            self.emit_except_handler(handler, mut_counts)?;
+                        }
+                    }
+                }
             }
 
             // Add catch-all to re-propagate unhandled exceptions.
-            let has_catch_all = handlers.iter().any(|h| h.exc_type.is_none());
-            if !has_catch_all {
+            if !emitted_catch_all {
                 if in_throwing_fn {
                     self.push_line("Err(e) => return Err(e),");
                 } else {
@@ -345,6 +372,35 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Conservative all-paths-exit analysis used to avoid dead epilogues in try closures.
+    fn try_body_always_exits(&self, stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            if self.stmt_always_exits(stmt) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Return true when executing this statement cannot continue in the same block.
+    fn stmt_always_exits(&self, stmt: &Stmt) -> bool {
+        match &stmt.kind {
+            StmtKind::Return { .. } | StmtKind::Raise { .. } => true,
+            StmtKind::If { body, orelse, .. } => {
+                !orelse.is_empty()
+                    && self.try_body_always_exits(body)
+                    && self.try_body_always_exits(orelse)
+            }
+            StmtKind::Match { cases, .. } => {
+                !cases.is_empty()
+                    && cases
+                        .iter()
+                        .all(|case| self.try_body_always_exits(&case.body))
+            }
+            _ => false,
+        }
+    }
+
     /// Collect variables declared in try block (Let statements).
     fn collect_try_block_vars(&self, stmts: &[Stmt]) -> Vec<(String, Type)> {
         let mut vars = Vec::new();
@@ -442,22 +498,22 @@ impl<'a> Codegen<'a> {
                             format!("Unknown exception type for handler: {exc_type}"),
                         )
                     })?;
-                let pattern = if let Some(name) = &handler.name {
-                    format!("Err(PyError::{}({}))", variant.as_str(), name)
-                } else {
-                    format!("Err(PyError::{}(_e))", variant.as_str())
-                };
+                let pattern = format!("Err(PyError::{}(_e))", variant.as_str());
 
                 self.push_line(&format!("{} => {{", pattern));
                 self.indent += 1;
 
+                if let Some(name) = &handler.name {
+                    // Keep `except SomeError as e` behavior as message-string binding.
+                    self.push_line(&format!("let {} = _e.to_string();", name));
+                }
+
                 // Save exception for bare raise if needed.
                 if needs_current_exception {
-                    let exc_var = handler.name.as_deref().unwrap_or("_e");
                     self.push_line(&format!(
                         "let _current_exception = PyError::{}({}.clone());",
                         variant.as_str(),
-                        exc_var
+                        "_e"
                     ));
                 }
 

@@ -226,7 +226,7 @@ impl<'a> Codegen<'a> {
                             } else {
                                 self.gen_expr(arg)?
                             };
-                            let expr = self.maybe_clone_list_expr(expr, arg.ty.as_ref(), expected);
+                            let expr = self.maybe_clone_list_expr(expr, arg, expected);
                             self.push_line(&format!("let {} = {};", tmp, expr));
                             bindings.push((base_init.params[idx + 1].name.clone(), tmp));
                         }
@@ -336,7 +336,7 @@ impl<'a> Codegen<'a> {
     ) -> Result<(), CompileError> {
         let expected = class_info.fields.get(attr);
         let expr = self.gen_expr_with_expected(value, expected)?;
-        let expr = self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected);
+        let expr = self.maybe_clone_list_expr(expr, value, expected);
         field_inits.insert(attr.to_string(), expr);
         Ok(())
     }

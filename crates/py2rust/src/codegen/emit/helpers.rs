@@ -4,8 +4,15 @@ use super::super::*;
 
 /// Static helper body for `print(...)` calls.
 const HELPER_PY_PRINT: &str = r#"
-fn py_print<T: std::fmt::Display>(v: T) {
+fn py_print<T: std::fmt::Display + ?Sized>(v: &T) {
     println!("{v}");
+}
+"#;
+
+/// Static helper body for normalizing integer operands that may be borrowed.
+const HELPER_PY_INT: &str = r#"
+fn py_int(value: impl std::borrow::Borrow<i64>) -> i64 {
+    *value.borrow()
 }
 "#;
 
@@ -19,7 +26,7 @@ fn py_type_name<T: ?Sized>(value: &T) -> String {
 /// Static helper body for iterator `next(...)` behavior.
 const HELPER_PY_NEXT: &str = r#"
 fn py_next<T>(value: Option<T>) -> Result<T, PyError> {
-    value.ok_or_else(|| PyError::StopIteration(String::new()))
+    value.ok_or_else(|| PyError::StopIteration(String::new().into()))
 }
 "#;
 
@@ -31,24 +38,25 @@ fn py_str_get(s: &str, idx: i64) -> Result<String, PyError> {
             .chars()
             .nth(idx as usize)
             .map(|ch| ch.to_string())
-            .ok_or_else(|| PyError::IndexError("IndexError".to_string()));
+            .ok_or_else(|| PyError::IndexError("IndexError".into()));
     }
-    let len = s.chars().count() as i64;
-    let adj = len + idx;
-    if adj < 0 || adj >= len {
-        return Err(PyError::IndexError("IndexError".to_string()));
-    }
+    // Negative indexing is resolved from the end in one iterator pass.
+    let from_end = idx
+        .checked_neg()
+        .and_then(|v| usize::try_from(v).ok())
+        .ok_or_else(|| PyError::IndexError("IndexError".into()))?;
     s.chars()
-        .nth(adj as usize)
+        .rev()
+        .nth(from_end.saturating_sub(1))
         .map(|ch| ch.to_string())
-        .ok_or_else(|| PyError::IndexError("IndexError".to_string()))
+        .ok_or_else(|| PyError::IndexError("IndexError".into()))
 }
 "#;
 
 /// Static helper body for `os.remove(path)`.
 const HELPER_PY_OS_REMOVE: &str = r#"
 fn py_os_remove(path: &str) -> Result<(), PyError> {
-    std::fs::remove_file(path).map_err(|e| PyError::IOError(e.to_string()))
+    std::fs::remove_file(path).map_err(|e| PyError::IOError(e.to_string().into()))
 }
 "#;
 
@@ -96,6 +104,9 @@ impl<T> PyLen for Vec<T> {
 impl<T> PyLen for Arc<Mutex<Vec<T>>> {
     fn py_len(&self) -> i64 { self.lock().expect("list mutex poisoned").len() as i64 }
 }
+impl<T> PyLen for Rc<RefCell<Vec<T>>> {
+    fn py_len(&self) -> i64 { self.borrow().len() as i64 }
+}
 impl PyLen for String {
     fn py_len(&self) -> i64 { self.chars().count() as i64 }
 }
@@ -107,6 +118,9 @@ impl<K, V> PyLen for std::collections::HashMap<K, V> {
 }
 impl<K, V> PyLen for Arc<Mutex<std::collections::HashMap<K, V>>> {
     fn py_len(&self) -> i64 { self.lock().expect("dict mutex poisoned").len() as i64 }
+}
+impl<K, V> PyLen for Rc<RefCell<std::collections::HashMap<K, V>>> {
+    fn py_len(&self) -> i64 { self.borrow().len() as i64 }
 }
 impl<T> PyLen for std::collections::HashSet<T> {
     fn py_len(&self) -> i64 { self.len() as i64 }
@@ -144,7 +158,7 @@ fn py_len<T: PyLen>(v: &T) -> i64 { v.py_len() }
 /// Static helper body for list slicing with arbitrary step.
 const HELPER_PY_LIST_SLICE_STEP: &str = r#"
 fn py_list_slice_step<T: Clone>(items: &[T], start: Option<i64>, end: Option<i64>, step: i64) -> Result<Vec<T>, PyError> {
-    if step == 0 { return Err(PyError::ValueError("slice step cannot be zero".to_string())); }
+    if step == 0 { return Err(PyError::ValueError("slice step cannot be zero".into())); }
     let len = items.len() as i64;
     let mut out = Vec::new();
     if step > 0 {
@@ -191,10 +205,10 @@ fn py_str_slice_step(s: &str, start: Option<i64>, end: Option<i64>, step: i64) -
 const HELPER_PY_FILE: &str = r#"
 fn py_open(path: &str, mode: &str) -> Result<std::fs::File, PyError> {
     match mode {
-        "r" => std::fs::File::open(path).map_err(|e| PyError::IOError(e.to_string())),
-        "w" => std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path).map_err(|e| PyError::IOError(e.to_string())),
-        "a" => std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| PyError::IOError(e.to_string())),
-        _ => Err(PyError::ValueError(format!("unsupported file mode: {}", mode))),
+        "r" => std::fs::File::open(path).map_err(|e| PyError::IOError(e.to_string().into())),
+        "w" => std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path).map_err(|e| PyError::IOError(e.to_string().into())),
+        "a" => std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| PyError::IOError(e.to_string().into())),
+        _ => Err(PyError::ValueError(format!("unsupported file mode: {}", mode).into())),
     }
 }
 fn py_file_read(file: &mut std::fs::File, n: Option<i64>) -> Result<String, PyError> {
@@ -202,13 +216,13 @@ fn py_file_read(file: &mut std::fs::File, n: Option<i64>) -> Result<String, PyEr
     if let Some(limit) = n {
         if limit >= 0 {
             let mut buf = vec![0u8; limit as usize];
-            let read = file.read(&mut buf).map_err(|e| PyError::IOError(e.to_string()))?;
+            let read = file.read(&mut buf).map_err(|e| PyError::IOError(e.to_string().into()))?;
             buf.truncate(read);
-            return String::from_utf8(buf).map_err(|e| PyError::IOError(e.to_string()));
+            return String::from_utf8(buf).map_err(|e| PyError::IOError(e.to_string().into()));
         }
     }
     let mut out = String::new();
-    file.read_to_string(&mut out).map_err(|e| PyError::IOError(e.to_string()))?;
+    file.read_to_string(&mut out).map_err(|e| PyError::IOError(e.to_string().into()))?;
     Ok(out)
 }
 fn py_file_readline(file: &mut std::fs::File) -> Result<String, PyError> {
@@ -216,12 +230,12 @@ fn py_file_readline(file: &mut std::fs::File) -> Result<String, PyError> {
     let mut bytes = Vec::new();
     let mut byte = [0u8; 1];
     loop {
-        let read = file.read(&mut byte).map_err(|e| PyError::IOError(e.to_string()))?;
+        let read = file.read(&mut byte).map_err(|e| PyError::IOError(e.to_string().into()))?;
         if read == 0 { break; }
         bytes.push(byte[0]);
         if byte[0] == b'\n' { break; }
     }
-    String::from_utf8(bytes).map_err(|e| PyError::IOError(e.to_string()))
+    String::from_utf8(bytes).map_err(|e| PyError::IOError(e.to_string().into()))
 }
 fn py_file_readlines(file: &mut std::fs::File) -> Result<Vec<String>, PyError> {
     let mut lines = Vec::new();
@@ -234,12 +248,12 @@ fn py_file_readlines(file: &mut std::fs::File) -> Result<Vec<String>, PyError> {
 }
 fn py_file_write(file: &mut std::fs::File, data: &str) -> Result<i64, PyError> {
     use std::io::Write;
-    file.write_all(data.as_bytes()).map_err(|e| PyError::IOError(e.to_string()))?;
+    file.write_all(data.as_bytes()).map_err(|e| PyError::IOError(e.to_string().into()))?;
     Ok(data.len() as i64)
 }
 fn py_file_close(file: &mut std::fs::File) -> Result<(), PyError> {
     use std::io::Write;
-    file.flush().map_err(|e| PyError::IOError(e.to_string()))
+    file.flush().map_err(|e| PyError::IOError(e.to_string().into()))
 }
 "#;
 
@@ -532,7 +546,7 @@ fn py_str_islower(s: &str) -> bool {
 /// Static helper body for `range(start, end, step)`.
 const HELPER_PY_RANGE3: &str = r#"
 fn py_range3(start: i64, end: i64, step: i64) -> Result<Box<dyn Iterator<Item = i64>>, PyError> {
-    if step == 0 { return Err(PyError::ValueError("range() arg 3 must not be zero".to_string())); }
+    if step == 0 { return Err(PyError::ValueError("range() arg 3 must not be zero".into())); }
     if step > 0 {
         Ok(Box::new((start..end).step_by(step as usize)))
     } else {
@@ -568,7 +582,7 @@ fn py_round(value: f64, ndigits: i64) -> f64 {
 const HELPER_PY_MAX: &str = r#"
 fn py_max<T: PartialOrd, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {
     let mut iter = iter.into_iter();
-    let mut best = iter.next().ok_or_else(|| PyError::ValueError("max() arg is an empty sequence".to_string()))?;
+    let mut best = iter.next().ok_or_else(|| PyError::ValueError("max() arg is an empty sequence".into()))?;
     for item in iter {
         if item.partial_cmp(&best).unwrap_or(std::cmp::Ordering::Equal) == std::cmp::Ordering::Greater {
             best = item;
@@ -582,7 +596,7 @@ fn py_max<T: PartialOrd, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyErro
 const HELPER_PY_MIN: &str = r#"
 fn py_min<T: PartialOrd, I: IntoIterator<Item = T>>(iter: I) -> Result<T, PyError> {
     let mut iter = iter.into_iter();
-    let mut best = iter.next().ok_or_else(|| PyError::ValueError("min() arg is an empty sequence".to_string()))?;
+    let mut best = iter.next().ok_or_else(|| PyError::ValueError("min() arg is an empty sequence".into()))?;
     for item in iter {
         if item.partial_cmp(&best).unwrap_or(std::cmp::Ordering::Equal) == std::cmp::Ordering::Less {
             best = item;
@@ -638,6 +652,9 @@ impl<T: PyListRepr> PyListRepr for Vec<T> {
 impl<T: PyListRepr> PyListRepr for Arc<Mutex<Vec<T>>> {
     fn py_repr(&self) -> String { py_list_str(self) }
 }
+impl<T: PyListRepr> PyListRepr for Rc<RefCell<Vec<T>>> {
+    fn py_repr(&self) -> String { py_list_str_rc(self) }
+}
 fn py_list_str_vec<T: PyListRepr>(list: &[T]) -> String {
     let mut out = "[".to_string();
     for (idx, item) in list.iter().enumerate() {
@@ -651,28 +668,34 @@ fn py_list_str<T: PyListRepr>(list: &Arc<Mutex<Vec<T>>>) -> String {
     let guard = list.lock().expect("list mutex poisoned");
     py_list_str_vec(&guard)
 }
+fn py_list_str_rc<T: PyListRepr>(list: &Rc<RefCell<Vec<T>>>) -> String {
+    let guard = list.borrow();
+    py_list_str_vec(&guard)
+}
 "#;
 
 /// Static helper body for PyError enum and trait impls.
 const HELPER_PY_ERROR_ENUM: &str = r#"
+pub type PyErrorMsg = std::borrow::Cow<'static, str>;
+
 #[derive(Debug, Clone)]
 pub enum PyError {
-    Exception(String),
-    ValueError(String),
-    TypeError(String),
-    RuntimeError(String),
-    KeyError(String),
-    IndexError(String),
-    AttributeError(String),
-    ZeroDivisionError(String),
-    NameError(String),
-    AssertionError(String),
-    StopIteration(String),
-    NotImplementedError(String),
-    IOError(String),
-    OverflowError(String),
-    GeneratorExit(String),
-    MemoryError(String),
+    Exception(PyErrorMsg),
+    ValueError(PyErrorMsg),
+    TypeError(PyErrorMsg),
+    RuntimeError(PyErrorMsg),
+    KeyError(PyErrorMsg),
+    IndexError(PyErrorMsg),
+    AttributeError(PyErrorMsg),
+    ZeroDivisionError(PyErrorMsg),
+    NameError(PyErrorMsg),
+    AssertionError(PyErrorMsg),
+    StopIteration(PyErrorMsg),
+    NotImplementedError(PyErrorMsg),
+    IOError(PyErrorMsg),
+    OverflowError(PyErrorMsg),
+    GeneratorExit(PyErrorMsg),
+    MemoryError(PyErrorMsg),
 }
 
 impl std::fmt::Display for PyError {
@@ -748,6 +771,9 @@ impl<'a> Codegen<'a> {
         if self.uses.print {
             self.push_block(HELPER_PY_PRINT);
         }
+        if self.uses.py_int {
+            self.push_block(HELPER_PY_INT);
+        }
         if self.uses.py_repr {
             // PyRepr wraps preformatted strings so list Debug output matches Python repr style.
             self.push_line("#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]");
@@ -816,7 +842,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.push_line("let trimmed = s.trim();");
             self.push_line(
-                "trimmed.parse().map_err(|_| PyError::ValueError(format!(\"invalid literal for int() with base 10: '{}'\", trimmed)))",
+                "trimmed.parse().map_err(|_| PyError::ValueError(format!(\"invalid literal for int() with base 10: '{}'\", trimmed).into()))",
             );
             self.indent -= 1;
             self.push_line("}");
@@ -826,7 +852,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.push_line("let trimmed = s.trim();");
             self.push_line(
-                "trimmed.parse().map_err(|_| PyError::ValueError(format!(\"could not convert string to float: '{}'\", trimmed)))",
+                "trimmed.parse().map_err(|_| PyError::ValueError(format!(\"could not convert string to float: '{}'\", trimmed).into()))",
             );
             self.indent -= 1;
             self.push_line("}");
@@ -837,7 +863,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.push_line("if len < 0 {");
             self.indent += 1;
-            self.push_line("return Err(PyError::ValueError(\"negative count\".to_string()));");
+            self.push_line("return Err(PyError::ValueError(\"negative count\".into()));");
             self.indent -= 1;
             self.push_line("}");
             self.push_line("Ok(vec![0i64; len as usize])");
@@ -852,9 +878,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.push_line("if encoding != \"utf-8\" {");
             self.indent += 1;
-            self.push_line(
-                "return Err(PyError::ValueError(\"unsupported encoding\".to_string()));",
-            );
+            self.push_line("return Err(PyError::ValueError(\"unsupported encoding\".into()));");
             self.indent -= 1;
             self.push_line("}");
             self.push_line("Ok(s.as_bytes().iter().map(|b| *b as i64).collect())");
@@ -867,7 +891,7 @@ impl<'a> Codegen<'a> {
             self.push_line("if value < 0 || value > 0x10FFFF {");
             self.indent += 1;
             self.push_line(
-                "return Err(PyError::ValueError(\"chr() arg not in range(0x110000)\".to_string()));",
+                "return Err(PyError::ValueError(\"chr() arg not in range(0x110000)\".into()));",
             );
             self.indent -= 1;
             self.push_line("}");
@@ -875,7 +899,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.push_line("Some(c) => Ok(c.to_string()),");
             self.push_line(
-                "None => Err(PyError::ValueError(\"chr() arg not in range(0x110000)\".to_string())),",
+                "None => Err(PyError::ValueError(\"chr() arg not in range(0x110000)\".into())),",
             );
             self.indent -= 1;
             self.push_line("}");
@@ -889,9 +913,7 @@ impl<'a> Codegen<'a> {
             self.push_line("match (chars.next(), chars.next()) {");
             self.indent += 1;
             self.push_line("(Some(c), None) => Ok(c as i64),");
-            self.push_line(
-                "_ => Err(PyError::TypeError(\"ord() expects a character\".to_string())),",
-            );
+            self.push_line("_ => Err(PyError::TypeError(\"ord() expects a character\".into())),");
             self.indent -= 1;
             self.push_line("}");
             self.indent -= 1;
@@ -906,7 +928,7 @@ impl<'a> Codegen<'a> {
             );
             self.indent += 1;
             self.push_line(
-                "map.get(key).cloned().ok_or_else(|| PyError::KeyError(\"KeyError\".to_string()))",
+                "map.get(key).cloned().ok_or_else(|| PyError::KeyError(\"KeyError\".into()))",
             );
             self.indent -= 1;
             self.push_line("}");
@@ -920,7 +942,7 @@ impl<'a> Codegen<'a> {
             self.push_line("let adj = if idx < 0 { len + idx } else { idx };");
             self.push_line("if adj < 0 || adj >= len {");
             self.indent += 1;
-            self.push_line("Err(PyError::IndexError(\"IndexError\".to_string()))");
+            self.push_line("Err(PyError::IndexError(\"IndexError\".into()))");
             self.indent -= 1;
             self.push_line("} else {");
             self.indent += 1;
@@ -943,7 +965,7 @@ impl<'a> Codegen<'a> {
             self.push_line("if item == needle { return Ok(idx as i64); }");
             self.indent -= 1;
             self.push_line("}");
-            self.push_line("Err(PyError::ValueError(\"ValueError\".to_string()))");
+            self.push_line("Err(PyError::ValueError(\"ValueError\".into()))");
             self.indent -= 1;
             self.push_line("}");
         }
@@ -977,7 +999,7 @@ impl<'a> Codegen<'a> {
             self.push_line("let adj = if idx < 0 { len_i + idx } else { idx };");
             self.push_line("if adj < 0 || adj >= len_i {");
             self.indent += 1;
-            self.push_line("Err(PyError::IndexError(\"IndexError\".to_string()))");
+            self.push_line("Err(PyError::IndexError(\"IndexError\".into()))");
             self.indent -= 1;
             self.push_line("} else {");
             self.indent += 1;

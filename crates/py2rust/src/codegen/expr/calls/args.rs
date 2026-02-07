@@ -335,7 +335,7 @@ impl<'a> Codegen<'a> {
                 self.gen_expr_with_expected(&default_expr, sig.params.get(idx))?
             } else {
                 format!(
-                    "return Err(PyError::TypeError(\"Missing required argument `{}`\".to_string()))",
+                    "return Err(PyError::TypeError(\"Missing required argument `{}`\".into()))",
                     param.name
                 )
             };
@@ -389,14 +389,14 @@ impl<'a> Codegen<'a> {
 
         if !has_vararg {
             lines.push(format!(
-                "if {pos_idx} < {pos_vec}.len() {{ return Err(PyError::TypeError(\"Argument count mismatch\".to_string())); }}",
+                "if {pos_idx} < {pos_vec}.len() {{ return Err(PyError::TypeError(\"Argument count mismatch\".into())); }}",
                 pos_idx = pos_idx,
                 pos_vec = pos_vec
             ));
         }
         if !has_varkw {
             lines.push(format!(
-                "if !{kw_map}.is_empty() {{ return Err(PyError::TypeError(\"Unknown keyword argument\".to_string())); }}",
+                "if !{kw_map}.is_empty() {{ return Err(PyError::TypeError(\"Unknown keyword argument\".into())); }}",
                 kw_map = kw_map
             ));
         }

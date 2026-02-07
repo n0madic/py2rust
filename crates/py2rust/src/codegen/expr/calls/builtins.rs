@@ -98,7 +98,7 @@ impl<'a> Codegen<'a> {
                 ));
             }
 
-            // Render each argument to String so we avoid moving owned values into print calls.
+            // Render each argument to String for join-based print paths.
             let mut render_arg = |arg: &Expr| -> Result<String, CompileError> {
                 if matches!(arg.ty.as_ref(), Some(Type::None)) {
                     return Ok("\"None\".to_string()".to_string());
@@ -159,11 +159,34 @@ impl<'a> Codegen<'a> {
             };
 
             let rendered = if args.is_empty() {
-                "\"\".to_string()".to_string()
+                "\"\"".to_string()
             } else if args.len() == 1 && sep_kw.is_none() && end_kw.is_none() {
                 // Fast-path: single-argument print without sep/end doesn't need
-                // intermediate Vec<String> + join allocation.
-                render_arg(&args[0])?
+                // intermediate Vec<String> + join allocation or format! wrapping.
+                let arg = &args[0];
+                let simple_display = matches!(
+                    arg.ty.as_ref(),
+                    Some(Type::Int | Type::Float | Type::Bool | Type::Str)
+                );
+                if matches!(arg.ty.as_ref(), Some(Type::None))
+                    || matches!(arg.ty.as_ref(), Some(Type::List(_)))
+                    || matches!(arg.ty.as_ref(), Some(Type::Dict(_, _)))
+                    || matches!(arg.kind, ExprKind::Dict(_))
+                {
+                    render_arg(arg)?
+                } else if simple_display {
+                    if let ExprKind::Literal(Literal::Str(s)) = &arg.kind {
+                        // Print plain string literals without allocating a temporary String.
+                        format!("{s:?}")
+                    } else {
+                        self.gen_expr(arg)?
+                    }
+                } else if let ExprKind::Literal(Literal::Str(s)) = &arg.kind {
+                    // Print plain string literals without allocating a temporary String.
+                    format!("{s:?}")
+                } else {
+                    render_arg(arg)?
+                }
             } else if let Some(sep_expr) = sep_kw {
                 let parts: Result<Vec<String>, CompileError> =
                     args.iter().map(&mut render_arg).collect();
@@ -182,7 +205,7 @@ impl<'a> Codegen<'a> {
                     rendered, end_code
                 )));
             }
-            return Ok(Some(format!("py_print({})", rendered)));
+            return Ok(Some(format!("py_print(&({}))", rendered)));
         }
         if name == "len" {
             self.uses.len = true;
@@ -780,7 +803,7 @@ impl<'a> Codegen<'a> {
                         .unwrap_or_else(|| "()".to_string());
                     let body = self.wrap_result(
                         format!(
-                            "Err::<{}, PyError>(PyError::ValueError(\"max() arg is an empty sequence\".to_string()))",
+                            "Err::<{}, PyError>(PyError::ValueError(\"max() arg is an empty sequence\".into()))",
                             ok_ty
                         ),
                     );
@@ -835,7 +858,7 @@ impl<'a> Codegen<'a> {
                         iter_src.expr.clone()
                     };
                     let body = self.wrap_result(format!(
-                        "{{ let mut {iter_name} = {iter}; match {iter_name}.next() {{ Some(first_item) => {{ let mut {best_name} = first_item; let mut {best_key_name} = {best_key_expr}; for {item_name} in {iter_name} {{ let {item_key_name} = {item_key_expr}; if {item_key_name} > {best_key_name} {{ {best_name} = {item_name}; {best_key_name} = {item_key_name}; }} }} Ok({best_name}) }}, None => Err(PyError::ValueError(\"max() arg is an empty sequence\".to_string())) }} }}",
+                        "{{ let mut {iter_name} = {iter}; match {iter_name}.next() {{ Some(first_item) => {{ let mut {best_name} = first_item; let mut {best_key_name} = {best_key_expr}; for {item_name} in {iter_name} {{ let {item_key_name} = {item_key_expr}; if {item_key_name} > {best_key_name} {{ {best_name} = {item_name}; {best_key_name} = {item_key_name}; }} }} Ok({best_name}) }}, None => Err(PyError::ValueError(\"max() arg is an empty sequence\".into())) }} }}",
                         iter_name = iter_name,
                         iter = iter_expr,
                         best_name = best_name,
@@ -904,7 +927,7 @@ impl<'a> Codegen<'a> {
                         .unwrap_or_else(|| "()".to_string());
                     let body = self.wrap_result(
                         format!(
-                            "Err::<{}, PyError>(PyError::ValueError(\"min() arg is an empty sequence\".to_string()))",
+                            "Err::<{}, PyError>(PyError::ValueError(\"min() arg is an empty sequence\".into()))",
                             ok_ty
                         ),
                     );
@@ -959,7 +982,7 @@ impl<'a> Codegen<'a> {
                         iter_src.expr.clone()
                     };
                     let body = self.wrap_result(format!(
-                        "{{ let mut {iter_name} = {iter}; match {iter_name}.next() {{ Some(first_item) => {{ let mut {best_name} = first_item; let mut {best_key_name} = {best_key_expr}; for {item_name} in {iter_name} {{ let {item_key_name} = {item_key_expr}; if {item_key_name} < {best_key_name} {{ {best_name} = {item_name}; {best_key_name} = {item_key_name}; }} }} Ok({best_name}) }}, None => Err(PyError::ValueError(\"min() arg is an empty sequence\".to_string())) }} }}",
+                        "{{ let mut {iter_name} = {iter}; match {iter_name}.next() {{ Some(first_item) => {{ let mut {best_name} = first_item; let mut {best_key_name} = {best_key_expr}; for {item_name} in {iter_name} {{ let {item_key_name} = {item_key_expr}; if {item_key_name} < {best_key_name} {{ {best_name} = {item_name}; {best_key_name} = {item_key_name}; }} }} Ok({best_name}) }}, None => Err(PyError::ValueError(\"min() arg is an empty sequence\".into())) }} }}",
                         iter_name = iter_name,
                         iter = iter_expr,
                         best_name = best_name,
@@ -1213,7 +1236,7 @@ impl<'a> Codegen<'a> {
                     {
                         self.uses.py_error = true;
                         return Ok(Some(self.wrap_result(
-                            "Err::<_, PyError>(PyError::TypeError(\"'range' object is not an iterator\".to_string()))"
+                            "Err::<_, PyError>(PyError::TypeError(\"'range' object is not an iterator\".into()))"
                                 .to_string(),
                         )));
                     }

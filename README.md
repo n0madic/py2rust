@@ -76,6 +76,7 @@ Negative/compile-fail coverage lives in `crates/py2rust/tests/negative_tests.rs`
 ## Runtime helpers
 The generated Rust injects tiny helper functions only when needed:
 - `py_print`
+- `py_int` (normalizes borrowed/owned `i64` operands for checked arithmetic)
 - `py_len`
 - `py_range`
 - `py_round`
@@ -95,6 +96,7 @@ The generated Rust injects tiny helper functions only when needed:
 - Supported stdlib members are currently limited to `os.remove` and `sys.exit`.
 - Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
 - Builtins are mostly positional-only; keyword arguments are supported for `print(sep=..., end=...)`, `sorted(key=..., reverse=...)`, and iterable-form `min/max(key=...)`.
+- `print(x)` in single-argument form uses a direct fast-path (no intermediate `vec![...].join(...)` and no forced `format!` wrapping).
 - Generator expressions are lowered through comprehension+`iter(...)` codegen.
 - `generator.send(...)` expects a non-`None` value once the generator has started.
 - `round(x)` with a float input currently keeps a float result (`round(3.0)` -> `3.0`), while integer inputs stay integer.
@@ -108,6 +110,7 @@ The generated Rust injects tiny helper functions only when needed:
 - Class-pattern `match` (e.g. `case Point(x, y):`) currently requires a union-typed subject.
 - Guards on class-pattern union matches are currently rejected.
 - `dict` indexing raises `KeyError` (propagated as `PyError`).
+- Generated `PyError` variants store messages as `Cow<'static, str>` so static messages avoid heap allocation while dynamic messages remain supported.
 - `raise X from Y` / `raise X from None` syntax is accepted, but explicit cause/context metadata is not yet preserved in generated Rust.
 - Mixed-type tuple iteration falls back to gradual typing (`Unknown`/`PyRepr`) where static unification is not possible.
 - Tuple slicing requires literal integer bounds (including negative literals).

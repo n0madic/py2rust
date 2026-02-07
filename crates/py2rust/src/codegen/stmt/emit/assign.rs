@@ -102,18 +102,17 @@ impl<'a> Codegen<'a> {
                             self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
                             return Ok(());
                         }
-                        let expr = if let Some(local_expr) =
-                            self.gen_list_assignment_expr(name, value)?
-                        {
-                            local_expr
-                        } else if let Some(local_expr) =
-                            self.gen_dict_assignment_expr(name, value)?
-                        {
-                            local_expr
-                        } else {
-                            let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                            self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref())
-                        };
+                        let expr =
+                            if let Some(local_expr) = self.gen_list_assignment_expr(name, value)? {
+                                local_expr
+                            } else if let Some(local_expr) =
+                                self.gen_dict_assignment_expr(name, value)?
+                            {
+                                local_expr
+                            } else {
+                                let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                                self.maybe_clone_list_expr(expr, value, expected.as_ref())
+                            };
                         let expr = format!("Rc::new(RefCell::new({}))", expr);
                         let mut_kw = mut_kw_for_name(name, mut_counts);
                         self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
@@ -141,7 +140,7 @@ impl<'a> Codegen<'a> {
                             }
                         }
                         let expr = this.gen_expr_with_expected(value, expected.as_ref())?;
-                        Ok(this.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref()))
+                        Ok(this.maybe_clone_list_expr(expr, value, expected.as_ref()))
                     })?;
                     self.push_line(&format!("*{}.borrow_mut() = {};", name, expr));
                     return Ok(());
@@ -154,8 +153,7 @@ impl<'a> Codegen<'a> {
                         && !self.initialized_globals.contains(name)
                     {
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                        let expr =
-                            self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref());
+                        let expr = self.maybe_clone_list_expr(expr, value, expected.as_ref());
                         let expr = self.wrap_global_value(expr, value, expected.as_ref());
                         let tmp = self.new_tmp();
                         let gname = self.global_name(name);
@@ -172,8 +170,7 @@ impl<'a> Codegen<'a> {
                     let current = self.new_tmp();
                     let expr = self.with_global_override(name, current.clone(), |this| {
                         let expr = this.gen_expr_with_expected(value, expected.as_ref())?;
-                        let expr =
-                            this.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref());
+                        let expr = this.maybe_clone_list_expr(expr, value, expected.as_ref());
                         Ok(this.wrap_global_value(expr, value, expected.as_ref()))
                     })?;
                     self.push_line("{");
@@ -214,7 +211,7 @@ impl<'a> Codegen<'a> {
                         return Ok(());
                     }
                     let expr = self.gen_expr(value)?;
-                    let expr = self.maybe_clone_list_expr(expr, value.ty.as_ref(), None);
+                    let expr = self.maybe_clone_list_expr(expr, value, None);
                     let mut_kw = mut_kw_for_name(name, mut_counts);
                     self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                     if let Some(ty) = value.ty.clone() {
@@ -238,8 +235,7 @@ impl<'a> Codegen<'a> {
                             return Ok(());
                         }
                     }
-                    let expr =
-                        self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected.as_ref());
+                    let expr = self.maybe_clone_list_expr(expr, value, expected.as_ref());
                     self.push_line(&format!("{} = {};", name, expr));
                 }
             }
@@ -249,8 +245,7 @@ impl<'a> Codegen<'a> {
                         if let Some(setter) = prop.setter {
                             let expected = Some(&prop.ty);
                             let val_expr = self.gen_expr_with_expected(value, expected)?;
-                            let val_expr =
-                                self.maybe_clone_list_expr(val_expr, value.ty.as_ref(), expected);
+                            let val_expr = self.maybe_clone_list_expr(val_expr, value, expected);
                             if let ExprKind::Name(name) = &obj.kind {
                                 if self.is_global(name) {
                                     let guard = self.new_tmp();
@@ -285,7 +280,7 @@ impl<'a> Codegen<'a> {
                             .and_then(|info| info.class_attrs.get(attr))
                             .map(|info| &info.ty);
                         let expr = self.gen_expr_with_expected(value, expected)?;
-                        let expr = self.maybe_clone_list_expr(expr, value.ty.as_ref(), expected);
+                        let expr = self.maybe_clone_list_expr(expr, value, expected);
                         if allow_let
                             && self.current_function.is_none()
                             && !self.initialized_globals.contains(&global_name)
@@ -305,7 +300,7 @@ impl<'a> Codegen<'a> {
                         let expr =
                             self.with_global_override(&global_name, current.clone(), |this| {
                                 let expr = this.gen_expr_with_expected(value, expected)?;
-                                Ok(this.maybe_clone_list_expr(expr, value.ty.as_ref(), expected))
+                                Ok(this.maybe_clone_list_expr(expr, value, expected))
                             })?;
                         self.push_line("{");
                         self.indent += 1;
@@ -323,11 +318,8 @@ impl<'a> Codegen<'a> {
                     if self.is_global(name) {
                         let expected = self.ctx.globals.get(name).cloned();
                         let val_expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                        let val_expr = self.maybe_clone_list_expr(
-                            val_expr,
-                            value.ty.as_ref(),
-                            expected.as_ref(),
-                        );
+                        let val_expr =
+                            self.maybe_clone_list_expr(val_expr, value, expected.as_ref());
                         let guard = self.new_tmp();
                         self.push_line("{");
                         self.indent += 1;
@@ -353,8 +345,7 @@ impl<'a> Codegen<'a> {
                     _ => None,
                 };
                 let val_expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                let val_expr =
-                    self.maybe_clone_list_expr(val_expr, value.ty.as_ref(), expected.as_ref());
+                let val_expr = self.maybe_clone_list_expr(val_expr, value, expected.as_ref());
                 self.push_line(&format!("{}.{} = {};", obj_expr, attr, val_expr));
             }
             AssignTarget::Index {

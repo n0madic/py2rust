@@ -128,7 +128,7 @@ impl<'a> Codegen<'a> {
                         ));
                     }
                     let pop_expr = format!(
-                        "{target}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".to_string()))",
+                        "{target}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".into()))",
                         target = target_expr,
                         key = key_expr
                     );
@@ -150,7 +150,7 @@ impl<'a> Codegen<'a> {
                             ));
                         }
                         let pop_expr = format!(
-                            "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".to_string()))",
+                            "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".into()))",
                             guard = guard,
                             key = key_expr
                         );
@@ -186,7 +186,7 @@ impl<'a> Codegen<'a> {
                     ));
                 }
                 let pop_expr = format!(
-                    "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".to_string()))",
+                    "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".into()))",
                     guard = "{guard}",
                     key = key_expr
                 );

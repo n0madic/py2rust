@@ -329,18 +329,14 @@ impl<'a> Codegen<'a> {
                         } else {
                             let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                             (
-                                self.maybe_clone_list_expr(
-                                    expr,
-                                    value.ty.as_ref(),
-                                    declared.as_ref(),
-                                ),
+                                self.maybe_clone_list_expr(expr, value, declared.as_ref()),
                                 false,
                             )
                         }
                     } else {
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                         (
-                            self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref()),
+                            self.maybe_clone_list_expr(expr, value, declared.as_ref()),
                             false,
                         )
                     };
@@ -689,14 +685,14 @@ impl<'a> Codegen<'a> {
                     } else {
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                         (
-                            self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref()),
+                            self.maybe_clone_list_expr(expr, value, declared.as_ref()),
                             false,
                         )
                     }
                 } else {
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                     (
-                        self.maybe_clone_list_expr(expr, value.ty.as_ref(), declared.as_ref()),
+                        self.maybe_clone_list_expr(expr, value, declared.as_ref()),
                         false,
                     )
                 };
@@ -973,7 +969,7 @@ impl<'a> Codegen<'a> {
                         || (self.current_function.is_none() && self.top_level_can_throw));
                 if in_throwing_context {
                     self.push_line(&format!(
-                        "if !({}) {{ return Err(PyError::AssertionError({})); }}",
+                        "if !({}) {{ return Err(PyError::AssertionError(({}).into())); }}",
                         test_expr, msg_expr
                     ));
                 } else {

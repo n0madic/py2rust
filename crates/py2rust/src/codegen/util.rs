@@ -225,19 +225,24 @@ impl<'a> Codegen<'a> {
     pub(crate) fn maybe_clone_list_expr(
         &self,
         expr: String,
-        value_ty: Option<&Type>,
+        value_expr: &Expr,
         expected_ty: Option<&Type>,
     ) -> String {
         let ty = match expected_ty {
             // When expected type is unknown (for example wide inline union annotations),
             // fall back to the expression type to preserve Python copy semantics.
-            Some(Type::Unknown) | None => value_ty,
+            Some(Type::Unknown) | None => value_expr.ty.as_ref(),
             Some(other) => Some(other),
         };
-        if matches!(
-            ty,
-            Some(Type::List(_)) | Some(Type::Dict(_, _)) | Some(Type::Str) | Some(Type::Bytes)
-        ) {
+        // Clone only when reading from an existing binding; temporaries can move safely.
+        let needs_binding_clone =
+            matches!(value_expr.kind, ExprKind::Name(_) | ExprKind::Attr { .. });
+        if needs_binding_clone
+            && matches!(
+                ty,
+                Some(Type::List(_)) | Some(Type::Dict(_, _)) | Some(Type::Str) | Some(Type::Bytes)
+            )
+        {
             return format!("{}.clone()", expr);
         }
         expr

@@ -125,7 +125,7 @@ impl<'a> Codegen<'a> {
                             ));
                         }
                         let pop_expr = format!(
-                            "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".to_string()))",
+                            "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".into()))",
                             name
                         );
                         return Ok(self.wrap_result(pop_expr));
@@ -151,7 +151,7 @@ impl<'a> Codegen<'a> {
                             ));
                         }
                         let pop_expr = format!(
-                            "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".to_string()))",
+                            "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".into()))",
                             guard
                         );
                         return Ok(format!(
@@ -185,7 +185,7 @@ impl<'a> Codegen<'a> {
                         ));
                     }
                     let pop_expr = format!(
-                        "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".to_string()))",
+                        "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".into()))",
                         guard
                     );
                     return Ok(format!(
@@ -214,7 +214,7 @@ impl<'a> Codegen<'a> {
                     ));
                 }
                 let pop_expr = format!(
-                    "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".to_string()))",
+                    "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".into()))",
                     "guard"
                 );
                 return Ok(self.wrap_result(format!(

@@ -35,7 +35,7 @@ impl<'a> Codegen<'a> {
                         };
 
                         self.push_line(&format!(
-                            "return Err(PyError::{}({}));",
+                            "return Err(PyError::{}(({}).into()));",
                             py_error_variant, msg
                         ));
                         return Ok(());
@@ -44,7 +44,7 @@ impl<'a> Codegen<'a> {
             }
 
             let exc_code = self.gen_expr(exc_expr)?;
-            self.push_line(&format!("return Err({});", exc_code));
+            self.push_line(&format!("return Err(({}).into());", exc_code));
         } else {
             // Re-raise - use captured exception.
             self.push_line("return Err(_current_exception);");

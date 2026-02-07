@@ -62,6 +62,7 @@ pub(crate) struct Uses {
     pub(crate) py_os_remove: bool,
     pub(crate) py_iter: bool,
     pub(crate) py_repr: bool,
+    pub(crate) py_int: bool,
     pub(crate) py_bytes_from_len: bool,
     pub(crate) py_bytes_from_str: bool,
     /// Force-emits `PyError` support for generated control-flow that references it directly.

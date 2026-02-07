@@ -177,13 +177,12 @@ impl<'a> Codegen<'a> {
                 BinOp::Mul => "checked_mul",
                 _ => unreachable!(),
             };
-            // Normalize both operands to plain i64 values so checked arithmetic works
-            // for both owned ints and borrowed pattern bindings (&i64).
-            let left_checked = format!("(*std::borrow::Borrow::<i64>::borrow(&({})))", left_expr);
-            let right_checked = format!("(*std::borrow::Borrow::<i64>::borrow(&({})))", right_expr);
             self.uses.py_error = true;
+            self.uses.py_int = true;
+            let left_checked = format!("py_int({})", left_expr);
+            let right_checked = format!("py_int({})", right_expr);
             let guarded = format!(
-                "{}.{}({}).ok_or_else(|| PyError::OverflowError(\"integer overflow\".to_string()))",
+                "{}.{}({}).ok_or_else(|| PyError::OverflowError(\"integer overflow\".into()))",
                 left_checked, checked_method, right_checked
             );
             return Ok(self.wrap_result(guarded));
@@ -200,11 +199,11 @@ impl<'a> Codegen<'a> {
                 let rhs_tmp = self.new_tmp();
                 let guarded = if is_float {
                     format!(
-                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0.0f64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".to_string())) }} else {{ Ok(({left_expr} / {rhs_tmp}).floor()) }} }}"
+                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0.0f64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".into())) }} else {{ Ok(({left_expr} / {rhs_tmp}).floor()) }} }}"
                     )
                 } else {
                     format!(
-                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0i64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".to_string())) }} else {{ Ok({left_expr}.div_euclid({rhs_tmp})) }} }}"
+                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0i64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".into())) }} else {{ Ok({left_expr}.div_euclid({rhs_tmp})) }} }}"
                     )
                 };
                 return Ok(self.wrap_result(guarded));
@@ -226,11 +225,11 @@ impl<'a> Codegen<'a> {
                 let rhs_tmp = self.new_tmp();
                 let guarded = if is_float {
                     format!(
-                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0.0f64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".to_string())) }} else {{ Ok({left_expr} % {rhs_tmp}) }} }}"
+                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0.0f64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".into())) }} else {{ Ok({left_expr} % {rhs_tmp}) }} }}"
                     )
                 } else {
                     format!(
-                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0i64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".to_string())) }} else {{ Ok({left_expr} % {rhs_tmp}) }} }}"
+                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0i64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".into())) }} else {{ Ok({left_expr} % {rhs_tmp}) }} }}"
                     )
                 };
                 return Ok(self.wrap_result(guarded));

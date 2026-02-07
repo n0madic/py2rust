@@ -35,6 +35,7 @@ This document describes the exception handling implementation for py2rust, which
 
 ✅ **Code Generation**
 - **PyError Enum**: Automatically emitted with built-in exception types
+  - Message payload type is `Cow<'static, str>` (static strings avoid heap allocation)
   - Implements `Display` and `Error` traits
   - Only included when exceptions are used (zero overhead otherwise)
 
@@ -45,6 +46,7 @@ This document describes the exception handling implementation for py2rust, which
 - **Try/Except**: Generates match expressions
   - Try body wrapped in closure returning Result
   - Except handlers map to match arms
+  - Duplicate typed handlers are dropped after the first effective match arm
   - Catch-all pattern for unhandled exceptions
 
 - **Finally**: Uses Drop trait for guaranteed cleanup
@@ -54,6 +56,7 @@ This document describes the exception handling implementation for py2rust, which
 - **Error Propagation**: Automatic `?` operator insertion
   - Calls to throwing functions use `?`
   - Return statements wrapped in `Ok()` when needed
+  - Dead `Ok(())` closure epilogues are omitted when the try body is provably terminal
 
 - **Top-Level Handling**: Main function wraps throwing code
   - Catches and prints uncaught exceptions
@@ -169,7 +172,7 @@ def example():
 Generates:
 ```rust
 pub fn example() -> Result<(), PyError> {
-    return Err(PyError::ValueError("error".to_string()));
+    return Err(PyError::ValueError(("error".to_string()).into()));
 }
 ```
 
@@ -192,7 +195,7 @@ pub fn example() -> Result<(), PyError> {
     match _try_result {
         Ok(_) => {}
         Err(PyError::ValueError(e)) => {
-            py_print(format!("Error: {}", e));
+            py_print(&e);
         }
         Err(e) => return Err(e),
     }
