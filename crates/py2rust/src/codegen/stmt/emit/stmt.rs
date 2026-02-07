@@ -417,6 +417,9 @@ impl<'a> Codegen<'a> {
                                             .any(|kw| expr_mentions_name(&kw.value, target))
                                 }
                                 ExprKind::Starred { value } => expr_mentions_name(value, target),
+                                ExprKind::Yield { value } => value
+                                    .as_deref()
+                                    .is_some_and(|expr| expr_mentions_name(expr, target)),
                                 ExprKind::Attr { value, .. } => expr_mentions_name(value, target),
                                 ExprKind::Binary { left, right, .. }
                                 | ExprKind::Compare { left, right, .. } => {

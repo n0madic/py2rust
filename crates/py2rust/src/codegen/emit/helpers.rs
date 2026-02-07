@@ -47,6 +47,14 @@ impl<T> Iterator for PyIter<T> {
         self.inner.lock().expect("PyIter mutex poisoned").next()
     }
 }
+trait PyIteratorSendClose<T>: Iterator<Item = T> {
+    fn send(&mut self, _value: T) -> T {
+        self.next()
+            .unwrap_or_else(|| panic!("generator is exhausted"))
+    }
+    fn close(&mut self) {}
+}
+impl<I, T> PyIteratorSendClose<T> for I where I: Iterator<Item = T> {}
 fn py_iter<T, I>(iter: I) -> PyIter<T>
 where
     I: Iterator<Item = T> + Send + 'static,

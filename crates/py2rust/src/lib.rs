@@ -283,6 +283,11 @@ fn rename_main_calls_in_expr(expr: &mut hir::Expr, new_name: &str) {
             }
         }
         hir::ExprKind::Starred { value } => rename_main_calls_in_expr(value, new_name),
+        hir::ExprKind::Yield { value } => {
+            if let Some(value) = value {
+                rename_main_calls_in_expr(value, new_name);
+            }
+        }
         hir::ExprKind::Attr { value, .. } => rename_main_calls_in_expr(value, new_name),
         hir::ExprKind::Binary { left, right, .. } => {
             rename_main_calls_in_expr(left, new_name);

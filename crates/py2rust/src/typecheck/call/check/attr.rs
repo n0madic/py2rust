@@ -618,6 +618,30 @@ impl<'a> TypeChecker<'a> {
                 return Ok(sig.ret.clone());
             }
         }
+        if let Type::Iterator(inner) = &obj_ty {
+            if attr == "send" {
+                if !keywords.is_empty() {
+                    return Err(self.error(span, "Keyword arguments are not supported"));
+                }
+                if args.len() != 1 {
+                    return Err(self.error(span, "iterator.send() expects one argument"));
+                }
+                let arg_ty = self.check_expr(&mut args[0], Some(inner.as_ref()))?;
+                if !matches!(inner.as_ref(), Type::Unknown) && !matches!(arg_ty, Type::Unknown) {
+                    self.ensure_assignable(&arg_ty, inner.as_ref(), span)?;
+                }
+                return Ok(*inner.clone());
+            }
+            if attr == "close" {
+                if !keywords.is_empty() {
+                    return Err(self.error(span, "Keyword arguments are not supported"));
+                }
+                if !args.is_empty() {
+                    return Err(self.error(span, "iterator.close() expects no arguments"));
+                }
+                return Ok(Type::None);
+            }
+        }
         // Handle method calls on Union types by checking all variants have the method.
         if let Type::Union(ref union_name) = obj_ty {
             if let Some(union_info) = self.ctx.unions.get(union_name) {

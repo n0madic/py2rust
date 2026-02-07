@@ -11,6 +11,30 @@ impl<'a> Codegen<'a> {
         func: &Function,
         class: Option<&ClassDef>,
     ) -> Result<(), CompileError> {
+        // Generator functions are emitted via a dedicated state wrapper that
+        // supports iteration plus `.send(...)` / `.close()`.
+        let is_generator = if let Some(class_def) = class {
+            self.ctx
+                .classes
+                .get(&class_def.name)
+                .and_then(|info| info.methods.get(&func.name))
+                .is_some_and(|sig| sig.is_generator)
+        } else {
+            self.ctx
+                .functions
+                .get(&func.name)
+                .is_some_and(|sig| sig.is_generator)
+        };
+        if is_generator {
+            if class.is_some() {
+                return Err(self.error(
+                    func.span,
+                    "Generator methods are not supported in this release",
+                ));
+            }
+            return self.emit_generator_function(func);
+        }
+
         // Set current function for tracking throws.
         self.current_function = Some(func.name.clone());
         self.local_vars = Some(HashMap::new());
@@ -193,13 +217,20 @@ impl<'a> Codegen<'a> {
         } else {
             self.resolve_type_ref(&func.ret, func.span)?
         };
+        let is_generator = self
+            .ctx
+            .functions
+            .get(&func.name)
+            .is_some_and(|sig| sig.is_generator);
 
-        let mut ret_str = if matches!(ret_ty, Type::Unknown) {
+        let mut ret_str = if is_generator {
+            format!("__PyGen_{}", func.name)
+        } else if matches!(ret_ty, Type::Unknown) {
             "()".to_string()
         } else {
             self.rust_type(&ret_ty)
         };
-        if matches!(ret_ty, Type::Unknown) {
+        if !is_generator && matches!(ret_ty, Type::Unknown) {
             if let Some(ret_name) = identity_return_param(func) {
                 if let Some(param_ty) = param_types.get(&ret_name) {
                     ret_str = param_ty.clone();
@@ -356,6 +387,314 @@ impl<'a> Codegen<'a> {
             }
         }
         func.body.iter().any(stmt_mutates)
+    }
+
+    /// Emit a generator function as a replay-based iterator wrapper.
+    ///
+    /// The generated wrapper records resume values (`next` => `None`, `send(v)` => `Some(v)`)
+    /// and replays the function body to reconstruct yielded items deterministically.
+    /// This keeps generator semantics available without introducing a separate runtime crate.
+    fn emit_generator_function(&mut self, func: &Function) -> Result<(), CompileError> {
+        let sig = self
+            .ctx
+            .functions
+            .get(&func.name)
+            .ok_or_else(|| self.error(func.span, format!("Unknown function: {}", func.name)))?;
+        let item_ty = match &sig.ret {
+            Type::Iterator(inner) => inner.as_ref().clone(),
+            _ => {
+                return Err(self.error(
+                    func.span,
+                    "Internal error: generator function missing Iterator[T] return type",
+                ))
+            }
+        };
+        let item_ty_str = self.rust_type(&item_ty);
+        let struct_name = format!("__PyGen_{}", func.name);
+
+        let mut param_types = Vec::with_capacity(func.params.len());
+        for param in &func.params {
+            let ty = self.resolve_decl_param_type(param)?;
+            let ty_str = if matches!(ty, Type::Unknown) {
+                "()".to_string()
+            } else {
+                self.rust_type(&ty)
+            };
+            param_types.push((param.name.clone(), ty, ty_str));
+        }
+
+        self.push_line("#[derive(Clone)]");
+        self.push_line(&format!("pub struct {} {{", struct_name));
+        self.indent += 1;
+        self.push_line(&format!("__resume_values: Vec<Option<{}>>,", item_ty_str));
+        self.push_line("__emitted: usize,");
+        self.push_line("__closed: bool,");
+        for (name, _, ty_str) in &param_types {
+            self.push_line(&format!("{name}: {ty_str},"));
+        }
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+
+        // Save/restore mutable codegen state while emitting replay body.
+        let saved_current_function = self.current_function.clone();
+        let saved_current_function_ret = self.current_function_ret.clone();
+        let saved_local_vars = self.local_vars.take();
+        self.current_function = Some(func.name.clone());
+        self.current_function_ret = Some(sig.ret.clone());
+        self.local_vars = Some(HashMap::new());
+        for (name, ty, _) in &param_types {
+            self.set_local_var_type(name, ty.clone());
+        }
+
+        self.push_line(&format!("impl {} {{", struct_name));
+        self.indent += 1;
+        self.push_line(&format!("fn __replay(&self) -> Vec<{}> {{", item_ty_str));
+        self.indent += 1;
+        self.push_line("let __py2rust_resume_values = &self.__resume_values;");
+        self.push_line("let mut __py2rust_yield_index: usize = 0;");
+        self.push_line(&format!(
+            "let mut __py2rust_yields: Vec<{}> = Vec::new();",
+            item_ty_str
+        ));
+        for (name, ty, _) in &param_types {
+            if self.is_copy_type(ty) {
+                self.push_line(&format!("let mut {name} = self.{name};"));
+            } else {
+                self.push_line(&format!("let mut {name} = self.{name}.clone();"));
+            }
+        }
+        for stmt in &func.body {
+            self.emit_generator_replay_stmt(stmt)?;
+        }
+        self.push_line("__py2rust_yields");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+
+        self.push_line(&format!(
+            "fn send(&mut self, value: {}) -> {} {{",
+            item_ty_str, item_ty_str
+        ));
+        self.indent += 1;
+        self.push_line("if self.__emitted == 0 {");
+        self.indent += 1;
+        self.push_line(
+            "panic!(\"can't send non-None value to a just-started generator in this build\");",
+        );
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("self.__resume_values.push(Some(value));");
+        self.push_line("match self.next() {");
+        self.indent += 1;
+        self.push_line("Some(v) => v,");
+        self.push_line("None => panic!(\"generator is exhausted\"),");
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+
+        self.push_line("fn close(&mut self) {");
+        self.indent += 1;
+        self.push_line("self.__closed = true;");
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+
+        self.push_line(&format!("impl Iterator for {} {{", struct_name));
+        self.indent += 1;
+        self.push_line(&format!("type Item = {};", item_ty_str));
+        self.push_line("fn next(&mut self) -> Option<Self::Item> {");
+        self.indent += 1;
+        self.push_line("if self.__closed {");
+        self.indent += 1;
+        self.push_line("return None;");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("if self.__emitted > 0 && self.__resume_values.len() < self.__emitted {");
+        self.indent += 1;
+        self.push_line("self.__resume_values.push(None);");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("let __py2rust_yields = self.__replay();");
+        self.push_line("if self.__emitted < __py2rust_yields.len() {");
+        self.indent += 1;
+        self.push_line("let __py2rust_out = __py2rust_yields[self.__emitted].clone();");
+        self.push_line("self.__emitted += 1;");
+        self.push_line("Some(__py2rust_out)");
+        self.indent -= 1;
+        self.push_line("} else {");
+        self.indent += 1;
+        self.push_line("None");
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+
+        let ctor_params = param_types
+            .iter()
+            .map(|(name, _, ty_str)| format!("{name}: {ty_str}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.push_line(&format!(
+            "pub fn {}({}) -> {} {{",
+            func.name, ctor_params, struct_name
+        ));
+        self.indent += 1;
+        self.push_line(&format!("{} {{", struct_name));
+        self.indent += 1;
+        self.push_line("__resume_values: Vec::new(),");
+        self.push_line("__emitted: 0,");
+        self.push_line("__closed: false,");
+        for (name, _, _) in &param_types {
+            self.push_line(&format!("{name},"));
+        }
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+
+        self.current_function = saved_current_function;
+        self.current_function_ret = saved_current_function_ret;
+        self.local_vars = saved_local_vars;
+        Ok(())
+    }
+
+    /// Emit one replay-body statement used by generated generator wrappers.
+    fn emit_generator_replay_stmt(&mut self, stmt: &Stmt) -> Result<(), CompileError> {
+        match &stmt.kind {
+            StmtKind::Let { name, value, .. } => {
+                if let ExprKind::Yield { value: yield_value } = &value.kind {
+                    self.emit_generator_yield(
+                        yield_value.as_deref(),
+                        Some((name.as_str(), true)),
+                        stmt.span,
+                    )?;
+                    if let Some(ty) = value.ty.clone() {
+                        self.set_local_var_type(name, ty);
+                    }
+                } else {
+                    let expr = self.gen_expr(value)?;
+                    self.push_line(&format!("let mut {name} = {expr};"));
+                    if let Some(ty) = value.ty.clone() {
+                        self.set_local_var_type(name, ty);
+                    }
+                }
+            }
+            StmtKind::Assign { target, value } => {
+                if let AssignTarget::Name(name) = target {
+                    if let ExprKind::Yield { value: yield_value } = &value.kind {
+                        self.emit_generator_yield(
+                            yield_value.as_deref(),
+                            Some((name.as_str(), false)),
+                            stmt.span,
+                        )?;
+                    } else {
+                        let expr = self.gen_expr(value)?;
+                        self.push_line(&format!("{name} = {expr};"));
+                    }
+                } else {
+                    return Err(self.error(
+                        stmt.span,
+                        "Unsupported assignment target inside generator function",
+                    ));
+                }
+            }
+            StmtKind::Expr(expr) => {
+                if let ExprKind::Yield { value } = &expr.kind {
+                    self.emit_generator_yield(value.as_deref(), None, expr.span)?;
+                } else {
+                    let rendered = self.gen_expr(expr)?;
+                    self.push_line(&format!("{};", rendered));
+                }
+            }
+            StmtKind::While { test, body } => {
+                let test_expr = self.gen_expr(test)?;
+                self.push_line(&format!("while {} {{", test_expr));
+                self.indent += 1;
+                for stmt in body {
+                    self.emit_generator_replay_stmt(stmt)?;
+                }
+                self.indent -= 1;
+                self.push_line("}");
+            }
+            StmtKind::If { test, body, orelse } => {
+                let test_expr = self.gen_expr(test)?;
+                self.push_line(&format!("if {} {{", test_expr));
+                self.indent += 1;
+                for stmt in body {
+                    self.emit_generator_replay_stmt(stmt)?;
+                }
+                self.indent -= 1;
+                self.push_line("} else {");
+                self.indent += 1;
+                for stmt in orelse {
+                    self.emit_generator_replay_stmt(stmt)?;
+                }
+                self.indent -= 1;
+                self.push_line("}");
+            }
+            StmtKind::Return { .. } => {
+                self.push_line("return __py2rust_yields;");
+            }
+            StmtKind::Break => self.push_line("break;"),
+            StmtKind::Continue => self.push_line("continue;"),
+            _ => {
+                return Err(self.error(stmt.span, "Unsupported statement inside generator function"))
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit replay logic for a `yield` site.
+    fn emit_generator_yield(
+        &mut self,
+        yielded_value: Option<&Expr>,
+        assign_to: Option<(&str, bool)>,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        let yielded_expr = if let Some(value) = yielded_value {
+            self.gen_expr(value)?
+        } else {
+            "()".to_string()
+        };
+        self.push_line(&format!(
+            "__py2rust_yields.push(({}).clone());",
+            yielded_expr
+        ));
+        self.push_line("if __py2rust_yield_index >= __py2rust_resume_values.len() {");
+        self.indent += 1;
+        self.push_line("return __py2rust_yields;");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line(
+            "let __py2rust_resume = __py2rust_resume_values[__py2rust_yield_index].clone();",
+        );
+        self.push_line("__py2rust_yield_index += 1;");
+
+        if let Some((name, declare)) = assign_to {
+            let binding = if declare { "let mut " } else { "" };
+            self.push_line(&format!(
+                "{}{} = match __py2rust_resume {{ Some(v) => v, None => panic!(\"generator send(None) is not supported for this yield site\") }};",
+                binding, name
+            ));
+        }
+
+        // Keep a span-aware touchpoint for unsupported future extensions.
+        if yielded_value.is_none() && assign_to.is_some() {
+            return Err(self.error(
+                span,
+                "Unsupported bare-yield assignment inside generator function",
+            ));
+        }
+        Ok(())
     }
 
     fn ends_with_return(&self, stmts: &[Stmt]) -> bool {

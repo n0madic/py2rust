@@ -70,8 +70,27 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Track whether this function uses `yield` and what item type it produces.
+        self.generator_yield_stack.push(None);
         for stmt in &mut func.body {
             self.check_stmt(stmt, Some(&func.ret))?;
+        }
+        let inferred_yield = self
+            .generator_yield_stack
+            .pop()
+            .expect("generator_yield_stack push/pop must be balanced");
+        let is_generator = inferred_yield.is_some();
+        if let Some(yield_ty) = inferred_yield {
+            let inferred_iter = Type::Iterator(Box::new(yield_ty.clone()));
+            if matches!(func.ret, TypeRef::Unknown) {
+                func.ret = TypeRef::Iterator(Box::new(Self::type_to_ref(&yield_ty)));
+            } else {
+                let declared = self.resolve_type_ref(&func.ret, func.span)?;
+                if !matches!(declared, Type::Iterator(_)) {
+                    return Err(self.error(func.span, "Generator function must return Iterator[T]"));
+                }
+                self.ensure_assignable(&inferred_iter, &declared, func.span)?;
+            }
         }
 
         // Infer return type if not annotated
@@ -180,6 +199,11 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     ExprKind::Starred { value } => collect_names(value, out),
+                    ExprKind::Yield { value } => {
+                        if let Some(value) = value {
+                            collect_names(value, out);
+                        }
+                    }
                     ExprKind::Attr { value, .. } => collect_names(value, out),
                     ExprKind::Compare { left, right, .. } => {
                         collect_names(left, out);
@@ -288,6 +312,11 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     ExprKind::Starred { value } => visit_expr(value, out),
+                    ExprKind::Yield { value } => {
+                        if let Some(value) = value {
+                            visit_expr(value, out);
+                        }
+                    }
                     ExprKind::Attr { value, .. } => visit_expr(value, out),
                     ExprKind::Compare { left, right, .. } => {
                         visit_expr(left, out);
@@ -553,6 +582,7 @@ impl<'a> TypeChecker<'a> {
             params: params.clone(),
             ret: ret.clone(),
             span: func.span,
+            is_generator,
             can_throw: false,
             thrown_exceptions: Vec::new(),
             defaults,

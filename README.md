@@ -30,6 +30,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - `match/case` on union variants (class patterns) with `__match_args__` support
 - Custom iterators via `__iter__` and `next`
 - List, set, and dict comprehensions (including multiple generator clauses)
+- Generator functions (`yield`) with `next(...)`, `.send(...)`, `.close()`, and generator expressions
 - Call-site unpacking via `*args` and `**kwargs` (including mixed call forms)
 - Nested functions with closure capture and `nonlocal` writes
 - `global` declarations with CPython-compatible shadowing rules (local assignment shadows module names unless explicitly declared `global`)
@@ -66,14 +67,7 @@ Run tests:
 cargo test -p py2rust
 ```
 
-Runtime integration coverage lives in `crates/py2rust/tests/runtime/`:
-- `functions.rs` covers function calls, recursion, closures/nonlocal, variadics, call unpacking, and full `functions.py` regression.
-- `collections.rs` covers lists, tuples, dicts, sets, bytes.
-- `builtins.rs` covers builtin functions.
-- `strings.rs` covers comprehensive string behavior (`str.format`, f-strings, predicates, split/join, alignment/fill, indexing/slicing, conversions `!s`/`!r`/`!a`).
-- `match.rs` covers comprehensive pattern matching behavior from `match.py`.
-- `iteration.rs` covers iteration protocol, comprehensions, `iter/next`, `enumerate`, `zip`, `sorted`, `reversed`, and for-loop starred unpacking from `iteration.py`.
-- other files cover classes, control flow, operators, comprehensions, IO, assertions, and exceptions.
+Runtime integration coverage lives in `crates/py2rust/tests/runtime/`.
 
 Negative/compile-fail coverage lives in `crates/py2rust/tests/negative_tests.rs`.
 
@@ -99,6 +93,8 @@ The generated Rust injects tiny helper functions only when needed:
 - Supported stdlib members are currently limited to `os.remove` and `sys.exit`.
 - Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
 - Builtins are mostly positional-only; keyword arguments are supported for `print(sep=..., end=...)`, `sorted(key=..., reverse=...)`, and iterable-form `min/max(key=...)`.
+- Generator expressions are lowered through comprehension+`iter(...)` codegen.
+- `generator.send(...)` expects a non-`None` value once the generator has started.
 - `round(x)` with a float input currently keeps a float result (`round(3.0)` -> `3.0`), while integer inputs stay integer.
 - Call-site `**kwargs` unpacking requires a `dict[str, T]` expression.
 - Positional-only parameters (`/`) are not supported.

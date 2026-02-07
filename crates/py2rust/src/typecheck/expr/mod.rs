@@ -28,6 +28,7 @@ impl<'a> TypeChecker<'a> {
                 replace_with_none = should_replace;
                 ty
             }
+            ExprKind::Yield { value } => self.check_yield_expr(value.as_deref_mut(), expr.span)?,
             ExprKind::Attr { value, attr } => self.check_attr_expr(value, attr, expr.span)?,
             ExprKind::Call {
                 func,
@@ -93,5 +94,34 @@ impl<'a> TypeChecker<'a> {
         }
         expr.ty = Some(ty.clone());
         Ok(ty)
+    }
+
+    /// Validate a generator `yield` expression and track inferred yield type.
+    fn check_yield_expr(
+        &mut self,
+        value: Option<&mut Expr>,
+        span: Span,
+    ) -> Result<Type, CompileError> {
+        if self.generator_yield_stack.is_empty() {
+            return Err(self.error(span, "yield is only valid inside functions"));
+        }
+
+        let yielded = match value {
+            Some(expr) => self.check_expr(expr, None)?,
+            None => Type::None,
+        };
+
+        // Merge all yield sites to infer the function's iterator item type.
+        if let Some(slot) = self.generator_yield_stack.last_mut() {
+            let merged = match slot.take() {
+                Some(prev) => Self::merge_types(prev, yielded.clone()),
+                None => yielded.clone(),
+            };
+            *slot = Some(merged);
+        }
+
+        // In expression position, `yield` evaluates to the value sent back in.
+        // We conservatively treat it as the yielded type to keep local inference usable.
+        Ok(yielded)
     }
 }

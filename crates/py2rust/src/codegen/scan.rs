@@ -245,6 +245,11 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 ExprKind::Starred { value } => visit_expr(value, ok),
+                ExprKind::Yield { value } => {
+                    if let Some(value) = value {
+                        visit_expr(value, ok);
+                    }
+                }
                 ExprKind::Attr { value, .. } => visit_expr(value, ok),
                 ExprKind::Binary { left, right, .. } => {
                     visit_expr(left, ok);
@@ -463,6 +468,11 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Starred { value } => self.scan_expr(value)?,
+            ExprKind::Yield { value } => {
+                if let Some(value) = value {
+                    self.scan_expr(value)?;
+                }
+            }
             ExprKind::Dict(_) => {
                 self.uses.hash_map = true;
             }

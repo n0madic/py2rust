@@ -71,6 +71,7 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - `match/case` for literals/singletons, capture and wildcard patterns, OR patterns, guards, and list sequence/star patterns.
 - Class-pattern `match` on union variants with `__match_args__` support.
 - `__iter__/next` for custom iterators.
+- Generator functions via `yield`, including `.send(...)`, `.close()`, and generator expressions.
 - `lambda`, `if` expression, `round`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`, `iter`, `reversed`, `sorted`, `max`, `min`, `int`, `float`, `str`, `isinstance`, `type`.
 - String methods: `upper`, `lower`.
 - Decorators: one simple name decorator on top-level functions only (rewritten).
@@ -105,6 +106,8 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - Iterator generation for `Arc<Mutex<Vec<T>>>`:
   - `IterContext::ImmediateConsumption` holds lock once for entire iteration (for loops, builtins)
   - `IterContext::DeferredCapture` locks per-iteration when iterator is returned/stored (map/filter results)
+- Generator functions are emitted as dedicated iterator wrapper structs with replay-based state,
+  supporting `next(...)`, `.send(...)`, and `.close()` on the same object.
 - List/set iteration for builtins uses `.iter().cloned()` to avoid moves.
 - Set ops map to `&set1 | &set2`, `&set1 & &set2`, `&set1 - &set2`, `&set1 ^ &set2`.
 - Pattern matching:
@@ -132,6 +135,7 @@ Runtime integration tests are in `crates/py2rust/tests/`:
   - `operators.rs` - arithmetic, comparison, boolean
   - `match.rs` - comprehensive `match/case` patterns
   - `iteration.rs` - iteration protocol, comprehensions, and iterator builtins
+  - `generators.rs` - `yield`, generator expressions, `.send(...)`, `.close()`, mixed `next()/for`
   - `global_scoping.rs` - global declarations, shadowing, and nested global writes
   - `io.rs` - print output
   - `assert.rs` - assertions

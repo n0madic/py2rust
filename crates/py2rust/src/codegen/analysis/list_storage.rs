@@ -263,6 +263,16 @@ impl<'a> Codegen<'a> {
                     storage,
                 );
             }
+            ExprKind::Yield { value } => {
+                if let Some(value) = value {
+                    self.collect_list_storage_in_expr(
+                        value,
+                        ListUseContext::Value,
+                        shared_globals,
+                        storage,
+                    );
+                }
+            }
             ExprKind::Attr { value, .. } => {
                 self.collect_list_storage_in_expr(
                     value,

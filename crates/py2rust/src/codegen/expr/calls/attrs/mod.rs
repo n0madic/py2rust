@@ -103,6 +103,37 @@ impl<'a> Codegen<'a> {
             return self.gen_set_attr_call(value, attr, args, keywords);
         }
 
+        if let Some(Type::Iterator(inner)) = value.ty.as_ref() {
+            if attr == "send" {
+                self.uses.py_iter = true;
+                if !keywords.is_empty() {
+                    return Err(self.error(
+                        value.span,
+                        "Keyword arguments are not supported for this method call",
+                    ));
+                }
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "iterator.send() expects one argument"));
+                }
+                let recv = self.gen_expr(value)?;
+                let sent = self.gen_expr_with_expected(&args[0], Some(inner.as_ref()))?;
+                return Ok(format!("{}.send({})", recv, sent));
+            }
+            if attr == "close" {
+                self.uses.py_iter = true;
+                if !keywords.is_empty() {
+                    return Err(self.error(
+                        value.span,
+                        "Keyword arguments are not supported for this method call",
+                    ));
+                }
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "iterator.close() expects no arguments"));
+                }
+                return Ok(format!("{}.close()", self.gen_expr(value)?));
+            }
+        }
+
         if attr == "format" && matches!(value.kind, ExprKind::Literal(Literal::Str(_))) {
             return self.gen_format_attr_call(value, attr, args, keywords);
         }

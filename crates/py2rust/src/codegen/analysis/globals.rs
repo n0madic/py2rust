@@ -571,6 +571,18 @@ impl<'a> Codegen<'a> {
                     used,
                 );
             }
+            ExprKind::Yield { value } => {
+                if let Some(value) = value {
+                    self.collect_used_globals_in_expr(
+                        value,
+                        locals,
+                        outers,
+                        globals,
+                        module_vars,
+                        used,
+                    );
+                }
+            }
             ExprKind::Attr { value, .. } => {
                 self.collect_used_globals_in_expr(
                     value,

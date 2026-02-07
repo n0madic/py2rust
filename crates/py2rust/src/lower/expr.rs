@@ -121,6 +121,14 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
+            // Yield expression: `yield value` or bare `yield`
+            ast::Expr::Yield(yield_expr) => {
+                let value = match &yield_expr.value {
+                    Some(value) => Some(Box::new(self.lower_expr(value)?)),
+                    None => None,
+                };
+                ExprKind::Yield { value }
+            }
             // Attribute access: obj.field
             // Simple delegation to HIR - type checker will verify the attribute exists
             ast::Expr::Attribute(attr) => ExprKind::Attr {
@@ -426,6 +434,60 @@ impl<'a> Lowerer<'a> {
                 };
                 ExprKind::Call {
                     func: Box::new(dict_name),
+                    args: vec![list_comp_expr],
+                    keywords: Vec::new(),
+                }
+            }
+            // Generator expression: (elt for ... in ... if ...)
+            //
+            // We lower this as `iter([elt for ...])` to reuse existing
+            // comprehension/type-checking/codegen paths.
+            ast::Expr::GeneratorExp(genexp) => {
+                if genexp.generators.is_empty() {
+                    return Err(self.error(expr.range(), "Comprehension has no generators"));
+                }
+                let mut generators = Vec::with_capacity(genexp.generators.len());
+                for gen in &genexp.generators {
+                    if gen.is_async {
+                        return Err(
+                            self.error(expr.range(), "Async comprehensions are not supported")
+                        );
+                    }
+                    let target = match &gen.target {
+                        ast::Expr::Name(name) => self.ident(name.id.as_str()),
+                        _ => {
+                            return Err(self.error(
+                                gen.target.range(),
+                                "Only simple targets are supported in comprehensions",
+                            ))
+                        }
+                    };
+                    let iter = Box::new(self.lower_expr(&gen.iter)?);
+                    let mut ifs = Vec::with_capacity(gen.ifs.len());
+                    for cond in &gen.ifs {
+                        ifs.push(self.lower_expr(cond)?);
+                    }
+                    generators.push(CompClause { target, iter, ifs });
+                }
+                let first = generators[0].clone();
+                let list_comp_expr = Expr {
+                    kind: ExprKind::ListComp {
+                        elt: Box::new(self.lower_expr(&genexp.elt)?),
+                        target: first.target,
+                        iter: first.iter,
+                        ifs: first.ifs,
+                        generators,
+                    },
+                    span,
+                    ty: None,
+                };
+                let iter_name = Expr {
+                    kind: ExprKind::Name("iter".to_string()),
+                    span,
+                    ty: None,
+                };
+                ExprKind::Call {
+                    func: Box::new(iter_name),
                     args: vec![list_comp_expr],
                     keywords: Vec::new(),
                 }

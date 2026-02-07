@@ -401,6 +401,14 @@ pub struct CompClause {
 pub enum ExprKind {
     Literal(Literal),
     Name(String),
+    /// Generator yield expression.
+    ///
+    /// Python: `yield value`
+    /// - As a statement, it produces an iterator item.
+    /// - As an expression, it also evaluates to the value provided by `send(...)`.
+    Yield {
+        value: Option<Box<Expr>>,
+    },
     Call {
         func: Box<Expr>,
         args: Vec<Expr>,

@@ -26,6 +26,7 @@ pub struct FunctionSig {
     pub params: Vec<Type>,
     pub ret: Type,
     pub span: Span,
+    pub is_generator: bool,
     pub can_throw: bool,
     pub thrown_exceptions: Vec<String>,
     pub defaults: usize,

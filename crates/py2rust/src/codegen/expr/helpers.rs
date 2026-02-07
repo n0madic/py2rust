@@ -376,10 +376,19 @@ impl<'a> Codegen<'a> {
                 }
             }
             // Iterators are already iterable; avoid redundant .into_iter() on ranges.
-            Some(Type::Iterator(_)) => Ok(IterSource {
-                setup: Vec::new(),
-                expr: rendered,
-            }),
+            Some(Type::Iterator(_)) => {
+                // Named iterator bindings should iterate by mutable reference so the
+                // binding remains usable after partial/for-loop consumption.
+                let iter_expr = if matches!(expr.kind, ExprKind::Name(_)) {
+                    format!("{}.by_ref()", rendered)
+                } else {
+                    rendered
+                };
+                Ok(IterSource {
+                    setup: Vec::new(),
+                    expr: iter_expr,
+                })
+            }
             // References to collections.
             Some(Type::Ref(inner)) => match inner.as_ref() {
                 Type::Set(elem) => {

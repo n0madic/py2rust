@@ -85,6 +85,8 @@ pub struct TypeChecker<'a> {
     current_class: Option<String>,
     /// Stack of scope indices marking the start of each function scope.
     function_scopes: Vec<usize>,
+    /// Stack of inferred generator yield types for the current function nesting.
+    generator_yield_stack: Vec<Option<Type>>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -161,6 +163,7 @@ impl<'a> TypeChecker<'a> {
             lambda_defs: HashMap::new(),
             current_class: None,
             function_scopes: Vec::new(),
+            generator_yield_stack: Vec::new(),
         };
 
         // Third pass: collect function and class signatures (methods, fields)

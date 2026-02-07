@@ -366,6 +366,11 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                 }
             }
             ExprKind::Starred { value } => visit_expr(value, counts),
+            ExprKind::Yield { value } => {
+                if let Some(value) = value {
+                    visit_expr(value, counts);
+                }
+            }
             ExprKind::Attr { value, .. } => visit_expr(value, counts),
             ExprKind::Binary { left, right, .. } => {
                 visit_expr(left, counts);
@@ -499,6 +504,12 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                 }
             }
             StmtKind::For { iter, body, .. } => {
+                // Iterator bindings consumed via `.by_ref()` need mutable locals.
+                if let ExprKind::Name(name) = &iter.kind {
+                    if matches!(iter.ty.as_ref(), Some(Type::Iterator(_))) {
+                        *counts.entry(name.clone()).or_insert(0) += 1;
+                    }
+                }
                 visit_expr(iter, counts);
                 for stmt in body {
                     visit_stmt(stmt, counts);

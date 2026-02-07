@@ -143,6 +143,11 @@ impl<'a> Codegen<'a> {
             ExprKind::Starred { value } => {
                 self.collect_list_elem_types_in_expr(value, inferred);
             }
+            ExprKind::Yield { value } => {
+                if let Some(value) = value {
+                    self.collect_list_elem_types_in_expr(value, inferred);
+                }
+            }
             ExprKind::Attr { value, .. } => {
                 self.collect_list_elem_types_in_expr(value, inferred);
             }

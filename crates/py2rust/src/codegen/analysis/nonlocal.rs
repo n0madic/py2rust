@@ -211,6 +211,19 @@ impl<'a> Codegen<'a> {
                         unresolved,
                     );
                 }
+                ExprKind::Yield { value } => {
+                    if let Some(value) = value {
+                        visit_expr_for_lambdas(
+                            this,
+                            value,
+                            locals,
+                            nonlocals,
+                            globals,
+                            cell_locals,
+                            unresolved,
+                        );
+                    }
+                }
                 ExprKind::Attr { value, .. } => {
                     visit_expr_for_lambdas(
                         this,

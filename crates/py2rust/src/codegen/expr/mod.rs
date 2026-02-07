@@ -29,6 +29,10 @@ impl<'a> Codegen<'a> {
         match &expr.kind {
             ExprKind::Literal(lit) => self.gen_literal_expr(expr, lit),
             ExprKind::Name(name) => self.gen_name_expr(name),
+            ExprKind::Yield { .. } => Err(self.error(
+                expr.span,
+                "yield expressions are only emitted through generator wrappers",
+            )),
             ExprKind::Attr { value, attr } => self.gen_attr_expr(value, attr),
             ExprKind::Call {
                 func,
