@@ -651,6 +651,23 @@ def test_dicts() -> None:
     assert copied["a"] == 10
     assert copied["b"] == 2
 
+    # Insertion order is part of Python dict semantics.
+    ordered: dict[str, int] = {"x": 1, "y": 2, "z": 3}
+    assert list(ordered) == ["x", "y", "z"]
+
+    # Updating an existing key keeps its original position.
+    ordered["y"] = 20
+    assert list(ordered) == ["x", "y", "z"]
+
+    # Deletion removes the key without disturbing remaining order.
+    popped = ordered.pop("y")
+    assert popped == 20
+    assert list(ordered) == ["x", "z"]
+
+    # Re-inserting a removed key appends it at the end.
+    ordered["y"] = 200
+    assert list(ordered) == ["x", "z", "y"]
+
 
 # Set operations
 def test_sets() -> None:

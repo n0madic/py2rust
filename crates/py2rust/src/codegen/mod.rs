@@ -34,6 +34,7 @@ pub(crate) struct Uses {
     pub(crate) range3: bool,
     pub(crate) round: bool,
     pub(crate) hash_map: bool,
+    pub(crate) index_map: bool,
     pub(crate) hash_set: bool,
     pub(crate) type_name: bool,
     pub(crate) py_max: bool,
@@ -145,13 +146,13 @@ pub(crate) enum ListStorage {
 
 /// Storage strategy for dict values in generated Rust.
 ///
-/// Local dicts are represented as `HashMap<K, V>` for zero-cost mutation,
-/// while shared dicts use `Arc<Mutex<HashMap<K, V>>>` to preserve Python aliasing.
+/// Local dicts are represented as `IndexMap<K, V>` for insertion-ordered semantics,
+/// while shared dicts use `Arc<Mutex<IndexMap<K, V>>>` to preserve Python aliasing.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) enum DictStorage {
-    /// Non-escaping dict stored as `HashMap<K, V>`.
+    /// Non-escaping dict stored as `IndexMap<K, V>`.
     Local,
-    /// Potentially shared dict stored as `Arc<Mutex<HashMap<K, V>>>`.
+    /// Potentially shared dict stored as `Arc<Mutex<IndexMap<K, V>>>`.
     Shared,
 }
 
@@ -397,7 +398,7 @@ impl<'a> Codegen<'a> {
     ///
     /// 4. **Header injection**: After generating all code, we prepend:
     ///    - `#![allow(dead_code, unused_variables, clippy::all)]`
-    ///    - Necessary imports (HashMap, HashSet, etc.)
+    ///    - Necessary imports (IndexMap, HashMap, HashSet, etc.)
     ///    - Global constant declarations (__NAME__)
     ///    - Helper function definitions
     ///

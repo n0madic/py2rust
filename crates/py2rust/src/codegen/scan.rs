@@ -5,7 +5,7 @@ use crate::builtin::registry::{find_builtin, BuiltinId};
 ///
 /// Why scan before generating?
 /// - We only want to emit helpers that are actually used (keeps output clean)
-/// - We need to know imports (HashMap, HashSet) before emitting the header
+/// - We need to know imports (IndexMap, HashMap, HashSet) before emitting the header
 /// - Some optimizations require whole-program analysis (e.g., __name__ comparison)
 ///
 /// The scan pass is read-only - it doesn't modify the HIR, just sets flags in `Uses`.
@@ -14,7 +14,7 @@ impl<'a> Codegen<'a> {
     ///
     /// This traverses all functions, classes, statements, and expressions to find:
     /// - Builtin calls (print, len, range, etc.)
-    /// - Collection types (dict, set - need HashMap/HashSet imports)
+    /// - Collection types (dict, set - need IndexMap/HashSet imports)
     /// - Special operations (slicing, indexing - may need helpers)
     pub(crate) fn collect_uses(&mut self, program: &Program) -> Result<(), CompileError> {
         for item in &program.items {
@@ -38,7 +38,7 @@ impl<'a> Codegen<'a> {
     fn scan_type_uses(&mut self, ty: &Type) {
         match ty {
             Type::Dict(k, v) => {
-                self.uses.hash_map = true;
+                self.uses.index_map = true;
                 self.scan_type_uses(k);
                 self.scan_type_uses(v);
             }
@@ -471,7 +471,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Dict(_) => {
-                self.uses.hash_map = true;
+                self.uses.index_map = true;
             }
             ExprKind::Set(items) => {
                 self.uses.hash_set = true;

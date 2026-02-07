@@ -76,6 +76,7 @@ impl<'a> Codegen<'a> {
                     || matches!(arg.kind, ExprKind::Dict(_))
                     || is_dict_ctor_call
                 {
+                    self.uses.index_map = true;
                     let dict_expr = self.gen_expr(arg)?;
                     let is_local = matches!(self.dict_storage_for_expr(arg), DictStorage::Local);
                     let needs_concrete_dict = match arg.ty.as_ref() {
@@ -91,13 +92,13 @@ impl<'a> Codegen<'a> {
                         let tmp = self.new_tmp();
                         if is_local {
                             return Ok(format!(
-                                "{{ let {tmp}: HashMap<PyRepr, PyRepr> = {dict_expr}; format!(\"{{:?}}\", {tmp}) }}",
+                                "{{ let {tmp}: IndexMap<PyRepr, PyRepr> = {dict_expr}; format!(\"{{:?}}\", {tmp}) }}",
                                 tmp = tmp,
                                 dict_expr = dict_expr
                             ));
                         }
                         return Ok(format!(
-                            "{{ let {tmp}: Arc<Mutex<HashMap<PyRepr, PyRepr>>> = {dict_expr}; format!(\"{{:?}}\", {tmp}.lock().expect(\"dict mutex poisoned\")) }}",
+                            "{{ let {tmp}: Arc<Mutex<IndexMap<PyRepr, PyRepr>>> = {dict_expr}; format!(\"{{:?}}\", {tmp}.lock().expect(\"dict mutex poisoned\")) }}",
                             tmp = tmp,
                             dict_expr = dict_expr
                         ));
@@ -322,9 +323,9 @@ impl<'a> Codegen<'a> {
             if args.len() > 1 {
                 return Err(self.error(expr.span, "dict() expects at most one argument"));
             }
-            self.uses.hash_map = true;
+            self.uses.index_map = true;
             if args.is_empty() {
-                return Ok(Some("Arc::new(Mutex::new(HashMap::new()))".to_string()));
+                return Ok(Some("Arc::new(Mutex::new(IndexMap::new()))".to_string()));
             }
             let arg_expr = self.gen_expr(&args[0])?;
             if matches!(args[0].ty.as_ref(), Some(Type::Dict(_, _))) {
@@ -345,7 +346,7 @@ impl<'a> Codegen<'a> {
             }
             let iter_src = self.gen_iter_source(&args[0])?;
             let body = format!(
-                "Arc::new(Mutex::new(({}).collect::<HashMap<_, _>>()))",
+                "Arc::new(Mutex::new(({}).collect::<IndexMap<_, _>>()))",
                 iter_src.expr
             );
             return Ok(Some(iter_src.wrap(body)));
@@ -532,7 +533,7 @@ impl<'a> Codegen<'a> {
                 .as_ref()
                 .map(|ty| self.is_copy_type(ty))
                 .unwrap_or(false);
-            // Only some borrowed containers yield references (e.g., &HashMap); sets yield owned.
+            // Only some borrowed containers yield references (e.g., &IndexMap); sets yield owned.
             let yields_ref = matches!(
                 args[0].ty.as_ref(),
                 Some(Type::Ref(inner)) if !matches!(inner.as_ref(), Type::Set(_))
@@ -568,7 +569,7 @@ impl<'a> Codegen<'a> {
                 .as_ref()
                 .map(|ty| self.is_copy_type(ty))
                 .unwrap_or(false);
-            // Only some borrowed containers yield references (e.g., &HashMap); sets yield owned.
+            // Only some borrowed containers yield references (e.g., &IndexMap); sets yield owned.
             let yields_ref = matches!(
                 args[0].ty.as_ref(),
                 Some(Type::Ref(inner)) if !matches!(inner.as_ref(), Type::Set(_))

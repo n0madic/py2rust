@@ -258,7 +258,7 @@ impl<'a> Codegen<'a> {
     /// Convert a type to its borrowed equivalent for function parameters.
     /// - list[T] -> Arc<Mutex<Vec<T>>> (shared list, no borrowing)
     /// - str -> &str
-    /// - dict[K,V] -> Arc<Mutex<HashMap<K,V>>> (shared dict, no borrowing)
+    /// - dict[K,V] -> Arc<Mutex<IndexMap<K,V>>> (shared dict, no borrowing)
     /// - Primitives (int, float, bool) stay owned (Copy types)
     pub(crate) fn to_borrowed_param_type(&self, ty: &Type) -> Type {
         match ty {

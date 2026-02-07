@@ -16,7 +16,7 @@ impl<'a> Codegen<'a> {
                 if args.is_empty() || args.len() > 2 {
                     return Err(self.error(value.span, "dict.get() expects one or two arguments"));
                 }
-                self.uses.hash_map = true;
+                self.uses.index_map = true;
                 let key_expr = self.gen_expr(&args[0])?;
                 let default_expr = if args.len() == 2 {
                     Some(self.gen_expr(&args[1])?)
@@ -110,7 +110,7 @@ impl<'a> Codegen<'a> {
                 if args.is_empty() || args.len() > 2 {
                     return Err(self.error(value.span, "dict.pop() expects one or two arguments"));
                 }
-                self.uses.hash_map = true;
+                self.uses.index_map = true;
                 let key_expr = self.gen_expr(&args[0])?;
                 let default_expr = if args.len() == 2 {
                     Some(self.gen_expr(&args[1])?)
@@ -121,14 +121,14 @@ impl<'a> Codegen<'a> {
                     let target_expr = self.gen_expr(value)?;
                     if let Some(default_expr) = default_expr {
                         return Ok(format!(
-                            "{target}.remove(&{key}).unwrap_or({default})",
+                            "{target}.shift_remove(&{key}).unwrap_or({default})",
                             target = target_expr,
                             key = key_expr,
                             default = default_expr
                         ));
                     }
                     let pop_expr = format!(
-                        "{target}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".into()))",
+                        "{target}.shift_remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".into()))",
                         target = target_expr,
                         key = key_expr
                     );
@@ -141,7 +141,7 @@ impl<'a> Codegen<'a> {
                         true,
                         |_tc, guard| {
                             format!(
-                                "{guard}.remove(&{key}).unwrap_or({default})",
+                                "{guard}.shift_remove(&{key}).unwrap_or({default})",
                                 guard = guard,
                                 key = key_expr,
                                 default = default_expr
@@ -155,7 +155,7 @@ impl<'a> Codegen<'a> {
                     true,
                     |tc, guard| {
                         tc.wrap_result(format!(
-                            "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".into()))",
+                            "{guard}.shift_remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".into()))",
                             guard = guard,
                             key = key_expr
                         ))
@@ -165,6 +165,7 @@ impl<'a> Codegen<'a> {
         }
         if attr == "clear" {
             if let Some(Type::Dict(_, _)) = value.ty.as_ref() {
+                self.uses.index_map = true;
                 if !args.is_empty() {
                     return Err(self.error(value.span, "dict.clear() expects no arguments"));
                 }
@@ -182,12 +183,13 @@ impl<'a> Codegen<'a> {
         }
         if attr == "copy" {
             if let Some(Type::Dict(_, _)) = value.ty.as_ref() {
+                self.uses.index_map = true;
                 if !args.is_empty() {
                     return Err(self.error(value.span, "dict.copy() expects no arguments"));
                 }
                 if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
                     let target_expr = self.gen_expr(value)?;
-                    // HashMap::clone creates a new dict object.
+                    // IndexMap::clone creates a new dict object.
                     return Ok(format!("{}.clone()", target_expr));
                 }
                 return self.with_locked_attr_target(
@@ -203,7 +205,7 @@ impl<'a> Codegen<'a> {
                 if args.len() != 1 {
                     return Err(self.error(value.span, "dict.update() expects one argument"));
                 }
-                self.uses.hash_map = true;
+                self.uses.index_map = true;
                 let arg_expr = self.gen_expr(&args[0])?;
                 // Snapshot key/value pairs to avoid holding two dict borrows/locks at once.
                 let pairs_tmp = self.new_tmp();

@@ -143,10 +143,10 @@ def make_dict() -> dict[str, int]:
 "#;
     let out =
         compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
-    // Should use HashMap::from([...]) instead of repeated .insert()
+    // Should use IndexMap::from([...]) instead of repeated .insert()
     assert!(
-        out.rust.contains("HashMap::from(["),
-        "Should use HashMap::from"
+        out.rust.contains("IndexMap::from(["),
+        "Should use IndexMap::from"
     );
 }
 
@@ -158,10 +158,10 @@ def make_empty() -> dict[str, int]:
 "#;
     let out =
         compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
-    // Empty dict should use HashMap::new()
+    // Empty dict should use IndexMap::new()
     assert!(
-        out.rust.contains("HashMap::new()"),
-        "Should use HashMap::new() for empty dict"
+        out.rust.contains("IndexMap::new()"),
+        "Should use IndexMap::new() for empty dict"
     );
 }
 

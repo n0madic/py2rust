@@ -430,7 +430,7 @@ impl<'a> Codegen<'a> {
                 if let Some(Type::Dict(_, _)) = container.ty.as_ref() {
                     let idx_expr = self.gen_expr(index)?;
                     if matches!(self.dict_storage_for_expr(container), DictStorage::Local) {
-                        // Local dicts are plain HashMap values.
+                        // Local dicts are plain IndexMap values.
                         self.push_line(&format!(
                             "{}.insert({}, {});",
                             cont_expr, idx_expr, val_expr
@@ -915,7 +915,7 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Generate a dict expression for a local HashMap-backed dict assignment.
+    /// Generate a dict expression for a local IndexMap-backed dict assignment.
     pub(super) fn gen_dict_assignment_expr(
         &mut self,
         name: &str,
@@ -940,16 +940,16 @@ impl<'a> Codegen<'a> {
             } => {
                 if let ExprKind::Name(call_name) = &func.kind {
                     if call_name == "dict" {
-                        self.uses.hash_map = true;
+                        self.uses.index_map = true;
                         if args.is_empty() && keywords.is_empty() {
-                            return Ok(Some("HashMap::new()".to_string()));
+                            return Ok(Some("IndexMap::new()".to_string()));
                         }
                         if args.len() == 1 && keywords.is_empty() {
                             let arg = &args[0];
                             if matches!(arg.ty.as_ref(), Some(Type::Dict(_, _))) {
                                 let arg_expr = self.gen_expr(arg)?;
                                 if matches!(self.dict_storage_for_expr(arg), DictStorage::Local) {
-                                    // Local dict copy is a simple HashMap clone.
+                                    // Local dict copy is a simple IndexMap clone.
                                     return Ok(Some(format!("{}.clone()", arg_expr)));
                                 }
                                 let tmp = self.new_tmp();
@@ -962,7 +962,7 @@ impl<'a> Codegen<'a> {
                                 )));
                             }
                             let iter_src = self.gen_iter_source(arg)?;
-                            let body = format!("({}).collect::<HashMap<_, _>>()", iter_src.expr);
+                            let body = format!("({}).collect::<IndexMap<_, _>>()", iter_src.expr);
                             return Ok(Some(iter_src.wrap(body)));
                         }
                     }

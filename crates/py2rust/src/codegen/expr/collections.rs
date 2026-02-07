@@ -124,9 +124,9 @@ impl<'a> Codegen<'a> {
         items: &[(Expr, Expr)],
         storage: DictStorage,
     ) -> Result<String, CompileError> {
-        self.uses.hash_map = true;
+        self.uses.index_map = true;
         if items.is_empty() {
-            let base = "HashMap::new()".to_string();
+            let base = "IndexMap::new()".to_string();
             return Ok(self.wrap_dict_storage_expr(&base, storage));
         }
         let (expected_key, expected_val) = match expr.ty.as_ref() {
@@ -152,7 +152,7 @@ impl<'a> Codegen<'a> {
             };
             pairs.push(format!("({}, {})", key_expr, val_expr));
         }
-        let base = format!("HashMap::from([{}])", pairs.join(", "));
+        let base = format!("IndexMap::from([{}])", pairs.join(", "));
         Ok(self.wrap_dict_storage_expr(&base, storage))
     }
 
@@ -224,7 +224,7 @@ impl<'a> Codegen<'a> {
             if matches!(inner.as_ref(), Type::Dict(_, _)) {
                 let idx = self.gen_expr(index)?;
                 self.uses.py_dict_get = true;
-                self.uses.hash_map = true;
+                self.uses.index_map = true;
                 let tmp = self.new_tmp();
                 if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
                     return Ok(self.wrap_result(format!(
@@ -314,7 +314,7 @@ impl<'a> Codegen<'a> {
         if let Some(Type::Dict(_, _)) = value.ty.as_ref() {
             let idx = self.gen_expr(index)?;
             self.uses.py_dict_get = true;
-            self.uses.hash_map = true;
+            self.uses.index_map = true;
             if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
                 return Ok(self.wrap_result(format!("py_dict_get(&{}, &{})", base, idx)));
             }

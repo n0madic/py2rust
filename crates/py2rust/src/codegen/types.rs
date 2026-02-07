@@ -9,7 +9,7 @@ use super::*;
 /// - float -> f64 (standard floating point)
 /// - str -> String (owned, not &str, to avoid lifetime complexity)
 /// - list -> Arc<Mutex<Vec<T>>>
-/// - dict -> Arc<Mutex<HashMap<K, V>>>
+/// - dict -> Arc<Mutex<IndexMap<K, V>>>
 /// - set -> HashSet<T>
 /// - None -> () (unit type)
 /// - Optional[T] -> Option<T>
@@ -54,9 +54,9 @@ impl<'a> Codegen<'a> {
                 self.rust_type_with_lambda_depth(inner, lambda_depth)
             ),
             Type::Dict(k, v) => {
-                self.uses.hash_map = true;
+                self.uses.index_map = true;
                 format!(
-                    "Arc<Mutex<HashMap<{}, {}>>>",
+                    "Arc<Mutex<IndexMap<{}, {}>>>",
                     self.rust_type_with_lambda_depth(k, lambda_depth),
                     self.rust_type_with_lambda_depth(v, lambda_depth)
                 )
@@ -158,8 +158,8 @@ impl<'a> Codegen<'a> {
     pub(crate) fn rust_type_for_dict_storage(&mut self, ty: &Type, storage: DictStorage) -> String {
         match (ty, storage) {
             (Type::Dict(k, v), DictStorage::Local) => {
-                self.uses.hash_map = true;
-                format!("HashMap<{}, {}>", self.rust_type(k), self.rust_type(v))
+                self.uses.index_map = true;
+                format!("IndexMap<{}, {}>", self.rust_type(k), self.rust_type(v))
             }
             _ => self.rust_type(ty),
         }
@@ -219,9 +219,9 @@ impl<'a> Codegen<'a> {
             }
             Type::Dict(k, v) => {
                 // Match local dict semantics (shared Arc) even in globals.
-                self.uses.hash_map = true;
+                self.uses.index_map = true;
                 format!(
-                    "Arc<Mutex<HashMap<{}, {}>>>",
+                    "Arc<Mutex<IndexMap<{}, {}>>>",
                     self.rust_type_for_global(k),
                     self.rust_type_for_global(v)
                 )

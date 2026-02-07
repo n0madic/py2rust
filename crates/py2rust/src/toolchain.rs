@@ -9,8 +9,8 @@ use std::process::{Command, Output};
 /// 2. Direct rustc invocation is faster (no dependency resolution)
 /// 3. It simplifies the CLI (no Cargo.toml needed)
 ///
-/// Note: when generated code uses `re` helpers, we link `regex-lite`
-/// as an external crate for rustc.
+/// Note: generated Rust may reference external helper crates (for example
+/// `regex-lite` or `indexmap`) that must be linked explicitly when invoking rustc.
 #[derive(Debug, Clone)]
 pub struct RustcOptions {
     /// Rust edition to use (2021 is the latest stable as of writing)
@@ -46,6 +46,7 @@ pub fn compile_rustc(
         .arg("-o")
         .arg(bin_path);
     maybe_link_regex_lite(&mut cmd, rs_path)?;
+    maybe_link_indexmap(&mut cmd, rs_path)?;
     if opts.strip_symbols {
         // -C strip=symbols removes debug info, reducing binary size significantly
         cmd.arg("-C").arg("strip=symbols");
@@ -74,9 +75,41 @@ fn maybe_link_regex_lite(cmd: &mut Command, rs_path: &Path) -> std::io::Result<(
     Ok(())
 }
 
+/// Link `indexmap` when generated code references it.
+fn maybe_link_indexmap(cmd: &mut Command, rs_path: &Path) -> std::io::Result<()> {
+    let source = fs::read_to_string(rs_path)?;
+    if !source.contains("indexmap::") {
+        return Ok(());
+    }
+    let lib_path = find_indexmap_rlib().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "generated code requires indexmap, but libindexmap*.rlib was not found",
+        )
+    })?;
+    if let Some(parent) = lib_path.parent() {
+        cmd.arg("-L")
+            .arg(format!("dependency={}", parent.display()));
+    }
+    cmd.arg("--extern")
+        .arg(format!("indexmap={}", lib_path.display()));
+    Ok(())
+}
+
 /// Resolve the built `regex-lite` rlib path from common Cargo target locations.
 fn find_regex_lite_rlib() -> Option<PathBuf> {
-    for dir in regex_lite_search_dirs() {
+    find_dependency_rlib("regex_lite")
+}
+
+/// Resolve the built `indexmap` rlib path from common Cargo target locations.
+fn find_indexmap_rlib() -> Option<PathBuf> {
+    find_dependency_rlib("indexmap")
+}
+
+/// Resolve a dependency rlib path from common Cargo target locations.
+fn find_dependency_rlib(crate_name: &str) -> Option<PathBuf> {
+    let prefix = format!("lib{crate_name}-");
+    for dir in dependency_search_dirs() {
         if !dir.exists() || !dir.is_dir() {
             continue;
         }
@@ -88,7 +121,7 @@ fn find_regex_lite_rlib() -> Option<PathBuf> {
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if name.starts_with("libregex_lite-") && name.ends_with(".rlib") {
+            if name.starts_with(&prefix) && name.ends_with(".rlib") {
                 return Some(path);
             }
         }
@@ -97,7 +130,7 @@ fn find_regex_lite_rlib() -> Option<PathBuf> {
 }
 
 /// Candidate target directories where Cargo stores dependency rlibs.
-fn regex_lite_search_dirs() -> Vec<PathBuf> {
+fn dependency_search_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
     if let Ok(exe_path) = std::env::current_exe() {

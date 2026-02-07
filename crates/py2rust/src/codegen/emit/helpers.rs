@@ -136,8 +136,10 @@ fn py_os_getenv(key: &str, default: Option<String>) -> Option<String> {
 
 /// Static helper body for `os.environ`.
 const HELPER_PY_OS_ENVIRON: &str = r#"
-fn py_os_environ() -> Arc<Mutex<std::collections::HashMap<String, String>>> {
-    Arc::new(Mutex::new(std::env::vars().collect()))
+fn py_os_environ() -> Arc<Mutex<indexmap::IndexMap<String, String>>> {
+    Arc::new(Mutex::new(
+        std::env::vars().collect::<indexmap::IndexMap<_, _>>(),
+    ))
 }
 "#;
 
@@ -1048,6 +1050,21 @@ where
     }
 }
 
+impl<K, V> PyToJsonValue for indexmap::IndexMap<K, V>
+where
+    K: ToString + Eq + std::hash::Hash,
+    V: PyToJsonValue,
+{
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        let mut object: std::collections::HashMap<String, __py_json_value> =
+            std::collections::HashMap::new();
+        for (key, value) in self.iter() {
+            object.insert(key.to_string(), value.to_json_value()?);
+        }
+        Ok(__py_json_value::Object(object))
+    }
+}
+
 impl<K, V> PyToJsonValue for Arc<Mutex<std::collections::HashMap<K, V>>>
 where
     K: ToString + Eq + std::hash::Hash,
@@ -1059,7 +1076,18 @@ where
     }
 }
 
-impl<K, V> PyToJsonValue for Rc<RefCell<std::collections::HashMap<K, V>>>
+impl<K, V> PyToJsonValue for Arc<Mutex<indexmap::IndexMap<K, V>>>
+where
+    K: ToString + Eq + std::hash::Hash,
+    V: PyToJsonValue,
+{
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        let object = self.lock().expect("dict mutex poisoned");
+        object.to_json_value()
+    }
+}
+
+impl<K, V> PyToJsonValue for Rc<RefCell<indexmap::IndexMap<K, V>>>
 where
     K: ToString + Eq + std::hash::Hash,
     V: PyToJsonValue,
@@ -1432,13 +1460,13 @@ impl PyLen for String {
 impl PyLen for &str {
     fn py_len(&self) -> i64 { self.chars().count() as i64 }
 }
-impl<K, V> PyLen for std::collections::HashMap<K, V> {
+impl<K, V> PyLen for indexmap::IndexMap<K, V> {
     fn py_len(&self) -> i64 { self.len() as i64 }
 }
-impl<K, V> PyLen for Arc<Mutex<std::collections::HashMap<K, V>>> {
+impl<K, V> PyLen for Arc<Mutex<indexmap::IndexMap<K, V>>> {
     fn py_len(&self) -> i64 { self.lock().expect("dict mutex poisoned").len() as i64 }
 }
-impl<K, V> PyLen for Rc<RefCell<std::collections::HashMap<K, V>>> {
+impl<K, V> PyLen for Rc<RefCell<indexmap::IndexMap<K, V>>> {
     fn py_len(&self) -> i64 { self.borrow().len() as i64 }
 }
 impl<T> PyLen for std::collections::HashSet<T> {
@@ -2261,7 +2289,7 @@ impl<'a> Codegen<'a> {
         }
         if self.uses.py_dict_get {
             self.push_line(
-                "fn py_dict_get<K: Eq + std::hash::Hash, V: Clone>(map: &HashMap<K, V>, key: &K) -> Result<V, PyError> {",
+                "fn py_dict_get<K: Eq + std::hash::Hash, V: Clone>(map: &IndexMap<K, V>, key: &K) -> Result<V, PyError> {",
             );
             self.indent += 1;
             self.push_line(

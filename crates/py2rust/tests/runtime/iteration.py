@@ -307,6 +307,9 @@ forward_it = iter(rev_d)
 fk1 = next(forward_it)
 fk2 = next(forward_it)
 fk3 = next(forward_it)
+assert fk1 == "a", "fk1 should equal 'a'"
+assert fk2 == "b", "fk2 should equal 'b'"
+assert fk3 == "c", "fk3 should equal 'c'"
 
 # Get reversed order
 rev_di = reversed(rev_d)

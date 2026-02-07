@@ -17,7 +17,7 @@ impl<'a> Codegen<'a> {
         storage
     }
 
-    /// Walk statements and record whether dict locals can remain as HashMap.
+    /// Walk statements and record whether dict locals can remain as local IndexMap.
     fn collect_dict_storage_in_stmts(
         &self,
         stmts: &[Stmt],
