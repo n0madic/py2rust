@@ -329,9 +329,13 @@ impl<'a> Lowerer<'a> {
             TypeRef::Unknown
         };
 
-        // Lower function body
+        // Drop only the leading function docstring; later string expression statements
+        // remain executable, matching Python behavior.
         let mut body_stmts = Vec::new();
-        for stmt in &func.body {
+        for (idx, stmt) in func.body.iter().enumerate() {
+            if idx == 0 && Self::is_docstring_stmt(stmt) {
+                continue;
+            }
             body_stmts.push(self.lower_stmt(stmt)?);
         }
         Ok(Function {

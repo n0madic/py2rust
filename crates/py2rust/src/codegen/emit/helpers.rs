@@ -23,6 +23,28 @@ fn py_next<T>(value: Option<T>) -> Result<T, PyError> {
 }
 "#;
 
+/// Static helper body for Python-style string indexing with negative indices.
+const HELPER_PY_STR_GET: &str = r#"
+fn py_str_get(s: &str, idx: i64) -> Result<String, PyError> {
+    if idx >= 0 {
+        return s
+            .chars()
+            .nth(idx as usize)
+            .map(|ch| ch.to_string())
+            .ok_or_else(|| PyError::IndexError("IndexError".to_string()));
+    }
+    let len = s.chars().count() as i64;
+    let adj = len + idx;
+    if adj < 0 || adj >= len {
+        return Err(PyError::IndexError("IndexError".to_string()));
+    }
+    s.chars()
+        .nth(adj as usize)
+        .map(|ch| ch.to_string())
+        .ok_or_else(|| PyError::IndexError("IndexError".to_string()))
+}
+"#;
+
 /// Static helper body for `os.remove(path)`.
 const HELPER_PY_OS_REMOVE: &str = r#"
 fn py_os_remove(path: &str) -> Result<(), PyError> {
@@ -908,6 +930,9 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.push_line("}");
         }
+        if self.uses.py_str_get {
+            self.push_block(HELPER_PY_STR_GET);
+        }
         if self.uses.py_list_index {
             self.push_line(
                 "fn py_list_index<T: PartialEq>(items: &[T], needle: &T) -> Result<i64, PyError> {",
@@ -1015,6 +1040,7 @@ impl<'a> Codegen<'a> {
             || self.uses.py_next
             || self.uses.py_dict_get
             || self.uses.py_list_get
+            || self.uses.py_str_get
             || self.uses.py_index
             || self.uses.py_ascii
             || self.uses.py_string_methods
@@ -1037,6 +1063,7 @@ impl<'a> Codegen<'a> {
             || self.uses.py_parse_float
             || self.uses.py_index
             || self.uses.py_list_get
+            || self.uses.py_str_get
             || self.uses.py_dict_get
             || self.uses.py_chr
             || self.uses.py_ord

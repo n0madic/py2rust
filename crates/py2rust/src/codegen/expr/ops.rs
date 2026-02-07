@@ -171,14 +171,16 @@ impl<'a> Codegen<'a> {
         {
             let left_expr = self.gen_numeric_operand(left, false)?;
             let right_expr = self.gen_numeric_operand(right, false)?;
-            let left_checked = format!("({}).to_owned()", left_expr);
-            let right_checked = format!("({}).to_owned()", right_expr);
             let checked_method = match op {
                 BinOp::Add => "checked_add",
                 BinOp::Sub => "checked_sub",
                 BinOp::Mul => "checked_mul",
                 _ => unreachable!(),
             };
+            // Normalize both operands to plain i64 values so checked arithmetic works
+            // for both owned ints and borrowed pattern bindings (&i64).
+            let left_checked = format!("(*std::borrow::Borrow::<i64>::borrow(&({})))", left_expr);
+            let right_checked = format!("(*std::borrow::Borrow::<i64>::borrow(&({})))", right_expr);
             self.uses.py_error = true;
             let guarded = format!(
                 "{}.{}({}).ok_or_else(|| PyError::OverflowError(\"integer overflow\".to_string()))",

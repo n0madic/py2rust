@@ -160,6 +160,10 @@ impl<'a> Codegen<'a> {
 
             let rendered = if args.is_empty() {
                 "\"\".to_string()".to_string()
+            } else if args.len() == 1 && sep_kw.is_none() && end_kw.is_none() {
+                // Fast-path: single-argument print without sep/end doesn't need
+                // intermediate Vec<String> + join allocation.
+                render_arg(&args[0])?
             } else if let Some(sep_expr) = sep_kw {
                 let parts: Result<Vec<String>, CompileError> =
                     args.iter().map(&mut render_arg).collect();
@@ -789,25 +793,51 @@ impl<'a> Codegen<'a> {
                         key_expr.ty.as_ref(),
                         Some(Type::Lambda { ret, .. }) if matches!(ret.as_ref(), Type::Result(_, _))
                     );
+                    let item_is_copy = args[0]
+                        .ty
+                        .as_ref()
+                        .and_then(|ty| self.iter_item_type_hint(ty))
+                        .map(|ty| self.is_copy_type(&ty))
+                        .unwrap_or(false);
                     let iter_name = self.new_tmp();
                     let best_name = self.new_tmp();
                     let best_key_name = self.new_tmp();
                     let item_name = self.new_tmp();
                     let item_key_name = self.new_tmp();
-                    let best_key_expr = if key_returns_result {
-                        self.wrap_result(format!("({key_fn})({best_name}.clone())"))
+                    let best_key_arg = if item_is_copy {
+                        best_name.clone()
                     } else {
-                        format!("({key_fn})({best_name}.clone())")
+                        format!("{best_name}.clone()")
+                    };
+                    let item_key_arg = if item_is_copy {
+                        item_name.clone()
+                    } else {
+                        format!("{item_name}.clone()")
+                    };
+                    let best_key_expr = if key_returns_result {
+                        self.wrap_result(format!("({key_fn})({best_key_arg})"))
+                    } else {
+                        format!("({key_fn})({best_key_arg})")
                     };
                     let item_key_expr = if key_returns_result {
-                        self.wrap_result(format!("({key_fn})({item_name}.clone())"))
+                        self.wrap_result(format!("({key_fn})({item_key_arg})"))
                     } else {
-                        format!("({key_fn})({item_name}.clone())")
+                        format!("({key_fn})({item_key_arg})")
+                    };
+                    // Iterator expressions built from iterable literals may borrow temporaries
+                    // (for example, vec![...].iter().cloned()). Buffer those defensively.
+                    let iter_expr = if matches!(
+                        args[0].kind,
+                        ExprKind::List(_) | ExprKind::Tuple(_) | ExprKind::Set(_)
+                    ) {
+                        format!("({}).collect::<Vec<_>>().into_iter()", iter_src.expr)
+                    } else {
+                        iter_src.expr.clone()
                     };
                     let body = self.wrap_result(format!(
-                        "{{ let mut {iter_name} = ({iter}).collect::<Vec<_>>().into_iter(); match {iter_name}.next() {{ Some(first_item) => {{ let mut {best_name} = first_item; let mut {best_key_name} = {best_key_expr}; for {item_name} in {iter_name} {{ let {item_key_name} = {item_key_expr}; if {item_key_name} > {best_key_name} {{ {best_name} = {item_name}; {best_key_name} = {item_key_name}; }} }} Ok({best_name}) }}, None => Err(PyError::ValueError(\"max() arg is an empty sequence\".to_string())) }} }}",
+                        "{{ let mut {iter_name} = {iter}; match {iter_name}.next() {{ Some(first_item) => {{ let mut {best_name} = first_item; let mut {best_key_name} = {best_key_expr}; for {item_name} in {iter_name} {{ let {item_key_name} = {item_key_expr}; if {item_key_name} > {best_key_name} {{ {best_name} = {item_name}; {best_key_name} = {item_key_name}; }} }} Ok({best_name}) }}, None => Err(PyError::ValueError(\"max() arg is an empty sequence\".to_string())) }} }}",
                         iter_name = iter_name,
-                        iter = iter_src.expr,
+                        iter = iter_expr,
                         best_name = best_name,
                         best_key_name = best_key_name,
                         item_name = item_name,
@@ -887,25 +917,51 @@ impl<'a> Codegen<'a> {
                         key_expr.ty.as_ref(),
                         Some(Type::Lambda { ret, .. }) if matches!(ret.as_ref(), Type::Result(_, _))
                     );
+                    let item_is_copy = args[0]
+                        .ty
+                        .as_ref()
+                        .and_then(|ty| self.iter_item_type_hint(ty))
+                        .map(|ty| self.is_copy_type(&ty))
+                        .unwrap_or(false);
                     let iter_name = self.new_tmp();
                     let best_name = self.new_tmp();
                     let best_key_name = self.new_tmp();
                     let item_name = self.new_tmp();
                     let item_key_name = self.new_tmp();
-                    let best_key_expr = if key_returns_result {
-                        self.wrap_result(format!("({key_fn})({best_name}.clone())"))
+                    let best_key_arg = if item_is_copy {
+                        best_name.clone()
                     } else {
-                        format!("({key_fn})({best_name}.clone())")
+                        format!("{best_name}.clone()")
+                    };
+                    let item_key_arg = if item_is_copy {
+                        item_name.clone()
+                    } else {
+                        format!("{item_name}.clone()")
+                    };
+                    let best_key_expr = if key_returns_result {
+                        self.wrap_result(format!("({key_fn})({best_key_arg})"))
+                    } else {
+                        format!("({key_fn})({best_key_arg})")
                     };
                     let item_key_expr = if key_returns_result {
-                        self.wrap_result(format!("({key_fn})({item_name}.clone())"))
+                        self.wrap_result(format!("({key_fn})({item_key_arg})"))
                     } else {
-                        format!("({key_fn})({item_name}.clone())")
+                        format!("({key_fn})({item_key_arg})")
+                    };
+                    // Iterator expressions built from iterable literals may borrow temporaries
+                    // (for example, vec![...].iter().cloned()). Buffer those defensively.
+                    let iter_expr = if matches!(
+                        args[0].kind,
+                        ExprKind::List(_) | ExprKind::Tuple(_) | ExprKind::Set(_)
+                    ) {
+                        format!("({}).collect::<Vec<_>>().into_iter()", iter_src.expr)
+                    } else {
+                        iter_src.expr.clone()
                     };
                     let body = self.wrap_result(format!(
-                        "{{ let mut {iter_name} = ({iter}).collect::<Vec<_>>().into_iter(); match {iter_name}.next() {{ Some(first_item) => {{ let mut {best_name} = first_item; let mut {best_key_name} = {best_key_expr}; for {item_name} in {iter_name} {{ let {item_key_name} = {item_key_expr}; if {item_key_name} < {best_key_name} {{ {best_name} = {item_name}; {best_key_name} = {item_key_name}; }} }} Ok({best_name}) }}, None => Err(PyError::ValueError(\"min() arg is an empty sequence\".to_string())) }} }}",
+                        "{{ let mut {iter_name} = {iter}; match {iter_name}.next() {{ Some(first_item) => {{ let mut {best_name} = first_item; let mut {best_key_name} = {best_key_expr}; for {item_name} in {iter_name} {{ let {item_key_name} = {item_key_expr}; if {item_key_name} < {best_key_name} {{ {best_name} = {item_name}; {best_key_name} = {item_key_name}; }} }} Ok({best_name}) }}, None => Err(PyError::ValueError(\"min() arg is an empty sequence\".to_string())) }} }}",
                         iter_name = iter_name,
-                        iter = iter_src.expr,
+                        iter = iter_expr,
                         best_name = best_name,
                         best_key_name = best_key_name,
                         item_name = item_name,

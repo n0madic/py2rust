@@ -42,6 +42,7 @@ pub(crate) struct Uses {
     pub(crate) py_parse_float: bool,
     pub(crate) py_index: bool,
     pub(crate) py_list_get: bool,
+    pub(crate) py_str_get: bool,
     pub(crate) py_list_index: bool,
     pub(crate) py_list_count: bool,
     pub(crate) py_dict_get: bool,

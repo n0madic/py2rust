@@ -274,14 +274,12 @@ impl<'a> Codegen<'a> {
             }
             if matches!(inner.as_ref(), Type::Str) {
                 let idx_expr = self.gen_expr(index)?;
-                self.uses.py_list_get = true;
+                self.uses.py_str_get = true;
                 let tmp = self.new_tmp();
-                let chars = self.new_tmp();
                 return Ok(self.wrap_result(format!(
-                    "{{ let {tmp} = {base}; let str_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {chars}: Vec<char> = str_ref.chars().collect(); py_list_get(&{chars}, {idx}).map(|ch| ch.to_string()) }}",
+                    "{{ let {tmp} = {base}; let str_ref = {tmp}.as_ref().expect(\"optional value is None\"); py_str_get(str_ref, {idx}) }}",
                     tmp = tmp,
                     base = base,
-                    chars = chars,
                     idx = idx_expr
                 )));
             }
@@ -346,11 +344,9 @@ impl<'a> Codegen<'a> {
         }
         if matches!(value.ty.as_ref(), Some(Type::Str)) {
             let idx_expr = self.gen_expr(index)?;
-            self.uses.py_list_get = true;
-            let chars = self.new_tmp();
+            self.uses.py_str_get = true;
             return Ok(self.wrap_result(format!(
-                "{{ let {chars}: Vec<char> = {base}.chars().collect(); py_list_get(&{chars}, {idx}).map(|ch| ch.to_string()) }}",
-                chars = chars,
+                "py_str_get(&{base}, {idx})",
                 base = base,
                 idx = idx_expr
             )));

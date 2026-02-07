@@ -35,6 +35,21 @@ impl<'a> Lowerer<'a> {
         Self { source, filename }
     }
 
+    /// Return true when a statement is a standalone string literal docstring.
+    ///
+    /// Python treats the first such statement in a module/function/class body as
+    /// metadata, so it must not become executable code in generated Rust.
+    pub(super) fn is_docstring_stmt(stmt: &ast::Stmt) -> bool {
+        matches!(
+            stmt,
+            ast::Stmt::Expr(expr_stmt)
+                if matches!(
+                    &*expr_stmt.value,
+                    ast::Expr::Constant(cons) if matches!(cons.value, ast::Constant::Str(_))
+                )
+        )
+    }
+
     /// Lower a Python module (suite of statements) to HIR Program.
     ///
     /// Top-level items are categorized into:
@@ -50,7 +65,12 @@ impl<'a> Lowerer<'a> {
     pub fn lower(&self, suite: &ast::Suite) -> Result<Program, CompileError> {
         let mut items = Vec::new();
         let mut known_classes = std::collections::HashSet::new();
-        for stmt in suite {
+        for (idx, stmt) in suite.iter().enumerate() {
+            // Drop only the leading module docstring; later string expression statements
+            // remain executable, matching Python behavior.
+            if idx == 0 && Self::is_docstring_stmt(stmt) {
+                continue;
+            }
             match stmt {
                 ast::Stmt::FunctionDef(def) => {
                     if def.decorator_list.is_empty() {

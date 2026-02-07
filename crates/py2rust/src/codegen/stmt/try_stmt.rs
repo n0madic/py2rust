@@ -382,7 +382,19 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                 }
-                self.push_line(&format!("_try_{} = Some({}.clone());", name, name));
+                // Copy values can be snapshotted directly; other values need clone
+                // so the local binding remains available in the rest of the try body.
+                let snapshot_expr = if let Some((_, ty)) = try_vars.iter().find(|(n, _)| n == name)
+                {
+                    if self.is_copy_type(ty) {
+                        name.clone()
+                    } else {
+                        format!("{name}.clone()")
+                    }
+                } else {
+                    format!("{name}.clone()")
+                };
+                self.push_line(&format!("_try_{} = Some({});", name, snapshot_expr));
                 return Ok(());
             }
         }

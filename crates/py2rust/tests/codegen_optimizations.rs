@@ -138,3 +138,46 @@ def greet(name: str) -> str:
         "Should avoid String::from for literals"
     );
 }
+
+#[test]
+fn exceptions_codegen_avoids_redundant_runtime_patterns() {
+    // The comprehensive exception script is large enough to catch codegen bloat
+    // regressions in print/lowering/indexing/arithmetic paths.
+    let source = include_str!("runtime/exceptions.py");
+    let out = compile(source, "exceptions.py", &CompileOptions::default())
+        .expect("compile should succeed");
+
+    // Leading docstrings in module/function bodies should not become runtime statements.
+    assert!(
+        out.rust.lines().all(|line| {
+            let trimmed = line.trim();
+            !(trimmed.starts_with('"') && trimmed.ends_with(".to_string();"))
+        }),
+        "Docstring-like string statements should not be emitted as executable code"
+    );
+
+    // Single-argument print should not allocate intermediate Vec + join in this script.
+    assert!(
+        !out.rust.contains("py_print(vec![format!(\"{}\","),
+        "Single-argument print path should skip vec![] + join"
+    );
+
+    // Checked integer arithmetic should not emit redundant to_owned() for i64 values.
+    assert!(
+        !out.rust.contains(".to_owned().checked_add(")
+            && !out.rust.contains(".to_owned().checked_sub(")
+            && !out.rust.contains(".to_owned().checked_mul("),
+        "checked_* arithmetic should not use to_owned()"
+    );
+
+    // String indexing should use py_str_get helper instead of chars collect + py_list_get.
+    assert!(
+        out.rust
+            .contains("fn py_str_get(s: &str, idx: i64) -> Result<String, PyError>"),
+        "Expected dedicated string indexing helper"
+    );
+    assert!(
+        !out.rust.contains("chars().collect(); py_list_get("),
+        "String indexing should avoid temporary Vec<char> collection"
+    );
+}
