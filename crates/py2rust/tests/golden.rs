@@ -165,3 +165,38 @@ top: int = main()
     // A direct nested return call should not target `main(...)` anymore.
     assert!(!out.rust.contains("return main("));
 }
+
+#[test]
+fn main_rename_preserves_assignment_target_legacy_behavior() {
+    let source = r#"
+def main() -> int:
+    return 0
+
+items: list[int] = [0]
+items[main()] = 1
+"#;
+    let error = compile(source, "test.py", &CompileOptions::default())
+        .expect_err("legacy assignment-target traversal should not rename main()")
+        .to_string();
+    assert!(
+        error.contains("Unknown call target"),
+        "Error should reflect unresolved main() inside assignment target: {error}"
+    );
+}
+
+#[test]
+fn main_rename_preserves_comp_generator_legacy_behavior() {
+    let source = r#"
+def main() -> int:
+    return 1
+
+values: list[int] = [x for x in [1] for y in range(main())]
+"#;
+    let error = compile(source, "test.py", &CompileOptions::default())
+        .expect_err("legacy comprehension-generator traversal should not rename main()")
+        .to_string();
+    assert!(
+        error.contains("Unknown call target"),
+        "Error should reflect unresolved main() inside comprehension generators: {error}"
+    );
+}

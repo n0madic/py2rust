@@ -19,7 +19,7 @@ pub mod types;
 
 use crate::codegen::Codegen;
 use crate::diagnostic::{CompileError, Warning};
-use crate::hir_visit::{ExprVisitorMut, StmtVisitorMut};
+use crate::hir_visit::{ExprWalkerMut, StmtWalkerMut};
 use crate::lower::Lowerer;
 use crate::span::Span;
 use crate::typecheck::TypeChecker;
@@ -114,33 +114,7 @@ struct MainRenamer<'a> {
     new_name: &'a str,
 }
 
-impl MainRenamer<'_> {
-    /// Walk a list of statements in place.
-    fn walk_stmts(&mut self, stmts: &mut [hir::Stmt]) {
-        for stmt in stmts {
-            stmt.accept_mut(self);
-        }
-    }
-
-    /// Walk a list of expressions in place.
-    fn walk_exprs(&mut self, exprs: &mut [hir::Expr]) {
-        for expr in exprs {
-            expr.accept_mut(self);
-        }
-    }
-}
-
-impl ExprVisitorMut<()> for MainRenamer<'_> {
-    fn visit_literal_mut(&mut self, _lit: &mut hir::Literal) {}
-
-    fn visit_name_mut(&mut self, _name: &mut String) {}
-
-    fn visit_yield_mut(&mut self, value: &mut Option<Box<hir::Expr>>) {
-        if let Some(value) = value {
-            value.accept_mut(self);
-        }
-    }
-
+impl ExprWalkerMut for MainRenamer<'_> {
     fn visit_call_mut(
         &mut self,
         func: &mut hir::Expr,
@@ -154,98 +128,11 @@ impl ExprVisitorMut<()> for MainRenamer<'_> {
             }
         }
         func.accept_mut(self);
-        self.walk_exprs(args);
+        for arg in args {
+            arg.accept_mut(self);
+        }
         for kw in keywords {
             kw.value.accept_mut(self);
-        }
-    }
-
-    fn visit_starred_mut(&mut self, value: &mut hir::Expr) {
-        value.accept_mut(self);
-    }
-
-    fn visit_attr_mut(&mut self, value: &mut hir::Expr, _attr: &mut String) {
-        value.accept_mut(self);
-    }
-
-    fn visit_binary_mut(
-        &mut self,
-        _op: &mut hir::BinOp,
-        left: &mut hir::Expr,
-        right: &mut hir::Expr,
-    ) {
-        left.accept_mut(self);
-        right.accept_mut(self);
-    }
-
-    fn visit_unary_mut(&mut self, _op: &mut hir::UnaryOp, inner: &mut hir::Expr) {
-        inner.accept_mut(self);
-    }
-
-    fn visit_compare_mut(
-        &mut self,
-        _op: &mut hir::CmpOp,
-        left: &mut hir::Expr,
-        right: &mut hir::Expr,
-    ) {
-        left.accept_mut(self);
-        right.accept_mut(self);
-    }
-
-    fn visit_compare_chain_mut(
-        &mut self,
-        left: &mut hir::Expr,
-        _ops: &mut [hir::CmpOp],
-        comparators: &mut [hir::Expr],
-    ) {
-        left.accept_mut(self);
-        self.walk_exprs(comparators);
-    }
-
-    fn visit_bool_op_mut(&mut self, _op: &mut hir::BoolOp, values: &mut [hir::Expr]) {
-        self.walk_exprs(values);
-    }
-
-    fn visit_list_mut(&mut self, items: &mut [hir::Expr]) {
-        self.walk_exprs(items);
-    }
-
-    fn visit_tuple_mut(&mut self, items: &mut [hir::Expr]) {
-        self.walk_exprs(items);
-    }
-
-    fn visit_dict_mut(&mut self, items: &mut [(hir::Expr, hir::Expr)]) {
-        for (key, value) in items {
-            key.accept_mut(self);
-            value.accept_mut(self);
-        }
-    }
-
-    fn visit_set_mut(&mut self, items: &mut [hir::Expr]) {
-        self.walk_exprs(items);
-    }
-
-    fn visit_index_mut(&mut self, value: &mut hir::Expr, index: &mut hir::Expr) {
-        value.accept_mut(self);
-        index.accept_mut(self);
-    }
-
-    fn visit_slice_mut(
-        &mut self,
-        value: &mut hir::Expr,
-        start: &mut Option<Box<hir::Expr>>,
-        end: &mut Option<Box<hir::Expr>>,
-        step: &mut Option<Box<hir::Expr>>,
-    ) {
-        value.accept_mut(self);
-        if let Some(start) = start {
-            start.accept_mut(self);
-        }
-        if let Some(end) = end {
-            end.accept_mut(self);
-        }
-        if let Some(step) = step {
-            step.accept_mut(self);
         }
     }
 
@@ -260,7 +147,9 @@ impl ExprVisitorMut<()> for MainRenamer<'_> {
         // Keep legacy behavior: rename in the mirrored first clause only.
         elt.accept_mut(self);
         iter.accept_mut(self);
-        self.walk_exprs(ifs);
+        for cond in ifs {
+            cond.accept_mut(self);
+        }
     }
 
     fn visit_set_comp_mut(
@@ -274,73 +163,22 @@ impl ExprVisitorMut<()> for MainRenamer<'_> {
         // Keep legacy behavior: rename in the mirrored first clause only.
         elt.accept_mut(self);
         iter.accept_mut(self);
-        self.walk_exprs(ifs);
-    }
-
-    fn visit_union_ctor_mut(
-        &mut self,
-        _union: &mut String,
-        _variant: &mut String,
-        inner: &mut hir::Expr,
-    ) {
-        inner.accept_mut(self);
-    }
-
-    fn visit_lambda_mut(&mut self, _params: &mut [String], body: &mut hir::Expr) {
-        body.accept_mut(self);
-    }
-
-    fn visit_if_expr_mut(
-        &mut self,
-        test: &mut hir::Expr,
-        body: &mut hir::Expr,
-        orelse: &mut hir::Expr,
-    ) {
-        test.accept_mut(self);
-        body.accept_mut(self);
-        orelse.accept_mut(self);
-    }
-
-    fn visit_block_mut(&mut self, stmts: &mut [hir::Stmt]) {
-        self.walk_stmts(stmts);
-    }
-}
-
-impl StmtVisitorMut<()> for MainRenamer<'_> {
-    fn visit_let_mut(
-        &mut self,
-        _name: &mut String,
-        _ann: &mut Option<types::TypeRef>,
-        value: &mut hir::Expr,
-    ) {
-        value.accept_mut(self);
-    }
-
-    fn visit_assign_mut(&mut self, _target: &mut hir::AssignTarget, value: &mut hir::Expr) {
-        // Keep legacy behavior: walk the value only, not assignment targets.
-        value.accept_mut(self);
-    }
-
-    fn visit_return_mut(&mut self, value: &mut Option<hir::Expr>) {
-        if let Some(value) = value {
-            value.accept_mut(self);
+        for cond in ifs {
+            cond.accept_mut(self);
         }
     }
 
-    fn visit_if_mut(
-        &mut self,
-        test: &mut hir::Expr,
-        body: &mut [hir::Stmt],
-        orelse: &mut [hir::Stmt],
-    ) {
-        test.accept_mut(self);
-        self.walk_stmts(body);
-        self.walk_stmts(orelse);
+    fn visit_block_mut(&mut self, stmts: &mut [hir::Stmt]) {
+        for stmt in stmts {
+            stmt.accept_mut(self);
+        }
     }
+}
 
-    fn visit_while_mut(&mut self, test: &mut hir::Expr, body: &mut [hir::Stmt]) {
-        test.accept_mut(self);
-        self.walk_stmts(body);
+impl StmtWalkerMut for MainRenamer<'_> {
+    fn visit_assign_mut(&mut self, _target: &mut hir::AssignTarget, value: &mut hir::Expr) {
+        // Keep legacy behavior: walk the value only, not assignment targets.
+        value.accept_mut(self);
     }
 
     fn visit_for_mut(
@@ -349,66 +187,10 @@ impl StmtVisitorMut<()> for MainRenamer<'_> {
         iter: &mut hir::Expr,
         body: &mut [hir::Stmt],
     ) {
+        // Keep legacy behavior: do not traverse the for-loop target.
         iter.accept_mut(self);
-        self.walk_stmts(body);
-    }
-
-    fn visit_import_mut(&mut self, _names: &mut [hir::ImportBinding]) {}
-
-    fn visit_import_from_mut(
-        &mut self,
-        _module: &mut String,
-        _names: &mut [hir::ImportFromBinding],
-    ) {
-    }
-
-    fn visit_global_mut(&mut self, _names: &mut [String]) {}
-
-    fn visit_nonlocal_mut(&mut self, _names: &mut [String]) {}
-
-    fn visit_break_mut(&mut self) {}
-
-    fn visit_continue_mut(&mut self) {}
-
-    fn visit_expr_stmt_mut(&mut self, expr: &mut hir::Expr) {
-        expr.accept_mut(self);
-    }
-
-    fn visit_assert_mut(&mut self, test: &mut hir::Expr, msg: &mut Option<hir::Expr>) {
-        test.accept_mut(self);
-        if let Some(msg) = msg {
-            msg.accept_mut(self);
-        }
-    }
-
-    fn visit_match_mut(&mut self, subject: &mut hir::Expr, cases: &mut [hir::MatchCase]) {
-        subject.accept_mut(self);
-        for case in cases {
-            self.walk_stmts(&mut case.body);
-        }
-    }
-
-    fn visit_try_mut(
-        &mut self,
-        body: &mut [hir::Stmt],
-        handlers: &mut [hir::ExceptHandler],
-        orelse: &mut [hir::Stmt],
-        finalbody: &mut [hir::Stmt],
-    ) {
-        self.walk_stmts(body);
-        for handler in handlers {
-            self.walk_stmts(&mut handler.body);
-        }
-        self.walk_stmts(orelse);
-        self.walk_stmts(finalbody);
-    }
-
-    fn visit_raise_mut(&mut self, exc: &mut Option<hir::Expr>, cause: &mut Option<hir::Expr>) {
-        if let Some(exc) = exc {
-            exc.accept_mut(self);
-        }
-        if let Some(cause) = cause {
-            cause.accept_mut(self);
+        for stmt in body {
+            stmt.accept_mut(self);
         }
     }
 }
