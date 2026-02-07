@@ -191,6 +191,94 @@ impl<'a> Codegen<'a> {
             AttrValueTarget::Name(name) | AttrValueTarget::Expr(name) => name,
         })
     }
+
+    /// Bind a receiver target exactly once and expose its name to `render`.
+    pub(super) fn with_attr_target_binding(
+        &mut self,
+        value: &Expr,
+        mutable: bool,
+        render: impl FnOnce(&mut Self, &str) -> String,
+    ) -> Result<String, CompileError> {
+        let mut_kw = if mutable { "mut " } else { "" };
+        match self.resolve_attr_value_target(value)? {
+            AttrValueTarget::GlobalName(name) => {
+                let bound = self.new_tmp();
+                let body = render(self, &bound);
+                Ok(format!(
+                    "{{ let {mut_kw}{bound} = {target}; {body} }}",
+                    mut_kw = mut_kw,
+                    bound = bound,
+                    target = self.global_lock_expr(&name),
+                    body = body
+                ))
+            }
+            AttrValueTarget::Name(name) => Ok(render(self, &name)),
+            AttrValueTarget::Expr(target) => {
+                let bound = self.new_tmp();
+                let body = render(self, &bound);
+                Ok(format!(
+                    "{{ let {mut_kw}{bound} = {target}; {body} }}",
+                    mut_kw = mut_kw,
+                    bound = bound,
+                    target = target,
+                    body = body
+                ))
+            }
+        }
+    }
+
+    /// Lock a shared container receiver once and expose the lock guard name to `render`.
+    pub(super) fn with_locked_attr_target(
+        &mut self,
+        value: &Expr,
+        poison_message: &str,
+        mutable_guard: bool,
+        render: impl FnOnce(&mut Self, &str) -> String,
+    ) -> Result<String, CompileError> {
+        let mut_kw = if mutable_guard { "mut " } else { "" };
+        match self.resolve_attr_value_target(value)? {
+            AttrValueTarget::GlobalName(name) => {
+                let outer = self.new_tmp();
+                let guard = self.new_tmp();
+                let body = render(self, &guard);
+                Ok(format!(
+                    "{{ let {outer} = {lock}; let {mut_kw}{guard} = {outer}.lock().expect(\"{poison}\"); {body} }}",
+                    outer = outer,
+                    lock = self.global_lock_expr(&name),
+                    mut_kw = mut_kw,
+                    guard = guard,
+                    poison = poison_message,
+                    body = body
+                ))
+            }
+            AttrValueTarget::Name(name) => {
+                let guard = self.new_tmp();
+                let body = render(self, &guard);
+                Ok(format!(
+                    "{{ let {mut_kw}{guard} = {target}.lock().expect(\"{poison}\"); {body} }}",
+                    mut_kw = mut_kw,
+                    guard = guard,
+                    target = name,
+                    poison = poison_message,
+                    body = body
+                ))
+            }
+            AttrValueTarget::Expr(target) => {
+                let tmp = self.new_tmp();
+                let guard = self.new_tmp();
+                let body = render(self, &guard);
+                Ok(format!(
+                    "{{ let {tmp} = {target}; let {mut_kw}{guard} = {tmp}.lock().expect(\"{poison}\"); {body} }}",
+                    tmp = tmp,
+                    target = target,
+                    mut_kw = mut_kw,
+                    guard = guard,
+                    poison = poison_message,
+                    body = body
+                ))
+            }
+        }
+    }
 }
 
 /// Categorized receiver target used by attribute-method lowering helpers.

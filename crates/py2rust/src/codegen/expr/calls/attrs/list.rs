@@ -10,13 +10,10 @@ impl<'a> Codegen<'a> {
         value: &Expr,
         attr: &str,
         args: &[Expr],
-        keywords: &[KeywordArg],
+        _keywords: &[KeywordArg],
     ) -> Result<String, CompileError> {
         if attr == "append" {
             if let Some(Type::List(_)) = value.ty.as_ref() {
-                if !keywords.is_empty() {
-                    return Err(self.error(value.span, "Keyword arguments are not supported"));
-                }
                 let target = if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
                         format!(
@@ -42,9 +39,6 @@ impl<'a> Codegen<'a> {
         }
         if attr == "extend" {
             if let Some(Type::List(_)) = value.ty.as_ref() {
-                if !keywords.is_empty() {
-                    return Err(self.error(value.span, "Keyword arguments are not supported"));
-                }
                 let mut target = None;
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
@@ -100,9 +94,6 @@ impl<'a> Codegen<'a> {
         }
         if attr == "pop" {
             if let Some(Type::List(_)) = value.ty.as_ref() {
-                if !keywords.is_empty() {
-                    return Err(self.error(value.span, "Keyword arguments are not supported"));
-                }
                 if args.len() > 1 {
                     return Err(self.error(value.span, "list.pop() expects zero or one argument"));
                 }
@@ -132,96 +123,38 @@ impl<'a> Codegen<'a> {
                         return Ok(self.wrap_result(pop_expr));
                     }
                 }
-                if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        let outer = self.new_tmp();
-                        let guard = self.new_tmp();
-                        if let Some(arg) = idx_arg {
-                            let idx_raw = self.gen_expr(arg)?;
-                            self.uses.py_index = true;
-                            let len_tmp = self.new_tmp();
-                            let idx_tmp = self.new_tmp();
-                            return Ok(format!(
-                                "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"list mutex poisoned\"); let {len_tmp} = {guard}.len(); let {idx_tmp} = {idx_expr}; {guard}.remove({idx_tmp}) }}",
-                                outer = outer,
-                                guard = guard,
-                                lock = self.global_lock_expr(name),
-                                len_tmp = len_tmp,
-                                idx_tmp = idx_tmp,
-                                idx_expr = self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp)),
-                            ));
-                        }
-                        let pop_expr = format!(
-                            "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".into()))",
-                            guard
-                        );
-                        return Ok(format!(
-                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"list mutex poisoned\"); {pop} }}",
-                            outer = outer,
-                            guard = guard,
-                            lock = self.global_lock_expr(name),
-                            pop = self.wrap_result(pop_expr),
-                        ));
-                    }
-                }
-
-                let target_expr = self.gen_expr(value)?;
-                // For non-name targets, evaluate once into a mutable temporary.
-                if !matches!(value.kind, ExprKind::Name(_)) {
-                    let tmp = self.new_tmp();
-                    let guard = self.new_tmp();
-                    if let Some(arg) = idx_arg {
-                        let idx_raw = self.gen_expr(arg)?;
-                        self.uses.py_index = true;
-                        let len_tmp = self.new_tmp();
-                        let idx_tmp = self.new_tmp();
-                        return Ok(format!(
-                            "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); let {len_tmp} = {guard}.len(); let {idx_tmp} = {idx_expr}; {guard}.remove({idx_tmp}) }}",
-                            tmp = tmp,
-                            guard = guard,
-                            target = target_expr,
-                            len_tmp = len_tmp,
-                            idx_tmp = idx_tmp,
-                            idx_expr = self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp)),
-                        ));
-                    }
-                    let pop_expr = format!(
-                        "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".into()))",
-                        guard
-                    );
-                    return Ok(format!(
-                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); {pop} }}",
-                        tmp = tmp,
-                        guard = guard,
-                        target = target_expr,
-                        pop = self.wrap_result(pop_expr),
-                    ));
-                }
-
-                // Simple local name: emit direct mutation.
                 if let Some(arg) = idx_arg {
                     let idx_raw = self.gen_expr(arg)?;
                     self.uses.py_index = true;
                     let len_tmp = self.new_tmp();
                     let idx_tmp = self.new_tmp();
-                    let guard = self.new_tmp();
-                    return Ok(format!(
-                        "{{ let mut {guard} = {target}.lock().expect(\"list mutex poisoned\"); let {len_tmp} = {guard}.len(); let {idx_tmp} = {idx_expr}; {guard}.remove({idx_tmp}) }}",
-                        len_tmp = len_tmp,
-                        target = target_expr,
-                        idx_tmp = idx_tmp,
-                        idx_expr = self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp)),
-                        guard = guard,
-                    ));
+                    let idx_expr = self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp));
+                    return self.with_locked_attr_target(
+                        value,
+                        "list mutex poisoned",
+                        true,
+                        |_tc, guard| {
+                            format!(
+                                "let {len_tmp} = {guard}.len(); let {idx_tmp} = {idx_expr}; {guard}.remove({idx_tmp})",
+                                len_tmp = len_tmp,
+                                guard = guard,
+                                idx_tmp = idx_tmp,
+                                idx_expr = idx_expr
+                            )
+                        },
+                    );
                 }
-                let pop_expr = format!(
-                    "{}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".into()))",
-                    "guard"
+                return self.with_locked_attr_target(
+                    value,
+                    "list mutex poisoned",
+                    true,
+                    |tc, guard| {
+                        tc.wrap_result(format!(
+                            "{guard}.pop().ok_or_else(|| PyError::IndexError(\"IndexError\".into()))",
+                            guard = guard
+                        ))
+                    },
                 );
-                return Ok(self.wrap_result(format!(
-                    "{{ let mut guard = {}.lock().expect(\"list mutex poisoned\"); {} }}",
-                    target_expr, pop_expr
-                )));
             }
         }
         if attr == "insert" {
@@ -303,32 +236,12 @@ impl<'a> Codegen<'a> {
                         return Ok(format!("{{ {}.clear(); }}", name));
                     }
                 }
-                return match self.resolve_attr_value_target(value)? {
-                    AttrValueTarget::GlobalName(name) => {
-                        let outer = self.new_tmp();
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"list mutex poisoned\"); {guard}.clear(); }}",
-                            outer = outer,
-                            guard = guard,
-                            lock = self.global_lock_expr(&name)
-                        ))
-                    }
-                    AttrValueTarget::Name(name) => Ok(format!(
-                        "{{ let mut guard = {target}.lock().expect(\"list mutex poisoned\"); guard.clear(); }}",
-                        target = name
-                    )),
-                    AttrValueTarget::Expr(target) => {
-                        let tmp = self.new_tmp();
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); {guard}.clear(); }}",
-                            tmp = tmp,
-                            guard = guard,
-                            target = target
-                        ))
-                    }
-                };
+                return self.with_locked_attr_target(
+                    value,
+                    "list mutex poisoned",
+                    true,
+                    |_tc, guard| format!("{guard}.clear();", guard = guard),
+                );
             }
         }
         if attr == "copy" {
@@ -373,33 +286,12 @@ impl<'a> Codegen<'a> {
                         return Ok(format!("{{ {}.reverse(); }}", name));
                     }
                 }
-                if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        let outer = self.new_tmp();
-                        let guard = self.new_tmp();
-                        return Ok(format!(
-                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"list mutex poisoned\"); {guard}.reverse(); }}",
-                            outer = outer,
-                            guard = guard,
-                            lock = self.global_lock_expr(name)
-                        ));
-                    }
-                }
-                let target_expr = self.gen_expr(value)?;
-                if !matches!(value.kind, ExprKind::Name(_)) {
-                    let tmp = self.new_tmp();
-                    let guard = self.new_tmp();
-                    return Ok(format!(
-                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); {guard}.reverse(); }}",
-                        tmp = tmp,
-                        guard = guard,
-                        target = target_expr
-                    ));
-                }
-                return Ok(format!(
-                    "{{ let mut guard = {}.lock().expect(\"list mutex poisoned\"); guard.reverse(); }}",
-                    target_expr
-                ));
+                return self.with_locked_attr_target(
+                    value,
+                    "list mutex poisoned",
+                    true,
+                    |_tc, guard| format!("{guard}.reverse();", guard = guard),
+                );
             }
         }
         if attr == "index" {
@@ -419,30 +311,18 @@ impl<'a> Codegen<'a> {
                         return Ok(self.wrap_result(call));
                     }
                 }
-                if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        let outer = self.new_tmp();
-                        let guard = self.new_tmp();
-                        let call = format!(
+                return self.with_locked_attr_target(
+                    value,
+                    "list mutex poisoned",
+                    false,
+                    |tc, guard| {
+                        tc.wrap_result(format!(
                             "py_list_index(&{guard}, &{needle})",
                             guard = guard,
                             needle = needle_expr
-                        );
-                        return Ok(format!(
-                            "{{ let {outer} = {lock}; let {guard} = {outer}.lock().expect(\"list mutex poisoned\"); {result} }}",
-                            outer = outer,
-                            lock = self.global_lock_expr(name),
-                            guard = guard,
-                            result = self.wrap_result(call)
-                        ));
-                    }
-                }
-                let target_expr = self.gen_expr(value)?;
-                let call = format!(
-                    "py_list_index(&{}.lock().expect(\"list mutex poisoned\"), &{})",
-                    target_expr, needle_expr
+                        ))
+                    },
                 );
-                return Ok(self.wrap_result(call));
             }
         }
         if attr == "sort" {
@@ -461,35 +341,14 @@ impl<'a> Codegen<'a> {
                         return Ok(format!("{{ {}.{}; }}", name, sort_call));
                     }
                 }
-                if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        let outer = self.new_tmp();
-                        let guard = self.new_tmp();
-                        return Ok(format!(
-                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"list mutex poisoned\"); {guard}.{sort_call}; }}",
-                            outer = outer,
-                            guard = guard,
-                            lock = self.global_lock_expr(name),
-                            sort_call = sort_call
-                        ));
-                    }
-                }
-                let target_expr = self.gen_expr(value)?;
-                if !matches!(value.kind, ExprKind::Name(_)) {
-                    let tmp = self.new_tmp();
-                    let guard = self.new_tmp();
-                    return Ok(format!(
-                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); {guard}.{sort_call}; }}",
-                        tmp = tmp,
-                        guard = guard,
-                        target = target_expr,
-                        sort_call = sort_call
-                    ));
-                }
-                return Ok(format!(
-                    "{{ let mut guard = {}.lock().expect(\"list mutex poisoned\"); guard.{}; }}",
-                    target_expr, sort_call
-                ));
+                return self.with_locked_attr_target(
+                    value,
+                    "list mutex poisoned",
+                    true,
+                    |_tc, guard| {
+                        format!("{guard}.{sort_call};", guard = guard, sort_call = sort_call)
+                    },
+                );
             }
         }
         if attr == "count" {
@@ -504,24 +363,18 @@ impl<'a> Codegen<'a> {
                         return Ok(format!("py_list_count(&{}, &{})", name, needle_expr));
                     }
                 }
-                if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        let outer = self.new_tmp();
-                        let guard = self.new_tmp();
-                        return Ok(format!(
-                            "{{ let {outer} = {lock}; let {guard} = {outer}.lock().expect(\"list mutex poisoned\"); py_list_count(&{guard}, &{needle}) }}",
-                            outer = outer,
-                            lock = self.global_lock_expr(name),
+                return self.with_locked_attr_target(
+                    value,
+                    "list mutex poisoned",
+                    false,
+                    |_tc, guard| {
+                        format!(
+                            "py_list_count(&{guard}, &{needle})",
                             guard = guard,
                             needle = needle_expr
-                        ));
-                    }
-                }
-                let target_expr = self.gen_expr(value)?;
-                return Ok(format!(
-                    "py_list_count(&{}.lock().expect(\"list mutex poisoned\"), &{})",
-                    target_expr, needle_expr
-                ));
+                        )
+                    },
+                );
             }
         }
         Err(self.error(

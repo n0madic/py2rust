@@ -434,6 +434,18 @@ impl<'a> Lowerer<'a> {
                     }
                     let func = self.lower_method(def, class.name.as_ref())?;
                     if is_property_setter {
+                        // Enforce canonical setter shape to avoid ambiguous property typing.
+                        let setter_shape_ok = func.params.len() == 2
+                            && func.params[0].name == "self"
+                            && matches!(func.params[0].kind, ParamKind::PositionalOrKeyword)
+                            && matches!(func.params[1].kind, ParamKind::PositionalOrKeyword)
+                            && func.params[1].default.is_none();
+                        if !setter_shape_ok {
+                            return Err(self.error(
+                                def.range(),
+                                "Property setter must have signature (self, value)",
+                            ));
+                        }
                         // Use as_ref().map() to avoid cloning until needed.
                         let prop_name = property_name
                             .as_ref()

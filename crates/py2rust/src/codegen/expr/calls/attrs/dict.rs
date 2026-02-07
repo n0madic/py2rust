@@ -1,7 +1,6 @@
 // Dict attribute call lowering.
 
 use super::super::super::*;
-use super::AttrValueTarget;
 
 impl<'a> Codegen<'a> {
     /// Lower dict method calls.
@@ -135,79 +134,33 @@ impl<'a> Codegen<'a> {
                     );
                     return Ok(self.wrap_result(pop_expr));
                 }
-                if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        // Lock the inner dict before mutating.
-                        let outer = self.new_tmp();
-                        let guard = self.new_tmp();
-                        if let Some(default_expr) = default_expr {
-                            return Ok(format!(
-                                "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {guard}.remove(&{key}).unwrap_or({default}) }}",
-                                outer = outer,
+                if let Some(default_expr) = default_expr {
+                    return self.with_locked_attr_target(
+                        value,
+                        "dict mutex poisoned",
+                        true,
+                        |_tc, guard| {
+                            format!(
+                                "{guard}.remove(&{key}).unwrap_or({default})",
                                 guard = guard,
-                                lock = self.global_lock_expr(name),
                                 key = key_expr,
                                 default = default_expr
-                            ));
-                        }
-                        let pop_expr = format!(
+                            )
+                        },
+                    );
+                }
+                return self.with_locked_attr_target(
+                    value,
+                    "dict mutex poisoned",
+                    true,
+                    |tc, guard| {
+                        tc.wrap_result(format!(
                             "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".into()))",
                             guard = guard,
                             key = key_expr
-                        );
-                        return Ok(self.wrap_result(format!(
-                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {pop} }}",
-                            outer = outer,
-                            guard = guard,
-                            lock = self.global_lock_expr(name),
-                            pop = pop_expr
-                        )));
-                    }
-                }
-                let target_expr = self.gen_expr(value)?;
-                if let Some(default_expr) = default_expr {
-                    let guard = self.new_tmp();
-                    if !matches!(value.kind, ExprKind::Name(_)) {
-                        let tmp = self.new_tmp();
-                        return Ok(format!(
-                            "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.remove(&{key}).unwrap_or({default}) }}",
-                            tmp = tmp,
-                            target = target_expr,
-                            guard = guard,
-                            key = key_expr,
-                            default = default_expr
-                        ));
-                    }
-                    return Ok(format!(
-                        "{{ let mut {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {guard}.remove(&{key}).unwrap_or({default}) }}",
-                        guard = guard,
-                        target = target_expr,
-                        key = key_expr,
-                        default = default_expr
-                    ));
-                }
-                let pop_expr = format!(
-                    "{guard}.remove(&{key}).ok_or_else(|| PyError::KeyError(\"KeyError\".into()))",
-                    guard = "{guard}",
-                    key = key_expr
+                        ))
+                    },
                 );
-                let guard = self.new_tmp();
-                if !matches!(value.kind, ExprKind::Name(_)) {
-                    let tmp = self.new_tmp();
-                    return Ok(self.wrap_result(format!(
-                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {pop} }}",
-                        tmp = tmp,
-                        target = target_expr,
-                        guard = guard,
-                        pop = pop_expr.replace("{guard}", &guard)
-                    )));
-                }
-                return Ok(self.wrap_result(format!(
-                    "{{ let mut {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {pop} }}",
-                    guard = guard,
-                    target = target_expr,
-                    pop = pop_expr.replace("{guard}", &guard)
-                )));
             }
         }
         if attr == "clear" {
@@ -219,37 +172,12 @@ impl<'a> Codegen<'a> {
                     let target_expr = self.gen_expr(value)?;
                     return Ok(format!("{}.clear()", target_expr));
                 }
-                return match self.resolve_attr_value_target(value)? {
-                    AttrValueTarget::GlobalName(name) => {
-                        // Clear through the inner dict lock for globals.
-                        let outer = self.new_tmp();
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {guard}.clear(); }}",
-                            outer = outer,
-                            guard = guard,
-                            lock = self.global_lock_expr(&name)
-                        ))
-                    }
-                    AttrValueTarget::Name(name) => {
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let mut {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {guard}.clear(); }}",
-                            guard = guard,
-                            target = name
-                        ))
-                    }
-                    AttrValueTarget::Expr(target) => {
-                        let tmp = self.new_tmp();
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.clear(); }}",
-                            tmp = tmp,
-                            target = target,
-                            guard = guard
-                        ))
-                    }
-                };
+                return self.with_locked_attr_target(
+                    value,
+                    "dict mutex poisoned",
+                    true,
+                    |_tc, guard| format!("{guard}.clear();", guard = guard),
+                );
             }
         }
         if attr == "copy" {
@@ -262,37 +190,12 @@ impl<'a> Codegen<'a> {
                     // HashMap::clone creates a new dict object.
                     return Ok(format!("{}.clone()", target_expr));
                 }
-                return match self.resolve_attr_value_target(value)? {
-                    AttrValueTarget::GlobalName(name) => {
-                        // Copy the underlying HashMap so the result is a new dict object.
-                        let outer = self.new_tmp();
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let {outer} = {lock}; let {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); Arc::new(Mutex::new({guard}.clone())) }}",
-                            outer = outer,
-                            guard = guard,
-                            lock = self.global_lock_expr(&name)
-                        ))
-                    }
-                    AttrValueTarget::Name(name) => {
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let {guard} = {target}.lock().expect(\"dict mutex poisoned\"); Arc::new(Mutex::new({guard}.clone())) }}",
-                            guard = guard,
-                            target = name
-                        ))
-                    }
-                    AttrValueTarget::Expr(target) => {
-                        let tmp = self.new_tmp();
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let {tmp} = {target}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); Arc::new(Mutex::new({guard}.clone())) }}",
-                            tmp = tmp,
-                            target = target,
-                            guard = guard
-                        ))
-                    }
-                };
+                return self.with_locked_attr_target(
+                    value,
+                    "dict mutex poisoned",
+                    false,
+                    |_tc, guard| format!("Arc::new(Mutex::new({guard}.clone()))", guard = guard),
+                );
             }
         }
         if attr == "update" {
@@ -336,42 +239,19 @@ impl<'a> Codegen<'a> {
                         target = target_expr
                     ));
                 }
-                return match self.resolve_attr_value_target(value)? {
-                    AttrValueTarget::GlobalName(name) => {
-                        let outer = self.new_tmp();
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let {pairs} = {pairs_expr}; let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {guard}.extend({pairs}); }}",
+                return self.with_locked_attr_target(
+                    value,
+                    "dict mutex poisoned",
+                    true,
+                    |_tc, guard| {
+                        format!(
+                            "let {pairs} = {pairs_expr}; {guard}.extend({pairs});",
                             pairs = pairs_tmp,
                             pairs_expr = pairs_expr,
-                            outer = outer,
-                            guard = guard,
-                            lock = self.global_lock_expr(&name)
-                        ))
-                    }
-                    AttrValueTarget::Name(name) => {
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let {pairs} = {pairs_expr}; let mut {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {guard}.extend({pairs}); }}",
-                            pairs = pairs_tmp,
-                            pairs_expr = pairs_expr,
-                            guard = guard,
-                            target = name
-                        ))
-                    }
-                    AttrValueTarget::Expr(target) => {
-                        let tmp = self.new_tmp();
-                        let guard = self.new_tmp();
-                        Ok(format!(
-                            "{{ let {pairs} = {pairs_expr}; let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.extend({pairs}); }}",
-                            pairs = pairs_tmp,
-                            pairs_expr = pairs_expr,
-                            tmp = tmp,
-                            target = target,
                             guard = guard
-                        ))
-                    }
-                };
+                        )
+                    },
+                );
             }
         }
         Err(self.error(

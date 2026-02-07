@@ -48,27 +48,8 @@ impl<'a> TypeChecker<'a> {
                 BoundArg::Positional(pos_idx) => &mut args[pos_idx],
                 BoundArg::Keyword(kw_idx) => &mut keywords[kw_idx].value,
             };
-            let mut arg_ty = self.check_expr(arg, Some(param_ty))?;
-            if matches!(param_ty, Type::Str)
-                && !matches!(arg_ty, Type::Str)
-                && matches!(arg_ty, Type::Int | Type::Float | Type::Bool)
-            {
-                let inner = arg.clone();
-                *arg = Expr {
-                    kind: ExprKind::Call {
-                        func: Box::new(Expr {
-                            kind: ExprKind::Name("str".to_string()),
-                            span: arg.span,
-                            ty: Some(Type::Str),
-                        }),
-                        args: vec![inner],
-                        keywords: Vec::new(),
-                    },
-                    span: arg.span,
-                    ty: Some(Type::Str),
-                };
-                arg_ty = Type::Str;
-            }
+            // Keep implicit conversion strict: only explicit str(...) calls convert values.
+            let arg_ty = self.check_expr(arg, Some(param_ty))?;
             self.ensure_assignable(&arg_ty, param_ty, span)?;
         }
 

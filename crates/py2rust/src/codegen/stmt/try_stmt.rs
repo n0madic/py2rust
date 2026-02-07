@@ -24,8 +24,13 @@ impl<'a> Codegen<'a> {
         // after try handling to avoid borrow conflicts.
         let use_drop_finally = has_finally && (has_value_return || in_throwing_fn);
 
-        // Collect variables declared in try body that might be used in else.
-        let try_vars = self.collect_try_block_vars(body);
+        // Snapshot only try-local bindings that are actually referenced by else.
+        let else_used_names = self.collect_name_reads(orelse);
+        let try_vars: Vec<(String, Type)> = self
+            .collect_try_block_vars(body)
+            .into_iter()
+            .filter(|(name, _)| else_used_names.contains(name))
+            .collect();
 
         if use_drop_finally {
             // Use Drop trait for guaranteed cleanup.
@@ -156,13 +161,7 @@ impl<'a> Codegen<'a> {
 
                 // Unwrap variables from try block for use in else.
                 if has_orelse && !try_vars.is_empty() {
-                    for (name, ty) in &try_vars {
-                        let ty_str = self.rust_type(ty);
-                        self.push_line(&format!(
-                            "let {}: {} = _try_{}.expect(\"try block did not initialize {}\");",
-                            name, ty_str, name, name
-                        ));
-                    }
+                    self.emit_try_else_bindings(&try_vars, in_throwing_fn);
                 }
 
                 for stmt in orelse {
@@ -176,13 +175,7 @@ impl<'a> Codegen<'a> {
 
                 // Unwrap variables from try block for use in else.
                 if has_orelse && !try_vars.is_empty() {
-                    for (name, ty) in &try_vars {
-                        let ty_str = self.rust_type(ty);
-                        self.push_line(&format!(
-                            "let {}: {} = _try_{}.expect(\"try block did not initialize {}\");",
-                            name, ty_str, name, name
-                        ));
-                    }
+                    self.emit_try_else_bindings(&try_vars, in_throwing_fn);
                 }
 
                 for stmt in orelse {
@@ -252,13 +245,7 @@ impl<'a> Codegen<'a> {
 
                     // Unwrap variables from try block for use in else.
                     if has_orelse && !try_vars.is_empty() {
-                        for (name, ty) in &try_vars {
-                            let ty_str = self.rust_type(ty);
-                            self.push_line(&format!(
-                                "let {}: {} = _try_{}.expect(\"try block did not initialize {}\");",
-                                name, ty_str, name, name
-                            ));
-                        }
+                        self.emit_try_else_bindings(&try_vars, in_throwing_fn);
                     }
 
                     for stmt in orelse {
@@ -283,13 +270,7 @@ impl<'a> Codegen<'a> {
 
                 // Unwrap variables from try block for use in else.
                 if has_orelse && !try_vars.is_empty() {
-                    for (name, ty) in &try_vars {
-                        let ty_str = self.rust_type(ty);
-                        self.push_line(&format!(
-                            "let {}: {} = _try_{}.expect(\"try block did not initialize {}\");",
-                            name, ty_str, name, name
-                        ));
-                    }
+                    self.emit_try_else_bindings(&try_vars, in_throwing_fn);
                 }
 
                 for stmt in orelse {
@@ -412,6 +393,234 @@ impl<'a> Codegen<'a> {
             }
         }
         vars
+    }
+
+    /// Bind snapshotted try variables for else execution without using panic-prone `.expect(...)`.
+    fn emit_try_else_bindings(&mut self, try_vars: &[(String, Type)], in_throwing_fn: bool) {
+        for (name, ty) in try_vars {
+            let ty_str = self.rust_type(ty);
+            if in_throwing_fn {
+                // In throwing contexts, propagate a Python NameError instead of panicking.
+                self.uses.py_error = true;
+                self.push_line(&format!(
+                    "let {name}: {ty} = _try_{name}.ok_or_else(|| PyError::NameError(\"NameError: {name} is not defined\".into()))?;",
+                    name = name,
+                    ty = ty_str
+                ));
+            } else {
+                // In non-throwing contexts, fail with an explicit NameError panic message.
+                self.push_line(&format!(
+                    "let {name}: {ty} = match _try_{name} {{ Some(value) => value, None => panic!(\"NameError: {name} is not defined\") }};",
+                    name = name,
+                    ty = ty_str
+                ));
+            }
+        }
+    }
+
+    /// Collect names read by a statement list (used to prune unnecessary try snapshots).
+    fn collect_name_reads(&self, stmts: &[Stmt]) -> HashSet<String> {
+        fn collect_expr(expr: &Expr, out: &mut HashSet<String>) {
+            match &expr.kind {
+                ExprKind::Name(name) => {
+                    out.insert(name.clone());
+                }
+                ExprKind::Literal(_) => {}
+                ExprKind::Yield { value } => {
+                    if let Some(value) = value {
+                        collect_expr(value, out);
+                    }
+                }
+                ExprKind::Call {
+                    func,
+                    args,
+                    keywords,
+                } => {
+                    collect_expr(func, out);
+                    for arg in args {
+                        collect_expr(arg, out);
+                    }
+                    for kw in keywords {
+                        collect_expr(&kw.value, out);
+                    }
+                }
+                ExprKind::Starred { value } => collect_expr(value, out),
+                ExprKind::Attr { value, .. } => collect_expr(value, out),
+                ExprKind::Binary { left, right, .. } | ExprKind::Compare { left, right, .. } => {
+                    collect_expr(left, out);
+                    collect_expr(right, out);
+                }
+                ExprKind::Unary { expr, .. } => collect_expr(expr, out),
+                ExprKind::CompareChain {
+                    left, comparators, ..
+                } => {
+                    collect_expr(left, out);
+                    for comparator in comparators {
+                        collect_expr(comparator, out);
+                    }
+                }
+                ExprKind::BoolOp { values, .. }
+                | ExprKind::List(values)
+                | ExprKind::Tuple(values)
+                | ExprKind::Set(values) => {
+                    for value in values {
+                        collect_expr(value, out);
+                    }
+                }
+                ExprKind::Dict(items) => {
+                    for (key, value) in items {
+                        collect_expr(key, out);
+                        collect_expr(value, out);
+                    }
+                }
+                ExprKind::Index { value, index } => {
+                    collect_expr(value, out);
+                    collect_expr(index, out);
+                }
+                ExprKind::Slice {
+                    value,
+                    start,
+                    end,
+                    step,
+                } => {
+                    collect_expr(value, out);
+                    if let Some(start) = start {
+                        collect_expr(start, out);
+                    }
+                    if let Some(end) = end {
+                        collect_expr(end, out);
+                    }
+                    if let Some(step) = step {
+                        collect_expr(step, out);
+                    }
+                }
+                ExprKind::ListComp {
+                    elt,
+                    iter,
+                    ifs,
+                    generators,
+                    ..
+                }
+                | ExprKind::SetComp {
+                    elt,
+                    iter,
+                    ifs,
+                    generators,
+                    ..
+                } => {
+                    collect_expr(elt, out);
+                    collect_expr(iter, out);
+                    for cond in ifs {
+                        collect_expr(cond, out);
+                    }
+                    for clause in generators {
+                        collect_expr(clause.iter.as_ref(), out);
+                        for cond in &clause.ifs {
+                            collect_expr(cond, out);
+                        }
+                    }
+                }
+                ExprKind::UnionCtor { inner, .. } => collect_expr(inner, out),
+                ExprKind::Lambda { body, .. } => collect_expr(body, out),
+                ExprKind::IfExpr { test, body, orelse } => {
+                    collect_expr(test, out);
+                    collect_expr(body, out);
+                    collect_expr(orelse, out);
+                }
+                ExprKind::Block { stmts } => collect_stmts(stmts, out),
+            }
+        }
+
+        fn collect_assign_target(target: &AssignTarget, out: &mut HashSet<String>) {
+            match target {
+                AssignTarget::Name(_) => {}
+                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                    for item in items {
+                        collect_assign_target(item, out);
+                    }
+                }
+                AssignTarget::Starred(inner) => collect_assign_target(inner, out),
+                AssignTarget::Attr { value, .. } => collect_expr(value, out),
+                AssignTarget::Index { value, index } => {
+                    collect_expr(value, out);
+                    collect_expr(index, out);
+                }
+            }
+        }
+
+        fn collect_stmts(stmts: &[Stmt], out: &mut HashSet<String>) {
+            for stmt in stmts {
+                match &stmt.kind {
+                    StmtKind::Let { value, .. } => collect_expr(value, out),
+                    StmtKind::Assign { target, value } => {
+                        collect_assign_target(target, out);
+                        collect_expr(value, out);
+                    }
+                    StmtKind::Return { value } => {
+                        if let Some(value) = value {
+                            collect_expr(value, out);
+                        }
+                    }
+                    StmtKind::If { test, body, orelse } => {
+                        collect_expr(test, out);
+                        collect_stmts(body, out);
+                        collect_stmts(orelse, out);
+                    }
+                    StmtKind::While { test, body } => {
+                        collect_expr(test, out);
+                        collect_stmts(body, out);
+                    }
+                    StmtKind::For { iter, body, .. } => {
+                        collect_expr(iter, out);
+                        collect_stmts(body, out);
+                    }
+                    StmtKind::Expr(expr) => collect_expr(expr, out),
+                    StmtKind::Assert { test, msg } => {
+                        collect_expr(test, out);
+                        if let Some(msg) = msg {
+                            collect_expr(msg, out);
+                        }
+                    }
+                    StmtKind::Match { subject, cases } => {
+                        collect_expr(subject, out);
+                        for case in cases {
+                            collect_stmts(&case.body, out);
+                        }
+                    }
+                    StmtKind::Try {
+                        body,
+                        handlers,
+                        orelse,
+                        finalbody,
+                    } => {
+                        collect_stmts(body, out);
+                        for handler in handlers {
+                            collect_stmts(&handler.body, out);
+                        }
+                        collect_stmts(orelse, out);
+                        collect_stmts(finalbody, out);
+                    }
+                    StmtKind::Raise { exc, cause } => {
+                        if let Some(exc) = exc {
+                            collect_expr(exc, out);
+                        }
+                        if let Some(cause) = cause {
+                            collect_expr(cause, out);
+                        }
+                    }
+                    StmtKind::Import { .. }
+                    | StmtKind::ImportFrom { .. }
+                    | StmtKind::Global { .. }
+                    | StmtKind::Nonlocal { .. }
+                    | StmtKind::Break
+                    | StmtKind::Continue => {}
+                }
+            }
+        }
+
+        let mut names = HashSet::new();
+        collect_stmts(stmts, &mut names);
+        names
     }
 
     /// Emit a statement from try body, wrapping Let statements to expose variables.

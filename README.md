@@ -110,6 +110,7 @@ The generated Rust injects tiny helper functions only when needed:
 - Generated `PyError` variants store messages as `Cow<'static, str>` so static messages avoid heap allocation while dynamic messages remain supported.
 - `raise X from Y` / `raise X from None` syntax is accepted, but explicit cause/context metadata is not yet preserved in generated Rust.
 - Mixed-type tuple iteration falls back to gradual typing (`Unknown`/`PyRepr`) where static unification is not possible.
+- Dynamic-length `tuple()` construction is currently represented with list-backed runtime storage; fixed-arity tuple annotations/values still use `tuple[...]` typing.
 - Tuple slicing requires literal integer bounds (including negative literals).
 - String indexing/slicing is character-based (Unicode scalar values).
 - f-strings support literal-only format specs plus conversions `!s`, `!r`, and `!a`.

@@ -36,7 +36,9 @@ impl<'a> TypeChecker<'a> {
                                 ret: Box::new(Type::Unknown),
                             };
                             let mut expr_clone = lambda_expr.clone();
-                            let inferred = self.check_expr(&mut expr_clone, Some(&expected))?;
+                            let inferred = self.with_lambda_inference_guard(name, span, |tc| {
+                                tc.check_expr(&mut expr_clone, Some(&expected))
+                            })?;
                             if let Type::Lambda { params, ret } = inferred {
                                 let updated = Type::Lambda {
                                     params: params.clone(),

@@ -167,9 +167,22 @@ impl<'a> TypeChecker<'a> {
                     }
                     if let Some(setter) = info.setter.as_ref() {
                         if let Some(sig) = methods.get(setter) {
-                            if sig.params.len() >= 2 {
-                                info.ty = sig.params[1].clone();
+                            // Keep property setter metadata strict even if malformed HIR appears.
+                            let setter_shape_ok = sig.params.len() == 2
+                                && sig.param_names.len() == 2
+                                && sig.param_names[0] == "self"
+                                && sig.param_kinds.len() == 2
+                                && matches!(sig.param_kinds[0], ParamKind::PositionalOrKeyword)
+                                && matches!(sig.param_kinds[1], ParamKind::PositionalOrKeyword)
+                                && sig.has_defaults.len() == 2
+                                && !sig.has_defaults[1];
+                            if !setter_shape_ok {
+                                return Err(self.error(
+                                    sig.span,
+                                    "Property setter must have signature (self, value)",
+                                ));
                             }
+                            info.ty = sig.params[1].clone();
                         }
                     }
                 }

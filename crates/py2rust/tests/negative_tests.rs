@@ -308,3 +308,84 @@ sys.exit(1, 2)
         error
     );
 }
+
+#[test]
+fn rejects_implicit_str_coercion_for_user_functions() {
+    let source = r#"
+def takes_text(x: str) -> str:
+    return x
+
+value: str = takes_text(42)
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("str") && error.contains("int"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_recursive_lambda_inference_cycles() {
+    let source = r#"
+f = lambda x: x
+f = lambda x: f(x)
+f(1)
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("Recursive lambda type inference cycle for 'f'"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_invalid_property_setter_signature() {
+    let source = r#"
+class Box:
+    @property
+    def value(self) -> int:
+        return 1
+
+    @value.setter
+    def value(self, new_value: int, extra: int) -> None:
+        self.hidden = new_value
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("Property setter must have signature (self, value)"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_duplicate_union_match_cases() {
+    let source = r#"
+class A:
+    def __init__(self) -> None:
+        pass
+
+class B:
+    def __init__(self) -> None:
+        pass
+
+U = A | B
+
+def classify(v: U) -> int:
+    match v:
+        case A():
+            return 1
+        case A():
+            return 2
+        case B():
+            return 3
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("Duplicate match case for variant 'A'"),
+        "Error: {}",
+        error
+    );
+}

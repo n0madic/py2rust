@@ -620,6 +620,9 @@ impl<'a> TypeChecker<'a> {
             if args.len() > 1 {
                 return Err(self.error(span, "tuple() expects zero or one argument"));
             }
+            // Current runtime representation models dynamic-length tuple() as list-backed
+            // immutable sequence semantics. Keep Type::List here until dynamic tuple typing
+            // (beyond fixed-arity Type::Tuple) is introduced.
             if args.is_empty() {
                 return Ok(Type::List(Box::new(Type::Unknown)));
             }
@@ -738,7 +741,9 @@ impl<'a> TypeChecker<'a> {
                             ret: Box::new(Type::Unknown),
                         };
                         let mut expr_clone = lambda_expr;
-                        let inferred = self.check_expr(&mut expr_clone, Some(&expected))?;
+                        let inferred = self.with_lambda_inference_guard(name, span, |tc| {
+                            tc.check_expr(&mut expr_clone, Some(&expected))
+                        })?;
                         if let Type::Lambda { params, ret } = inferred {
                             refined_params = params;
                             refined_ret = *ret;

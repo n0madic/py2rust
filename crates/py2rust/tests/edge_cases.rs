@@ -266,3 +266,43 @@ def test(lst: list[int], i: int) -> int:
         "Should emit py_list_get helper"
     );
 }
+
+#[test]
+fn dict_pop_key_named_guard_is_preserved() {
+    let source = r#"
+def run() -> int:
+    data: dict[str, int] = {"{guard}": 7}
+    return data.pop("{guard}")
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    // Ensure dict.pop lowering preserves literal "{guard}" text and does not do template replacement.
+    assert!(
+        out.rust.contains("{guard}"),
+        "Generated Rust should preserve the literal key text"
+    );
+}
+
+#[test]
+fn try_else_binding_uses_nameerror_path_without_expect() {
+    let source = r#"
+def run() -> int:
+    try:
+        x: int = 1
+    except Exception:
+        return 0
+    else:
+        return x
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    // Else-binding extraction should emit explicit NameError diagnostics, not panic-prone .expect text.
+    assert!(
+        !out.rust.contains("try block did not initialize"),
+        "Generated Rust must not contain legacy expect panic text"
+    );
+    assert!(
+        out.rust.contains("NameError: x is not defined"),
+        "Generated Rust should include the controlled NameError path"
+    );
+}

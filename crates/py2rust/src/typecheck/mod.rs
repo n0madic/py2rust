@@ -87,6 +87,8 @@ pub struct TypeChecker<'a> {
     function_scopes: Vec<usize>,
     /// Stack of inferred generator yield types for the current function nesting.
     generator_yield_stack: Vec<Option<Type>>,
+    /// Active lambda names currently being re-inferred from stored lambda bodies.
+    active_lambda_inference: HashSet<String>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -164,6 +166,7 @@ impl<'a> TypeChecker<'a> {
             current_class: None,
             function_scopes: Vec::new(),
             generator_yield_stack: Vec::new(),
+            active_lambda_inference: HashSet::new(),
         };
 
         // Third pass: collect function and class signatures (methods, fields)
@@ -290,5 +293,23 @@ impl<'a> TypeChecker<'a> {
             }
             current = base;
         }
+    }
+
+    /// Run a lambda inference pass guarded against recursive re-entry for the same name.
+    pub(super) fn with_lambda_inference_guard<T>(
+        &mut self,
+        name: &str,
+        span: Span,
+        f: impl FnOnce(&mut Self) -> Result<T, CompileError>,
+    ) -> Result<T, CompileError> {
+        if !self.active_lambda_inference.insert(name.to_string()) {
+            return Err(self.error(
+                span,
+                format!("Recursive lambda type inference cycle for '{name}'"),
+            ));
+        }
+        let result = f(self);
+        self.active_lambda_inference.remove(name);
+        result
     }
 }

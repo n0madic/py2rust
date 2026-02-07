@@ -1,7 +1,6 @@
 // Set attribute call lowering.
 
 use super::super::super::*;
-use super::AttrValueTarget;
 use crate::container::registry::{find_container_method, ContainerId};
 
 impl<'a> Codegen<'a> {
@@ -44,25 +43,9 @@ impl<'a> Codegen<'a> {
                     self.gen_args(args)?
                 ))
             }
-            "clear" => match self.resolve_attr_value_target(value)? {
-                AttrValueTarget::GlobalName(name) => {
-                    let guard = self.new_tmp();
-                    Ok(format!(
-                        "{{ let mut {guard} = {lock}; {guard}.clear(); }}",
-                        guard = guard,
-                        lock = self.global_lock_expr(&name)
-                    ))
-                }
-                AttrValueTarget::Name(name) => Ok(format!("{name}.clear()")),
-                AttrValueTarget::Expr(target) => {
-                    let tmp = self.new_tmp();
-                    Ok(format!(
-                        "{{ let mut {tmp} = {target}; {tmp}.clear(); }}",
-                        tmp = tmp,
-                        target = target
-                    ))
-                }
-            },
+            "clear" => self.with_attr_target_binding(value, true, |_tc, target| {
+                format!("{target}.clear()", target = target)
+            }),
             "copy" => {
                 let target = self.resolve_mut_attr_target_expr(value)?;
                 Ok(format!("{target}.clone()"))
@@ -93,32 +76,9 @@ impl<'a> Codegen<'a> {
                         target = target
                     )
                 };
-                match self.resolve_attr_value_target(value)? {
-                    AttrValueTarget::GlobalName(name) => {
-                        let guard = self.new_tmp();
-                        let pop_expr = pop_result_expr(&guard);
-                        Ok(self.wrap_result(format!(
-                            "{{ let mut {guard} = {lock}; {pop_expr} }}",
-                            guard = guard,
-                            lock = self.global_lock_expr(&name),
-                            pop_expr = pop_expr
-                        )))
-                    }
-                    AttrValueTarget::Name(name) => {
-                        let pop_expr = pop_result_expr(&name);
-                        Ok(self.wrap_result(pop_expr))
-                    }
-                    AttrValueTarget::Expr(target) => {
-                        let tmp = self.new_tmp();
-                        let pop_expr = pop_result_expr(&tmp);
-                        Ok(self.wrap_result(format!(
-                            "{{ let mut {tmp} = {target}; {pop_expr} }}",
-                            tmp = tmp,
-                            target = target,
-                            pop_expr = pop_expr
-                        )))
-                    }
-                }
+                self.with_attr_target_binding(value, true, |tc, target| {
+                    tc.wrap_result(pop_result_expr(target))
+                })
             }
             _ => Err(self.error(
                 value.span,

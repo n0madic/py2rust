@@ -84,6 +84,7 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - `str` maps to `String` (not `&str`).
 - `int -> i64`, `float -> f64`, `None -> ()`, `Optional[T] -> Option<T>`.
 - `typing.List/Dict/Set/Tuple` annotations are aliases for built-in `list/dict/set/tuple`.
+- Dynamic-length `tuple()` construction is currently list-backed at runtime/typecheck time; fixed-arity tuple literals/annotations still use tuple typing.
 - `bool` is accepted in numeric contexts as Python-compatible `int` subtype behavior.
 - `round(x)` on float inputs currently preserves float result (`py_round(x, 0)`), while integer inputs remain integer.
 - `Union` aliases are for enum-like class unions.
