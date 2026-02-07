@@ -109,6 +109,10 @@ impl<'a> TypeChecker<'a> {
                     self.ensure_assignable(&code_ty, &Type::Int, span)?;
                 }
             }
+            StdlibMethodId::SysIntern => {
+                let value_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&value_ty, &Type::Str, span)?;
+            }
         }
 
         Ok(Self::stdlib_method_return_type(spec.method_id))
@@ -135,6 +139,7 @@ impl<'a> TypeChecker<'a> {
             | StdlibMethodId::OsPathIsDir
             | StdlibMethodId::OsPathIsFile => Type::Bool,
             StdlibMethodId::OsPathSplit => Type::Tuple(vec![Type::Str, Type::Str]),
+            StdlibMethodId::SysIntern => Type::Str,
             StdlibMethodId::SysExit => Type::None,
         }
     }

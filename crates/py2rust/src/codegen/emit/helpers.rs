@@ -232,6 +232,20 @@ fn py_os_path_abspath(path: &str) -> Result<String, PyError> {
 }
 "#;
 
+/// Static helper body for `sys.argv`.
+const HELPER_PY_SYS_ARGV: &str = r#"
+fn py_sys_argv() -> Arc<Mutex<Vec<String>>> {
+    Arc::new(Mutex::new(std::env::args().collect()))
+}
+"#;
+
+/// Static helper body for `sys.intern(string)`.
+const HELPER_PY_SYS_INTERN: &str = r#"
+fn py_sys_intern(value: &str) -> String {
+    value.to_string()
+}
+"#;
+
 /// Static helper body for clonable iterator wrapper.
 const HELPER_PY_ITER: &str = r#"
 #[derive(Clone)]
@@ -1275,6 +1289,12 @@ impl<'a> Codegen<'a> {
         if self.uses.py_os_path_abspath {
             self.push_block(HELPER_PY_OS_PATH_ABSPATH);
         }
+        if self.uses.py_sys_argv {
+            self.push_block(HELPER_PY_SYS_ARGV);
+        }
+        if self.uses.py_sys_intern {
+            self.push_block(HELPER_PY_SYS_INTERN);
+        }
         if self.uses.print
             || self.uses.len
             || self.uses.range
@@ -1319,6 +1339,8 @@ impl<'a> Codegen<'a> {
             || self.uses.py_os_path_dirname
             || self.uses.py_os_path_split
             || self.uses.py_os_path_abspath
+            || self.uses.py_sys_argv
+            || self.uses.py_sys_intern
         {
             self.push_line("");
         }

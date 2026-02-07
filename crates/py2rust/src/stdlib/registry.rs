@@ -64,6 +64,8 @@ pub enum StdlibMethodId {
     OsPathIsFile,
     /// `os.path.abspath(path)`
     OsPathAbspath,
+    /// `sys.intern(string)`
+    SysIntern,
     /// `sys.exit([code])`
     SysExit,
 }
@@ -335,6 +337,13 @@ const OS_NAME_ATTR_SPEC: StdlibAttributeSpec = StdlibAttributeSpec {
     codegen_handler: codegen_os_name_attr,
 };
 
+const SYS_ARGV_ATTR_SPEC: StdlibAttributeSpec = StdlibAttributeSpec {
+    module_name: "sys",
+    attribute_name: "argv",
+    type_resolver: type_sys_argv_attr,
+    codegen_handler: codegen_sys_argv_attr,
+};
+
 const SYS_EXIT_SPEC: StdlibMethodSpec = StdlibMethodSpec {
     method_id: StdlibMethodId::SysExit,
     module_name: "sys",
@@ -344,6 +353,17 @@ const SYS_EXIT_SPEC: StdlibMethodSpec = StdlibMethodSpec {
         keywords: KeywordPolicy::None,
     },
     codegen_handler: codegen_sys_exit,
+};
+
+const SYS_INTERN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::SysIntern,
+    module_name: "sys",
+    method_name: "intern",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_sys_intern,
 };
 
 /// Resolve a module name to a known stdlib module id.
@@ -380,6 +400,7 @@ pub fn find_stdlib_method(
         (StdlibModuleId::OsPath, "isdir") => Some(&OS_PATH_ISDIR_SPEC),
         (StdlibModuleId::OsPath, "isfile") => Some(&OS_PATH_ISFILE_SPEC),
         (StdlibModuleId::OsPath, "abspath") => Some(&OS_PATH_ABSPATH_SPEC),
+        (StdlibModuleId::Sys, "intern") => Some(&SYS_INTERN_SPEC),
         (StdlibModuleId::Sys, "exit") => Some(&SYS_EXIT_SPEC),
         _ => None,
     }
@@ -394,6 +415,7 @@ pub fn find_stdlib_attribute(
         (StdlibModuleId::Os, "path") => Some(&OS_PATH_ATTR_SPEC),
         (StdlibModuleId::Os, "environ") => Some(&OS_ENVIRON_ATTR_SPEC),
         (StdlibModuleId::Os, "name") => Some(&OS_NAME_ATTR_SPEC),
+        (StdlibModuleId::Sys, "argv") => Some(&SYS_ARGV_ATTR_SPEC),
         _ => None,
     }
 }
@@ -424,6 +446,7 @@ pub fn method_spec(method_id: StdlibMethodId) -> &'static StdlibMethodSpec {
         StdlibMethodId::OsPathIsDir => &OS_PATH_ISDIR_SPEC,
         StdlibMethodId::OsPathIsFile => &OS_PATH_ISFILE_SPEC,
         StdlibMethodId::OsPathAbspath => &OS_PATH_ABSPATH_SPEC,
+        StdlibMethodId::SysIntern => &SYS_INTERN_SPEC,
         StdlibMethodId::SysExit => &SYS_EXIT_SPEC,
     }
 }
@@ -451,6 +474,11 @@ fn type_os_name_attr() -> Type {
     Type::Str
 }
 
+/// Resolve the static type for `sys.argv`.
+fn type_sys_argv_attr() -> Type {
+    Type::List(Box::new(Type::Str))
+}
+
 /// Emit `os.path` attribute expression (module namespace marker only).
 fn codegen_os_path_attr(codegen: &mut Codegen<'_>, span: Span) -> Result<String, CompileError> {
     Err(codegen.error(
@@ -469,6 +497,12 @@ fn codegen_os_environ_attr(codegen: &mut Codegen<'_>, _span: Span) -> Result<Str
 fn codegen_os_name_attr(codegen: &mut Codegen<'_>, _span: Span) -> Result<String, CompileError> {
     codegen.uses.py_os_name = true;
     Ok("py_os_name()".to_string())
+}
+
+/// Emit `sys.argv` attribute expression.
+fn codegen_sys_argv_attr(codegen: &mut Codegen<'_>, _span: Span) -> Result<String, CompileError> {
+    codegen.uses.py_sys_argv = true;
+    Ok("py_sys_argv()".to_string())
 }
 
 /// Emit code for `os.remove(path)` after generic validation has passed.
@@ -718,4 +752,15 @@ fn codegen_sys_exit(
     }
     let code_expr = codegen.gen_expr(&args[0])?;
     Ok(format!("std::process::exit({} as i32)", code_expr))
+}
+
+/// Emit code for `sys.intern(string)`.
+fn codegen_sys_intern(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_sys_intern = true;
+    let value_expr = codegen.gen_expr(&args[0])?;
+    Ok(format!("py_sys_intern(&({}))", value_expr))
 }

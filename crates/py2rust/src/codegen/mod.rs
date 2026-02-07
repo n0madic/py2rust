@@ -79,6 +79,8 @@ pub(crate) struct Uses {
     pub(crate) py_os_path_dirname: bool,
     pub(crate) py_os_path_split: bool,
     pub(crate) py_os_path_abspath: bool,
+    pub(crate) py_sys_argv: bool,
+    pub(crate) py_sys_intern: bool,
     pub(crate) py_iter: bool,
     pub(crate) py_repr: bool,
     pub(crate) py_int: bool,
