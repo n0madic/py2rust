@@ -568,6 +568,9 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
 /// Returns `"mut "` if the variable is assigned more than once (needs mutability),
 /// or `""` if it's assigned at most once (no mutability needed).
 pub(crate) fn mut_kw_for_name(name: &str, mut_counts: &HashMap<String, usize>) -> &'static str {
+    if name == "_" {
+        return "";
+    }
     if mut_counts.get(name).copied().unwrap_or(0) > 1 {
         "mut "
     } else {

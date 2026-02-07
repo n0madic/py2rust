@@ -29,6 +29,7 @@ impl<'a> Codegen<'a> {
                 | "all"
                 | "any"
                 | "reversed"
+                | "sorted"
                 | "max"
                 | "min"
                 | "abs"
@@ -43,6 +44,7 @@ impl<'a> Codegen<'a> {
                 | "id"
                 | "divmod"
                 | "next"
+                | "iter"
                 | "bin"
                 | "hex"
                 | "oct"
@@ -54,7 +56,7 @@ impl<'a> Codegen<'a> {
                 | "open"
                 | "exit"
         );
-        let builtin_accepts_keywords = matches!(name, "print");
+        let builtin_accepts_keywords = matches!(name, "print" | "sorted" | "max" | "min");
         if is_builtin_name && !builtin_accepts_keywords && !keywords.is_empty() {
             return Err(self.error(
                 expr.span,
@@ -412,15 +414,20 @@ impl<'a> Codegen<'a> {
             }
         }
         if name == "enumerate" {
-            if args.len() != 1 {
-                return Err(self.error(expr.span, "enumerate() expects one argument"));
+            if args.is_empty() || args.len() > 2 {
+                return Err(self.error(expr.span, "enumerate() expects one or two arguments"));
             }
             // enumerate() consumes the iterator immediately, so use single-lock pattern
             let iter_expr =
                 self.gen_iter_source_owned(&args[0], IterContext::ImmediateConsumption)?;
+            let start_expr = if args.len() == 2 {
+                self.gen_expr(&args[1])?
+            } else {
+                "0i64".to_string()
+            };
             return Ok(Some(format!(
-                "({}).enumerate().map(|(i, v)| (i as i64, v))",
-                iter_expr
+                "({}).enumerate().map(|(i, v)| (i as i64 + {}, v))",
+                iter_expr, start_expr
             )));
         }
         if name == "zip" {
@@ -596,6 +603,37 @@ impl<'a> Codegen<'a> {
             if args.len() != 1 {
                 return Err(self.error(expr.span, "reversed() expects one argument"));
             }
+            if let ExprKind::Call {
+                func,
+                args: range_args,
+                keywords: range_keywords,
+            } = &args[0].kind
+            {
+                if let ExprKind::Name(range_name) = &func.kind {
+                    if range_name == "range" && range_keywords.is_empty() {
+                        if range_args.len() == 1 {
+                            let end = self.gen_expr(&range_args[0])?;
+                            return Ok(Some(format!("(py_range({})).rev()", end)));
+                        }
+                        if range_args.len() == 2 {
+                            let start = self.gen_expr(&range_args[0])?;
+                            let end = self.gen_expr(&range_args[1])?;
+                            return Ok(Some(format!("(py_range2({}, {})).rev()", start, end)));
+                        }
+                        if range_args.len() == 3 {
+                            let start = self.gen_expr(&range_args[0])?;
+                            let end = self.gen_expr(&range_args[1])?;
+                            let step = self.gen_expr(&range_args[2])?;
+                            let range_expr = self
+                                .wrap_result(format!("py_range3({}, {}, {})", start, end, step));
+                            return Ok(Some(format!(
+                                "({}).collect::<Vec<_>>().into_iter().rev()",
+                                range_expr
+                            )));
+                        }
+                    }
+                }
+            }
             if let Some(Type::List(inner)) = args[0].ty.as_ref() {
                 let arg_expr = self.gen_expr(&args[0])?;
                 let body = if matches!(self.list_storage_for_expr(&args[0]), ListStorage::Local) {
@@ -639,15 +677,124 @@ impl<'a> Codegen<'a> {
             let iter_expr = self.gen_iter_source_owned(&args[0], IterContext::DeferredCapture)?;
             return Ok(Some(format!("({}).rev()", iter_expr)));
         }
+        if name == "sorted" {
+            if args.len() != 1 {
+                return Err(self.error(expr.span, "sorted() expects one positional argument"));
+            }
+            let mut key_kw: Option<&Expr> = None;
+            let mut reverse_kw: Option<&Expr> = None;
+            for kw in keywords {
+                let Some(kw_name) = kw.name.as_deref() else {
+                    return Err(self.error(
+                        expr.span,
+                        "Call-site **kwargs unpacking is not supported for sorted()",
+                    ));
+                };
+                match kw_name {
+                    "key" => {
+                        if key_kw.is_some() {
+                            return Err(
+                                self.error(expr.span, "Multiple values for keyword argument `key`")
+                            );
+                        }
+                        key_kw = Some(&kw.value);
+                    }
+                    "reverse" => {
+                        if reverse_kw.is_some() {
+                            return Err(self.error(
+                                expr.span,
+                                "Multiple values for keyword argument `reverse`",
+                            ));
+                        }
+                        reverse_kw = Some(&kw.value);
+                    }
+                    _ => {
+                        return Err(self.error(
+                            expr.span,
+                            format!("Unknown keyword argument `{kw_name}` for sorted()"),
+                        ));
+                    }
+                }
+            }
+            let iter_src = self.gen_iter_source(&args[0])?;
+            let reverse_expr = if let Some(reverse) = reverse_kw {
+                self.gen_expr(reverse)?
+            } else {
+                "false".to_string()
+            };
+            let buf = self.new_tmp();
+            if let Some(key_expr) = key_kw {
+                let key_fn = self.gen_expr(key_expr)?;
+                let body = format!(
+                    "{{ let mut {buf} = ({iter}).map(|item| (({key})(item.clone()), item)).collect::<Vec<_>>(); {buf}.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)); if {reverse} {{ {buf}.reverse(); }} Arc::new(Mutex::new({buf}.into_iter().map(|(_, item)| item).collect::<Vec<_>>())) }}",
+                    buf = buf,
+                    iter = iter_src.expr,
+                    key = key_fn,
+                    reverse = reverse_expr
+                );
+                return Ok(Some(iter_src.wrap(body)));
+            }
+            let body = format!(
+                "{{ let mut {buf} = ({iter}).collect::<Vec<_>>(); {buf}.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); if {reverse} {{ {buf}.reverse(); }} Arc::new(Mutex::new({buf})) }}",
+                buf = buf,
+                iter = iter_src.expr,
+                reverse = reverse_expr
+            );
+            return Ok(Some(iter_src.wrap(body)));
+        }
         if name == "max" {
             if args.is_empty() {
                 return Err(self.error(expr.span, "max() expects at least one argument"));
             }
+            let mut key_kw: Option<&Expr> = None;
+            for kw in keywords {
+                let Some(kw_name) = kw.name.as_deref() else {
+                    return Err(self.error(
+                        expr.span,
+                        "Call-site **kwargs unpacking is not supported for max()",
+                    ));
+                };
+                if kw_name != "key" {
+                    return Err(self.error(
+                        expr.span,
+                        format!("Unknown keyword argument `{kw_name}` for max()"),
+                    ));
+                }
+                if key_kw.is_some() {
+                    return Err(self.error(expr.span, "Multiple values for keyword argument `key`"));
+                }
+                key_kw = Some(&kw.value);
+            }
             if args.len() == 1 {
-                self.uses.py_max = true;
                 let iter_src = self.gen_iter_source(&args[0])?;
+                if let Some(key_expr) = key_kw {
+                    let key_fn = self.gen_expr(key_expr)?;
+                    let iter_name = self.new_tmp();
+                    let best_name = self.new_tmp();
+                    let best_key_name = self.new_tmp();
+                    let item_name = self.new_tmp();
+                    let item_key_name = self.new_tmp();
+                    let body = self.wrap_result(format!(
+                        "{{ let mut {iter_name} = ({iter}).collect::<Vec<_>>().into_iter(); match {iter_name}.next() {{ Some(first_item) => {{ let mut {best_name} = first_item; let mut {best_key_name} = ({key_fn})({best_name}.clone()); for {item_name} in {iter_name} {{ let {item_key_name} = ({key_fn})({item_name}.clone()); if {item_key_name} > {best_key_name} {{ {best_name} = {item_name}; {best_key_name} = {item_key_name}; }} }} Ok({best_name}) }}, None => Err(PyError::ValueError(\"max() arg is an empty sequence\".to_string())) }} }}",
+                        iter_name = iter_name,
+                        iter = iter_src.expr,
+                        best_name = best_name,
+                        best_key_name = best_key_name,
+                        item_name = item_name,
+                        item_key_name = item_key_name,
+                        key_fn = key_fn
+                    ));
+                    return Ok(Some(iter_src.wrap(body)));
+                }
+                self.uses.py_max = true;
                 let body = self.wrap_result(format!("py_max({})", iter_src.expr));
                 return Ok(Some(iter_src.wrap(body)));
+            }
+            if key_kw.is_some() {
+                return Err(self.error(
+                    expr.span,
+                    "max() with key= currently supports only iterable form",
+                ));
             }
             let use_float = args
                 .iter()
@@ -666,11 +813,55 @@ impl<'a> Codegen<'a> {
             if args.is_empty() {
                 return Err(self.error(expr.span, "min() expects at least one argument"));
             }
+            let mut key_kw: Option<&Expr> = None;
+            for kw in keywords {
+                let Some(kw_name) = kw.name.as_deref() else {
+                    return Err(self.error(
+                        expr.span,
+                        "Call-site **kwargs unpacking is not supported for min()",
+                    ));
+                };
+                if kw_name != "key" {
+                    return Err(self.error(
+                        expr.span,
+                        format!("Unknown keyword argument `{kw_name}` for min()"),
+                    ));
+                }
+                if key_kw.is_some() {
+                    return Err(self.error(expr.span, "Multiple values for keyword argument `key`"));
+                }
+                key_kw = Some(&kw.value);
+            }
             if args.len() == 1 {
-                self.uses.py_min = true;
                 let iter_src = self.gen_iter_source(&args[0])?;
+                if let Some(key_expr) = key_kw {
+                    let key_fn = self.gen_expr(key_expr)?;
+                    let iter_name = self.new_tmp();
+                    let best_name = self.new_tmp();
+                    let best_key_name = self.new_tmp();
+                    let item_name = self.new_tmp();
+                    let item_key_name = self.new_tmp();
+                    let body = self.wrap_result(format!(
+                        "{{ let mut {iter_name} = ({iter}).collect::<Vec<_>>().into_iter(); match {iter_name}.next() {{ Some(first_item) => {{ let mut {best_name} = first_item; let mut {best_key_name} = ({key_fn})({best_name}.clone()); for {item_name} in {iter_name} {{ let {item_key_name} = ({key_fn})({item_name}.clone()); if {item_key_name} < {best_key_name} {{ {best_name} = {item_name}; {best_key_name} = {item_key_name}; }} }} Ok({best_name}) }}, None => Err(PyError::ValueError(\"min() arg is an empty sequence\".to_string())) }} }}",
+                        iter_name = iter_name,
+                        iter = iter_src.expr,
+                        best_name = best_name,
+                        best_key_name = best_key_name,
+                        item_name = item_name,
+                        item_key_name = item_key_name,
+                        key_fn = key_fn
+                    ));
+                    return Ok(Some(iter_src.wrap(body)));
+                }
+                self.uses.py_min = true;
                 let body = self.wrap_result(format!("py_min({})", iter_src.expr));
                 return Ok(Some(iter_src.wrap(body)));
+            }
+            if key_kw.is_some() {
+                return Err(self.error(
+                    expr.span,
+                    "min() with key= currently supports only iterable form",
+                ));
             }
             let use_float = args
                 .iter()
@@ -915,6 +1106,13 @@ impl<'a> Codegen<'a> {
             return Ok(Some(
                 self.wrap_result(format!("py_next({}.next())", arg_expr)),
             ));
+        }
+        if name == "iter" {
+            if args.len() != 1 {
+                return Err(self.error(expr.span, "iter() expects one argument"));
+            }
+            let iter_expr = self.gen_iter_source_owned(&args[0], IterContext::DeferredCapture)?;
+            return Ok(Some(iter_expr));
         }
         if name == "bin" {
             if args.len() != 1 {

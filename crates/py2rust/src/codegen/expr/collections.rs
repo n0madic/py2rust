@@ -2,6 +2,13 @@
 
 use super::super::*;
 
+/// Borrowed view of a comprehension clause used during code generation.
+struct CompClauseRef<'a> {
+    target: &'a str,
+    iter: &'a Expr,
+    ifs: &'a [Expr],
+}
+
 impl<'a> Codegen<'a> {
     /// Lower a list literal expression.
     pub(super) fn gen_list_expr(
@@ -560,8 +567,16 @@ impl<'a> Codegen<'a> {
         target: &str,
         iter: &Expr,
         ifs: &[Expr],
+        generators: &[CompClause],
     ) -> Result<String, CompileError> {
-        self.gen_list_comp_expr_with_storage(elt, target, iter, ifs, ListStorage::Shared)
+        self.gen_list_comp_expr_with_storage(
+            elt,
+            target,
+            iter,
+            ifs,
+            generators,
+            ListStorage::Shared,
+        )
     }
 
     /// Lower list comprehension expressions with explicit storage.
@@ -571,71 +586,15 @@ impl<'a> Codegen<'a> {
         target: &str,
         iter: &Expr,
         ifs: &[Expr],
+        generators: &[CompClause],
         storage: ListStorage,
     ) -> Result<String, CompileError> {
         let tmp = self.new_tmp();
-        // Ensure the comprehension target is treated as a local binding while
-        // generating the element and filter expressions.
-        let saved_locals = self.local_vars.clone();
-        let mut scoped_locals = saved_locals.clone().unwrap_or_default();
-        let item_ty = iter
-            .ty
-            .as_ref()
-            .and_then(|ty| self.iter_item_type_hint(ty))
-            .unwrap_or(Type::Unknown);
-        scoped_locals.insert(target.to_string(), item_ty);
-        self.local_vars = Some(scoped_locals);
-        let elt_expr = self.gen_expr(elt)?;
-        let conds: Result<Vec<String>, CompileError> =
-            ifs.iter().map(|c| self.gen_expr(c)).collect();
-        self.local_vars = saved_locals;
+        let clauses = Self::comp_clause_refs(target, iter, ifs, generators);
         let mut out = String::new();
         out.push('{');
         out.push_str(&format!(" let mut {} = Vec::new();", tmp));
-        if let Some(Type::List(inner)) = iter.ty.as_ref() {
-            if matches!(self.list_storage_for_expr(iter), ListStorage::Local) {
-                let idx = self.new_tmp();
-                let iter_expr = self.gen_expr(iter)?;
-                let item_expr = if self.is_copy_type(inner) {
-                    format!("{iter}[{idx}]", iter = iter_expr, idx = idx)
-                } else {
-                    format!("{iter}[{idx}].clone()", iter = iter_expr, idx = idx)
-                };
-                out.push_str(&format!(" let mut {}: usize = 0;", idx));
-                out.push_str(&format!(" while {} < {}.len() {{", idx, iter_expr));
-                out.push_str(&format!(
-                    " let {target} = {item}; {idx} += 1;",
-                    target = target,
-                    item = item_expr,
-                    idx = idx
-                ));
-            } else {
-                let iter_src = self.gen_iter_source(iter)?;
-                // Keep list lock guards alive for the duration of the comprehension.
-                for line in &iter_src.setup {
-                    out.push_str(&format!(" {};", line));
-                }
-                out.push_str(&format!(" for {} in {} {{", target, iter_src.expr));
-            }
-        } else {
-            let iter_src = self.gen_iter_source(iter)?;
-            // Keep list lock guards alive for the duration of the comprehension.
-            for line in &iter_src.setup {
-                out.push_str(&format!(" {};", line));
-            }
-            out.push_str(&format!(" for {} in {} {{", target, iter_src.expr));
-        }
-        if ifs.is_empty() {
-            out.push_str(&format!(" {}.push({});", tmp, elt_expr));
-        } else {
-            out.push_str(&format!(
-                " if {} {{ {}.push({}); }}",
-                conds?.join(" && "),
-                tmp,
-                elt_expr
-            ));
-        }
-        out.push_str(" }");
+        self.emit_list_comp_loops(&mut out, &clauses, 0, elt, &tmp)?;
         out.push_str(&format!(
             " {} }}",
             self.wrap_list_storage_expr(&tmp, storage)
@@ -650,44 +609,162 @@ impl<'a> Codegen<'a> {
         target: &str,
         iter: &Expr,
         ifs: &[Expr],
+        generators: &[CompClause],
     ) -> Result<String, CompileError> {
         self.uses.hash_set = true;
         let tmp = self.new_tmp();
-        let iter_src = self.gen_iter_source(iter)?;
-        // Treat comprehension target as a local binding for element/filter generation.
+        let clauses = Self::comp_clause_refs(target, iter, ifs, generators);
+        let mut out = String::new();
+        out.push('{');
+        out.push_str(&format!(" let mut {} = HashSet::new();", tmp));
+        self.emit_set_comp_loops(&mut out, &clauses, 0, elt, &tmp)?;
+        out.push_str(&format!(" {} }}", tmp));
+        Ok(out)
+    }
+
+    /// Return normalized comprehension clauses, falling back to first-clause fields.
+    fn comp_clause_refs<'b>(
+        target: &'b str,
+        iter: &'b Expr,
+        ifs: &'b [Expr],
+        generators: &'b [CompClause],
+    ) -> Vec<CompClauseRef<'b>> {
+        if generators.is_empty() {
+            return vec![CompClauseRef { target, iter, ifs }];
+        }
+        generators
+            .iter()
+            .map(|clause| CompClauseRef {
+                target: &clause.target,
+                iter: &clause.iter,
+                ifs: &clause.ifs,
+            })
+            .collect()
+    }
+
+    /// Emit nested `for` loops for list comprehension clauses.
+    fn emit_list_comp_loops(
+        &mut self,
+        out: &mut String,
+        clauses: &[CompClauseRef<'_>],
+        idx: usize,
+        elt: &Expr,
+        tmp: &str,
+    ) -> Result<(), CompileError> {
+        let clause = clauses
+            .get(idx)
+            .ok_or_else(|| self.error(elt.span, "Comprehension has no generators"))?;
+        let iter_src = self.gen_iter_source(clause.iter)?;
+        // Keep lock guards alive for the loop body.
+        for line in &iter_src.setup {
+            out.push_str(&format!(" {};", line));
+        }
+        out.push_str(&format!(" for {} in {} {{", clause.target, iter_src.expr));
+
+        // Treat each generator target as a comprehension-local binding.
         let saved_locals = self.local_vars.clone();
         let mut scoped_locals = saved_locals.clone().unwrap_or_default();
-        let item_ty = iter
+        let item_ty = clause
+            .iter
             .ty
             .as_ref()
             .and_then(|ty| self.iter_item_type_hint(ty))
             .unwrap_or(Type::Unknown);
-        scoped_locals.insert(target.to_string(), item_ty);
+        scoped_locals.insert(clause.target.to_string(), item_ty);
         self.local_vars = Some(scoped_locals);
-        let elt_expr = self.gen_expr(elt)?;
-        let conds: Result<Vec<String>, CompileError> =
-            ifs.iter().map(|c| self.gen_expr(c)).collect();
+
+        let body_result = (|| -> Result<(), CompileError> {
+            let cond_expr = if clause.ifs.is_empty() {
+                None
+            } else {
+                let conds: Result<Vec<String>, CompileError> =
+                    clause.ifs.iter().map(|c| self.gen_expr(c)).collect();
+                Some(conds?.join(" && "))
+            };
+
+            if let Some(cond) = &cond_expr {
+                out.push_str(&format!(" if {} {{", cond));
+            }
+
+            if idx + 1 < clauses.len() {
+                self.emit_list_comp_loops(out, clauses, idx + 1, elt, tmp)?;
+            } else {
+                let elt_expr = self.gen_expr(elt)?;
+                out.push_str(&format!(" {}.push({});", tmp, elt_expr));
+            }
+
+            if cond_expr.is_some() {
+                out.push_str(" }");
+            }
+            Ok(())
+        })();
+
         self.local_vars = saved_locals;
-        let mut out = String::new();
-        out.push('{');
-        // Keep list lock guards alive for the duration of the comprehension.
+        body_result?;
+        out.push_str(" }");
+        Ok(())
+    }
+
+    /// Emit nested `for` loops for set comprehension clauses.
+    fn emit_set_comp_loops(
+        &mut self,
+        out: &mut String,
+        clauses: &[CompClauseRef<'_>],
+        idx: usize,
+        elt: &Expr,
+        tmp: &str,
+    ) -> Result<(), CompileError> {
+        let clause = clauses
+            .get(idx)
+            .ok_or_else(|| self.error(elt.span, "Comprehension has no generators"))?;
+        let iter_src = self.gen_iter_source(clause.iter)?;
+        // Keep lock guards alive for the loop body.
         for line in &iter_src.setup {
             out.push_str(&format!(" {};", line));
         }
-        out.push_str(&format!(" let mut {} = HashSet::new();", tmp));
-        out.push_str(&format!(" for {} in {} {{", target, iter_src.expr));
-        if ifs.is_empty() {
-            out.push_str(&format!(" {}.insert({});", tmp, elt_expr));
-        } else {
-            out.push_str(&format!(
-                " if {} {{ {}.insert({}); }}",
-                conds?.join(" && "),
-                tmp,
-                elt_expr
-            ));
-        }
+        out.push_str(&format!(" for {} in {} {{", clause.target, iter_src.expr));
+
+        // Treat each generator target as a comprehension-local binding.
+        let saved_locals = self.local_vars.clone();
+        let mut scoped_locals = saved_locals.clone().unwrap_or_default();
+        let item_ty = clause
+            .iter
+            .ty
+            .as_ref()
+            .and_then(|ty| self.iter_item_type_hint(ty))
+            .unwrap_or(Type::Unknown);
+        scoped_locals.insert(clause.target.to_string(), item_ty);
+        self.local_vars = Some(scoped_locals);
+
+        let body_result = (|| -> Result<(), CompileError> {
+            let cond_expr = if clause.ifs.is_empty() {
+                None
+            } else {
+                let conds: Result<Vec<String>, CompileError> =
+                    clause.ifs.iter().map(|c| self.gen_expr(c)).collect();
+                Some(conds?.join(" && "))
+            };
+
+            if let Some(cond) = &cond_expr {
+                out.push_str(&format!(" if {} {{", cond));
+            }
+
+            if idx + 1 < clauses.len() {
+                self.emit_set_comp_loops(out, clauses, idx + 1, elt, tmp)?;
+            } else {
+                let elt_expr = self.gen_expr(elt)?;
+                out.push_str(&format!(" {}.insert({});", tmp, elt_expr));
+            }
+
+            if cond_expr.is_some() {
+                out.push_str(" }");
+            }
+            Ok(())
+        })();
+
+        self.local_vars = saved_locals;
+        body_result?;
         out.push_str(" }");
-        out.push_str(&format!(" {} }}", tmp));
-        Ok(out)
+        Ok(())
     }
 }

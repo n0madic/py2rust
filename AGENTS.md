@@ -27,7 +27,6 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - `cargo clippy --all-targets` - lint all targets including tests
 - `cargo clippy -- -D warnings` - treat warnings as errors
 - `cargo fmt` - format all code with rustfmt
-- `cargo fmt --check` - check formatting without modifying files
 
 ### Running the Transpiler
 - `cargo run -p py2rust -- <input.py>` - transpile Python to Rust
@@ -66,13 +65,13 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 ## Supported Python Subset (high-level)
 - Functions, classes (plain data), if/elif/else, while, for, return, break/continue.
 - Literals: int, float, bool, None, str.
-- list/dict/tuple/set, indexing, slicing (limited), simple comprehension.
+- list/dict/tuple/set, indexing, slicing (limited), and list/set/dict comprehensions.
 - Tuple/list unpacking supports one starred target (`a, *rest, b = ...`).
 - `Union` for enum-like classes.
 - `match/case` for literals/singletons, capture and wildcard patterns, OR patterns, guards, and list sequence/star patterns.
 - Class-pattern `match` on union variants with `__match_args__` support.
 - `__iter__/next` for custom iterators.
-- `lambda`, `if` expression, `round`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`, `reversed`, `max`, `min`, `int`, `float`, `str`, `isinstance`, `type`.
+- `lambda`, `if` expression, `round`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`, `iter`, `reversed`, `sorted`, `max`, `min`, `int`, `float`, `str`, `isinstance`, `type`.
 - String methods: `upper`, `lower`.
 - Decorators: one simple name decorator on top-level functions only (rewritten).
 - Exception handling: `try/except/else/finally`, `raise`, bare `raise` (re-raise), `except Exception` (catch-all), exception propagation through function calls.
@@ -98,9 +97,11 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - Tuple concatenation:
   - Literal tuples are inlined directly: `tup + (1, 2)` → `(tup.0.clone(), tup.1.clone(), 1, 2)`
   - Variables use temporary bindings to avoid redundant clones
-- For loop tuple unpacking generates direct pattern matching:
-  - `for (a, b) in pairs:` → `for (a, b) in pairs.iter().cloned() {`
-  - Supports nested unpacking in HIR via `ForTarget` enum
+- For loop unpacking:
+  - Simple tuple targets generate direct pattern loops:
+    - `for (a, b) in pairs:` → `for (a, b) in pairs.iter().cloned() {`
+  - Complex tuple/list targets (including starred) are lowered via per-iteration assignment:
+    - `for a, *rest in items:` → loop over temp item + unpack assignment inside loop body
 - Iterator generation for `Arc<Mutex<Vec<T>>>`:
   - `IterContext::ImmediateConsumption` holds lock once for entire iteration (for loops, builtins)
   - `IterContext::DeferredCapture` locks per-iteration when iterator is returned/stored (map/filter results)
@@ -130,6 +131,7 @@ Runtime integration tests are in `crates/py2rust/tests/`:
   - `collections.rs` - lists, strings, tuples, dicts
   - `operators.rs` - arithmetic, comparison, boolean
   - `match.rs` - comprehensive `match/case` patterns
+  - `iteration.rs` - iteration protocol, comprehensions, and iterator builtins
   - `global_scoping.rs` - global declarations, shadowing, and nested global writes
   - `io.rs` - print output
   - `assert.rs` - assertions

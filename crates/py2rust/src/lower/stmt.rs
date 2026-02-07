@@ -289,34 +289,75 @@ impl<'a> Lowerer<'a> {
             // For loop: for target in iter: body
             // We support:
             // - Simple name target: for x in items:
-            // - Tuple unpacking: for (a, b) in pairs:
+            // - General unpacking/assignment targets via per-iteration desugaring.
             ast::Stmt::For(def) => {
                 let iter = self.lower_expr(&def.iter)?;
+                let target_span = Span::from(def.target.range());
+                let mut body_stmts = Vec::new();
                 let target = match &*def.target {
                     ast::Expr::Name(name) => ForTarget::Name(self.ident(name.id.as_str())),
                     ast::Expr::Tuple(tuple) => {
-                        // Extract simple names from tuple elements for pattern matching.
-                        let mut names = Vec::new();
+                        // Keep simple tuple patterns as first-class loop patterns.
+                        let mut names = Vec::with_capacity(tuple.elts.len());
+                        let mut all_simple = true;
                         for elt in &tuple.elts {
                             if let ast::Expr::Name(name) = elt {
                                 names.push(self.ident(name.id.as_str()));
                             } else {
-                                return Err(self.error(
-                                    def.target.range(),
-                                    "For loop tuple unpacking only supports simple names",
-                                ));
+                                all_simple = false;
+                                break;
                             }
                         }
-                        ForTarget::Tuple(names)
+                        if all_simple {
+                            ForTarget::Tuple(names)
+                        } else {
+                            // Desugar complex tuple targets (including starred patterns).
+                            let iter_item_name = self.ident(&format!(
+                                "__py2rust_for_item_{}",
+                                def.target.range().start().to_u32()
+                            ));
+                            let unpack_target = self.lower_assign_target(&def.target)?;
+                            let unpack_value = Expr {
+                                kind: ExprKind::Name(iter_item_name.clone()),
+                                span: target_span,
+                                ty: None,
+                            };
+                            body_stmts.push(Stmt {
+                                kind: StmtKind::Assign {
+                                    target: unpack_target,
+                                    value: unpack_value,
+                                },
+                                span: target_span,
+                            });
+                            ForTarget::Name(iter_item_name)
+                        }
                     }
                     _ => {
-                        return Err(self.error(
-                            def.target.range(),
-                            "For loop target must be a name or tuple of names",
+                        // Desugar complex targets:
+                        //   for a, *rest in items: ...
+                        // into:
+                        //   for __py2rust_for_item_N in items:
+                        //       a, *rest = __py2rust_for_item_N
+                        let iter_item_name = self.ident(&format!(
+                            "__py2rust_for_item_{}",
+                            def.target.range().start().to_u32()
                         ));
+                        let unpack_target = self.lower_assign_target(&def.target)?;
+                        let unpack_value = Expr {
+                            kind: ExprKind::Name(iter_item_name.clone()),
+                            span: target_span,
+                            ty: None,
+                        };
+                        body_stmts.push(Stmt {
+                            kind: StmtKind::Assign {
+                                target: unpack_target,
+                                value: unpack_value,
+                            },
+                            span: target_span,
+                        });
+                        ForTarget::Name(iter_item_name)
                     }
                 };
-                let mut body_stmts = Vec::new();
                 for stmt in &def.body {
                     body_stmts.push(self.lower_stmt(stmt)?);
                 }

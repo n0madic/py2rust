@@ -32,7 +32,8 @@ impl<'a> TypeChecker<'a> {
                 } else if items.iter().all(|t| t == &items[0]) {
                     Ok(items[0].clone())
                 } else {
-                    Err(self.error(span, "Tuple iteration requires uniform types"))
+                    // Heterogeneous tuple iteration falls back to gradual typing.
+                    Ok(Type::Unknown)
                 }
             }
             Type::Set(inner) => Ok(*inner.clone()),

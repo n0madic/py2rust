@@ -31,6 +31,8 @@ mod global_scoping;
 mod import;
 #[path = "runtime/io.rs"]
 mod io;
+#[path = "runtime/iteration.rs"]
+mod iteration;
 #[path = "runtime/match.rs"]
 mod match_tests;
 #[path = "runtime/operators.rs"]

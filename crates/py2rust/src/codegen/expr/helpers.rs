@@ -336,14 +336,22 @@ impl<'a> Codegen<'a> {
                         expr: "std::iter::empty::<()>()".to_string(),
                     });
                 }
+                let is_uniform = items.iter().all(|t| t == &items[0]);
                 let tmp = self.new_tmp();
                 let mut elems = Vec::new();
                 for (idx, ty) in items.iter().enumerate() {
-                    if self.is_copy_type(ty) {
-                        elems.push(format!("{}.{}", tmp, idx));
+                    let value_expr = if self.is_copy_type(ty) {
+                        format!("{}.{}", tmp, idx)
                     } else {
-                        elems.push(format!("{}.{}.clone()", tmp, idx));
-                    }
+                        format!("{}.{}.clone()", tmp, idx)
+                    };
+                    if is_uniform {
+                        elems.push(value_expr);
+                    } else {
+                        // Heterogeneous tuples iterate as gradual values.
+                        self.uses.py_repr = true;
+                        elems.push(format!("PyRepr(format!(\"{{:?}}\", {}))", value_expr));
+                    };
                 }
                 if use_owned {
                     Ok(IterSource {
@@ -727,11 +735,18 @@ impl<'a> Codegen<'a> {
             target,
             iter,
             ifs,
+            generators,
         } = &expr.kind
         {
             let tmp = self.new_tmp();
-            let list_expr =
-                self.gen_list_comp_expr_with_storage(elt, target, iter, ifs, ListStorage::Local)?;
+            let list_expr = self.gen_list_comp_expr_with_storage(
+                elt,
+                target,
+                iter,
+                ifs,
+                generators,
+                ListStorage::Local,
+            )?;
             // Keep list comprehension results local when formatting.
             return Ok(format!(
                 "{{ let {tmp} = {list}; py_list_str_vec(&{tmp}) }}",

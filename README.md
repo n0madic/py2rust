@@ -16,6 +16,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Augmented assignment: `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 - Control flow: `if/elif/else`, `x if cond else y`, `while`, `for`, `return`, `break`, `continue`
 - Tuple/list unpacking assignments (including nested and one starred target like `a, *rest, b = ...`)
+- For-loop unpacking supports tuple/list targets, including one starred target (e.g. `for a, *rest in items:`)
 - Negative indexing and slicing for lists/tuples (including step)
 - List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`
 - Dict methods: `get`, `pop`, `update`, `clear`, `copy`
@@ -28,11 +29,11 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - `match/case` for literals/singletons, capture and wildcard patterns, `|` patterns, guards, and list sequence/star patterns
 - `match/case` on union variants (class patterns) with `__match_args__` support
 - Custom iterators via `__iter__` and `next`
-- Simple list and set comprehensions
+- List, set, and dict comprehensions (including multiple generator clauses)
 - Call-site unpacking via `*args` and `**kwargs` (including mixed call forms)
 - Nested functions with closure capture and `nonlocal` writes
 - `global` declarations with CPython-compatible shadowing rules (local assignment shadows module names unless explicitly declared `global`)
-- Builtins: `abs`, `all`, `any`, `ascii`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `str`, `sum`, `tuple`, `type`, `zip`
+- Builtins: `abs`, `all`, `any`, `ascii`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `iter`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `type`, `zip`
 - Stdlib modules (registry-backed): `os.remove(path)` and `sys.exit([code])`
 - Stdlib imports: `import os`, `import os as o`, `from os import remove`, `from os import remove as rm`, `import sys`, `from sys import exit`
 
@@ -71,6 +72,7 @@ Runtime integration coverage lives in `crates/py2rust/tests/runtime/`:
 - `builtins.rs` covers builtin functions.
 - `strings.rs` covers comprehensive string behavior (`str.format`, f-strings, predicates, split/join, alignment/fill, indexing/slicing, conversions `!s`/`!r`/`!a`).
 - `match.rs` covers comprehensive pattern matching behavior from `match.py`.
+- `iteration.rs` covers iteration protocol, comprehensions, `iter/next`, `enumerate`, `zip`, `sorted`, `reversed`, and for-loop starred unpacking from `iteration.py`.
 - other files cover classes, control flow, operators, comprehensions, IO, assertions, and exceptions.
 
 Negative/compile-fail coverage lives in `crates/py2rust/tests/negative_tests.rs`.
@@ -96,7 +98,7 @@ The generated Rust injects tiny helper functions only when needed:
 - `from ... import *` is not supported for stdlib modules.
 - Supported stdlib members are currently limited to `os.remove` and `sys.exit`.
 - Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
-- Builtins are mostly positional-only; keyword arguments are currently supported only for `print(sep=...)`.
+- Builtins are mostly positional-only; keyword arguments are supported for `print(sep=..., end=...)`, `sorted(key=..., reverse=...)`, and iterable-form `min/max(key=...)`.
 - `round(x)` with a float input currently keeps a float result (`round(3.0)` -> `3.0`), while integer inputs stay integer.
 - Call-site `**kwargs` unpacking requires a `dict[str, T]` expression.
 - Positional-only parameters (`/`) are not supported.
@@ -108,6 +110,7 @@ The generated Rust injects tiny helper functions only when needed:
 - Class-pattern `match` (e.g. `case Point(x, y):`) currently requires a union-typed subject.
 - Guards on class-pattern union matches are currently rejected.
 - `dict` indexing raises `KeyError` (propagated as `PyError`).
+- Mixed-type tuple iteration falls back to gradual typing (`Unknown`/`PyRepr`) where static unification is not possible.
 - Tuple slicing requires literal integer bounds (including negative literals).
 - String indexing/slicing is character-based (Unicode scalar values).
 - f-strings support literal-only format specs plus conversions `!s`, `!r`, and `!a`.

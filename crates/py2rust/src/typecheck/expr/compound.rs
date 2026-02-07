@@ -383,15 +383,29 @@ impl<'a> TypeChecker<'a> {
         target: &str,
         iter: &mut Expr,
         ifs: &mut [Expr],
+        generators: &mut [CompClause],
         span: Span,
     ) -> Result<Type, CompileError> {
-        let iter_ty = self.check_expr(iter, None)?;
-        let item_ty = self.iter_item_type(&iter_ty, span)?;
         self.scopes.push(HashMap::new());
-        self.insert_var(target, item_ty.clone(), span)?;
-        for cond in ifs {
-            let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
-            self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
+        if generators.is_empty() {
+            // Backward-compatible path for older lowered HIR.
+            let iter_ty = self.check_expr(iter, None)?;
+            let item_ty = self.iter_item_type(&iter_ty, span)?;
+            self.insert_var(target, item_ty.clone(), span)?;
+            for cond in ifs {
+                let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
+                self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
+            }
+        } else {
+            for clause in generators {
+                let iter_ty = self.check_expr(&mut clause.iter, None)?;
+                let item_ty = self.iter_item_type(&iter_ty, span)?;
+                self.insert_var(&clause.target, item_ty.clone(), span)?;
+                for cond in &mut clause.ifs {
+                    let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
+                    self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
+                }
+            }
         }
         let elt_ty = self.check_expr(elt, None)?;
         self.scopes.pop();
@@ -405,15 +419,29 @@ impl<'a> TypeChecker<'a> {
         target: &str,
         iter: &mut Expr,
         ifs: &mut [Expr],
+        generators: &mut [CompClause],
         span: Span,
     ) -> Result<Type, CompileError> {
-        let iter_ty = self.check_expr(iter, None)?;
-        let item_ty = self.iter_item_type(&iter_ty, span)?;
         self.scopes.push(HashMap::new());
-        self.insert_var(target, item_ty.clone(), span)?;
-        for cond in ifs {
-            let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
-            self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
+        if generators.is_empty() {
+            // Backward-compatible path for older lowered HIR.
+            let iter_ty = self.check_expr(iter, None)?;
+            let item_ty = self.iter_item_type(&iter_ty, span)?;
+            self.insert_var(target, item_ty.clone(), span)?;
+            for cond in ifs {
+                let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
+                self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
+            }
+        } else {
+            for clause in generators {
+                let iter_ty = self.check_expr(&mut clause.iter, None)?;
+                let item_ty = self.iter_item_type(&iter_ty, span)?;
+                self.insert_var(&clause.target, item_ty.clone(), span)?;
+                for cond in &mut clause.ifs {
+                    let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
+                    self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
+                }
+            }
         }
         let elt_ty = self.check_expr(elt, None)?;
         self.scopes.pop();

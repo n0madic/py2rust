@@ -911,11 +911,13 @@ impl<'a> Codegen<'a> {
                 target,
                 iter,
                 ifs,
+                generators,
             } => Ok(Some(self.gen_list_comp_expr_with_storage(
                 elt,
                 target,
                 iter,
                 ifs,
+                generators,
                 ListStorage::Local,
             )?)),
             _ => Ok(None),

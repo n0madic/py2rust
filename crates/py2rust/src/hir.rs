@@ -373,6 +373,18 @@ pub struct KeywordArg {
     pub value: Expr,
 }
 
+/// One `for ... in ... if ...` clause inside a comprehension.
+///
+/// Python comprehensions may contain multiple generator clauses:
+/// `[x + y for x in xs for y in ys if y > 0]`.
+/// Clauses are stored in source order.
+#[derive(Debug, Clone)]
+pub struct CompClause {
+    pub target: String,
+    pub iter: Box<Expr>,
+    pub ifs: Vec<Expr>,
+}
+
 /// Expression kinds supported by the transpiler.
 ///
 /// Design notes:
@@ -380,8 +392,6 @@ pub struct KeywordArg {
 ///   The type checker determines what kind of call it is based on the func type.
 /// - Binary/Unary/Compare: Separated for clarity, though they could be unified.
 ///   This makes pattern matching in type checking and codegen more ergonomic.
-/// - ListComp: We only support simple comprehensions (single for, optional ifs).
-///   Nested comprehensions would require more complex HIR representation.
 /// - UnionCtor: Special constructor form for creating union variants.
 ///   Python: `Success(value)` where Success is a union variant
 ///   Rust:   `Status::Success(value)` where Status is the enum
@@ -447,21 +457,29 @@ pub enum ExprKind {
         end: Option<Box<Expr>>,
         step: Option<Box<Expr>>,
     },
-    /// List comprehension: [elt for target in iter if conditions]
-    /// We only support single-loop comprehensions; nested loops are not supported.
+    /// List comprehension: [elt for ... in ... if ...]
+    ///
+    /// `generators` stores all clauses in source order.
+    /// `target`/`iter`/`ifs` mirror the first clause for compatibility with
+    /// existing passes that only need the leading generator.
     ListComp {
         elt: Box<Expr>,
         target: String,
         iter: Box<Expr>,
         ifs: Vec<Expr>,
+        generators: Vec<CompClause>,
     },
-    /// Set comprehension: {elt for target in iter if conditions}
-    /// We only support single-loop comprehensions; nested loops are not supported.
+    /// Set comprehension: {elt for ... in ... if ...}
+    ///
+    /// `generators` stores all clauses in source order.
+    /// `target`/`iter`/`ifs` mirror the first clause for compatibility with
+    /// existing passes that only need the leading generator.
     SetComp {
         elt: Box<Expr>,
         target: String,
         iter: Box<Expr>,
         ifs: Vec<Expr>,
+        generators: Vec<CompClause>,
     },
     /// Constructor call for a union variant.
     /// This is lowered from a Call expression when the function is determined

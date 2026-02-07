@@ -14,7 +14,7 @@ use super::*;
 ///   Users must write them as (a < b) and (b < c)
 /// - Dict constructor dict(a=1, b=2) is special-cased to become literal syntax
 /// - F-strings are lowered to format!() macro calls
-/// - List/dict/set comprehensions are simplified to single-loop form only
+/// - Comprehensions support multiple generator clauses
 impl<'a> Lowerer<'a> {
     /// Lower a Python expression to HIR.
     ///
@@ -296,72 +296,138 @@ impl<'a> Lowerer<'a> {
                 },
             },
             // List comprehension: [x * 2 for x in items if x > 0]
-            // We only support single-loop comprehensions (no nested for)
-            // Multiple conditions (if x > 0 if x < 10) are also rejected
             ast::Expr::ListComp(listcomp) => {
-                if listcomp.generators.len() != 1 {
-                    return Err(self.error(
-                        expr.range(),
-                        "Only single-generator comprehensions are supported",
-                    ));
+                if listcomp.generators.is_empty() {
+                    return Err(self.error(expr.range(), "Comprehension has no generators"));
                 }
-                let gen = &listcomp.generators[0];
-                if gen.is_async {
-                    return Err(self.error(expr.range(), "Async comprehensions are not supported"));
-                }
-                let target = match &gen.target {
-                    ast::Expr::Name(name) => self.ident(name.id.as_str()),
-                    _ => {
-                        return Err(self.error(
-                            gen.target.range(),
-                            "Only simple targets are supported in comprehensions",
-                        ))
+                let mut generators = Vec::with_capacity(listcomp.generators.len());
+                for gen in &listcomp.generators {
+                    if gen.is_async {
+                        return Err(
+                            self.error(expr.range(), "Async comprehensions are not supported")
+                        );
                     }
-                };
-                let iter = Box::new(self.lower_expr(&gen.iter)?);
-                let mut ifs = Vec::new();
-                for cond in &gen.ifs {
-                    ifs.push(self.lower_expr(cond)?);
+                    let target = match &gen.target {
+                        ast::Expr::Name(name) => self.ident(name.id.as_str()),
+                        _ => {
+                            return Err(self.error(
+                                gen.target.range(),
+                                "Only simple targets are supported in comprehensions",
+                            ))
+                        }
+                    };
+                    let iter = Box::new(self.lower_expr(&gen.iter)?);
+                    let mut ifs = Vec::with_capacity(gen.ifs.len());
+                    for cond in &gen.ifs {
+                        ifs.push(self.lower_expr(cond)?);
+                    }
+                    generators.push(CompClause { target, iter, ifs });
                 }
+                let first = generators[0].clone();
                 ExprKind::ListComp {
                     elt: Box::new(self.lower_expr(&listcomp.elt)?),
-                    target,
-                    iter,
-                    ifs,
+                    target: first.target,
+                    iter: first.iter,
+                    ifs: first.ifs,
+                    generators,
                 }
             }
             // Set comprehension: {x * 2 for x in items if x > 0}
-            // We only support single-loop comprehensions (no nested for)
             ast::Expr::SetComp(setcomp) => {
-                if setcomp.generators.len() != 1 {
-                    return Err(self.error(
-                        expr.range(),
-                        "Only single-generator comprehensions are supported",
-                    ));
+                if setcomp.generators.is_empty() {
+                    return Err(self.error(expr.range(), "Comprehension has no generators"));
                 }
-                let gen = &setcomp.generators[0];
-                if gen.is_async {
-                    return Err(self.error(expr.range(), "Async comprehensions are not supported"));
-                }
-                let target = match &gen.target {
-                    ast::Expr::Name(name) => self.ident(name.id.as_str()),
-                    _ => {
-                        return Err(self.error(
-                            gen.target.range(),
-                            "Only simple targets are supported in comprehensions",
-                        ))
+                let mut generators = Vec::with_capacity(setcomp.generators.len());
+                for gen in &setcomp.generators {
+                    if gen.is_async {
+                        return Err(
+                            self.error(expr.range(), "Async comprehensions are not supported")
+                        );
                     }
-                };
-                let iter = Box::new(self.lower_expr(&gen.iter)?);
-                let mut ifs = Vec::new();
-                for cond in &gen.ifs {
-                    ifs.push(self.lower_expr(cond)?);
+                    let target = match &gen.target {
+                        ast::Expr::Name(name) => self.ident(name.id.as_str()),
+                        _ => {
+                            return Err(self.error(
+                                gen.target.range(),
+                                "Only simple targets are supported in comprehensions",
+                            ))
+                        }
+                    };
+                    let iter = Box::new(self.lower_expr(&gen.iter)?);
+                    let mut ifs = Vec::with_capacity(gen.ifs.len());
+                    for cond in &gen.ifs {
+                        ifs.push(self.lower_expr(cond)?);
+                    }
+                    generators.push(CompClause { target, iter, ifs });
                 }
+                let first = generators[0].clone();
                 ExprKind::SetComp {
                     elt: Box::new(self.lower_expr(&setcomp.elt)?),
-                    target,
-                    iter,
-                    ifs,
+                    target: first.target,
+                    iter: first.iter,
+                    ifs: first.ifs,
+                    generators,
+                }
+            }
+            // Dict comprehension: {key: value for ... in ... if ...}
+            // Lower to dict([(key, value) for ...]) so we can reuse list-comp
+            // and dict(iterable-of-pairs) machinery.
+            ast::Expr::DictComp(dictcomp) => {
+                if dictcomp.generators.is_empty() {
+                    return Err(self.error(expr.range(), "Comprehension has no generators"));
+                }
+                let mut generators = Vec::with_capacity(dictcomp.generators.len());
+                for gen in &dictcomp.generators {
+                    if gen.is_async {
+                        return Err(
+                            self.error(expr.range(), "Async comprehensions are not supported")
+                        );
+                    }
+                    let target = match &gen.target {
+                        ast::Expr::Name(name) => self.ident(name.id.as_str()),
+                        _ => {
+                            return Err(self.error(
+                                gen.target.range(),
+                                "Only simple targets are supported in comprehensions",
+                            ))
+                        }
+                    };
+                    let iter = Box::new(self.lower_expr(&gen.iter)?);
+                    let mut ifs = Vec::with_capacity(gen.ifs.len());
+                    for cond in &gen.ifs {
+                        ifs.push(self.lower_expr(cond)?);
+                    }
+                    generators.push(CompClause { target, iter, ifs });
+                }
+                let first = generators[0].clone();
+                let pair_expr = Expr {
+                    kind: ExprKind::Tuple(vec![
+                        self.lower_expr(&dictcomp.key)?,
+                        self.lower_expr(&dictcomp.value)?,
+                    ]),
+                    span,
+                    ty: None,
+                };
+                let list_comp_expr = Expr {
+                    kind: ExprKind::ListComp {
+                        elt: Box::new(pair_expr),
+                        target: first.target,
+                        iter: first.iter,
+                        ifs: first.ifs,
+                        generators,
+                    },
+                    span,
+                    ty: None,
+                };
+                let dict_name = Expr {
+                    kind: ExprKind::Name("dict".to_string()),
+                    span,
+                    ty: None,
+                };
+                ExprKind::Call {
+                    func: Box::new(dict_name),
+                    args: vec![list_comp_expr],
+                    keywords: Vec::new(),
                 }
             }
             // Conditional expression (ternary): value_if_true if condition else value_if_false

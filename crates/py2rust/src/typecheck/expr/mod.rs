@@ -64,13 +64,15 @@ impl<'a> TypeChecker<'a> {
                 target,
                 iter,
                 ifs,
-            } => self.check_list_comp_expr(elt, target, iter, ifs, expr.span)?,
+                generators,
+            } => self.check_list_comp_expr(elt, target, iter, ifs, generators, expr.span)?,
             ExprKind::SetComp {
                 elt,
                 target,
                 iter,
                 ifs,
-            } => self.check_set_comp_expr(elt, target, iter, ifs, expr.span)?,
+                generators,
+            } => self.check_set_comp_expr(elt, target, iter, ifs, generators, expr.span)?,
             ExprKind::UnionCtor {
                 union,
                 variant,

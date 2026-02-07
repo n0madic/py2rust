@@ -532,12 +532,15 @@ impl<'a> TypeChecker<'a> {
                             self.ensure_assignable(&item_ty, &global_ty, stmt.span)?;
                         } else if self.in_function() {
                             if let Some(existing) = self.lookup_local_var(name) {
-                                self.ensure_assignable(&item_ty, &existing, stmt.span)?;
+                                self.set_var_type(
+                                    name,
+                                    Self::merge_types(existing, item_ty.clone()),
+                                );
                             } else {
                                 self.insert_var(name, item_ty, stmt.span)?;
                             }
                         } else if let Some(existing) = self.lookup_var(name) {
-                            self.ensure_assignable(&item_ty, &existing, stmt.span)?;
+                            self.set_var_type(name, Self::merge_types(existing, item_ty.clone()));
                         } else {
                             self.insert_var(name, item_ty, stmt.span)?;
                         }
@@ -583,12 +586,15 @@ impl<'a> TypeChecker<'a> {
                                 self.ensure_assignable(ty, &global_ty, stmt.span)?;
                             } else if self.in_function() {
                                 if let Some(existing) = self.lookup_local_var(name) {
-                                    self.ensure_assignable(ty, &existing, stmt.span)?;
+                                    self.set_var_type(
+                                        name,
+                                        Self::merge_types(existing, ty.clone()),
+                                    );
                                 } else {
                                     self.insert_var(name, ty.clone(), stmt.span)?;
                                 }
                             } else if let Some(existing) = self.lookup_var(name) {
-                                self.ensure_assignable(ty, &existing, stmt.span)?;
+                                self.set_var_type(name, Self::merge_types(existing, ty.clone()));
                             } else {
                                 self.insert_var(name, ty.clone(), stmt.span)?;
                             }

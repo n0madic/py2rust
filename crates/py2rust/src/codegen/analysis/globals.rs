@@ -740,30 +740,64 @@ impl<'a> Codegen<'a> {
                 target,
                 iter,
                 ifs,
+                generators,
             }
             | ExprKind::SetComp {
                 elt,
                 target,
                 iter,
                 ifs,
+                generators,
             } => {
-                // The iterator expression is evaluated in the outer scope.
-                self.collect_used_globals_in_expr(iter, locals, outers, globals, module_vars, used);
                 // Comprehensions do not inherit `global` declarations.
                 let empty_globals = HashSet::new();
                 let mut comp_locals = HashSet::new();
-                comp_locals.insert(target.clone());
                 let mut comp_outers = outers.clone();
                 comp_outers.extend(locals.iter().cloned());
-                for cond in ifs {
+                if generators.is_empty() {
+                    // Backward-compatible single-clause representation.
                     self.collect_used_globals_in_expr(
-                        cond,
+                        iter,
                         &comp_locals,
                         &comp_outers,
                         &empty_globals,
                         module_vars,
                         used,
                     );
+                    comp_locals.insert(target.clone());
+                    for cond in ifs {
+                        self.collect_used_globals_in_expr(
+                            cond,
+                            &comp_locals,
+                            &comp_outers,
+                            &empty_globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                } else {
+                    // Later generators/filters can reference earlier targets.
+                    for clause in generators {
+                        self.collect_used_globals_in_expr(
+                            &clause.iter,
+                            &comp_locals,
+                            &comp_outers,
+                            &empty_globals,
+                            module_vars,
+                            used,
+                        );
+                        comp_locals.insert(clause.target.clone());
+                        for cond in &clause.ifs {
+                            self.collect_used_globals_in_expr(
+                                cond,
+                                &comp_locals,
+                                &comp_outers,
+                                &empty_globals,
+                                module_vars,
+                                used,
+                            );
+                        }
+                    }
                 }
                 self.collect_used_globals_in_expr(
                     elt,

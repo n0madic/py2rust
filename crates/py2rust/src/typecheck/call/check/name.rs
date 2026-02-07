@@ -15,7 +15,7 @@ impl<'a> TypeChecker<'a> {
         let ExprKind::Name(name) = &mut func.kind else {
             return Err(self.error(span, "Internal error: expected name call target"));
         };
-        let builtin_accepts_keywords = matches!(name.as_str(), "print");
+        let builtin_accepts_keywords = matches!(name.as_str(), "print" | "sorted" | "max" | "min");
         let stdlib_function_accepts_keywords =
             matches!(self.lookup_var(name), Some(Type::StdlibFunction { .. }));
         if !keywords.is_empty()
@@ -235,10 +235,14 @@ impl<'a> TypeChecker<'a> {
             };
         }
         if name == "enumerate" {
-            if args.len() != 1 {
-                return Err(self.error(span, "enumerate() expects one argument"));
+            if args.is_empty() || args.len() > 2 {
+                return Err(self.error(span, "enumerate() expects one or two arguments"));
             }
             let iter_ty = self.check_expr(&mut args[0], None)?;
+            if args.len() == 2 {
+                let start_ty = self.check_expr(&mut args[1], Some(&Type::Int))?;
+                self.ensure_assignable(&start_ty, &Type::Int, span)?;
+            }
             let item_ty = self.iter_item_type(&iter_ty, span)?;
             let tuple = Type::Tuple(vec![Type::Int, item_ty]);
             return Ok(Type::Iterator(Box::new(tuple)));
@@ -290,14 +294,87 @@ impl<'a> TypeChecker<'a> {
             let item_ty = self.iter_item_type(&iter_ty, span)?;
             return Ok(Type::Iterator(Box::new(item_ty)));
         }
+        if name == "sorted" {
+            if args.len() != 1 {
+                return Err(self.error(span, "sorted() expects one positional argument"));
+            }
+            let mut seen_key = false;
+            let mut seen_reverse = false;
+            let iter_ty = self.check_expr(&mut args[0], None)?;
+            let item_ty = self.iter_item_type(&iter_ty, span)?;
+            for kw in keywords.iter_mut() {
+                let Some(kw_name) = kw.name.as_deref() else {
+                    return Err(self.error(
+                        span,
+                        "Call-site **kwargs unpacking is not supported for sorted()",
+                    ));
+                };
+                match kw_name {
+                    "key" => {
+                        if seen_key {
+                            return Err(
+                                self.error(span, "Multiple values for keyword argument `key`")
+                            );
+                        }
+                        seen_key = true;
+                        let _ = self.infer_callable_return(&mut kw.value, &item_ty, span)?;
+                    }
+                    "reverse" => {
+                        if seen_reverse {
+                            return Err(
+                                self.error(span, "Multiple values for keyword argument `reverse`")
+                            );
+                        }
+                        seen_reverse = true;
+                        let reverse_ty = self.check_expr(&mut kw.value, Some(&Type::Bool))?;
+                        self.ensure_assignable(&reverse_ty, &Type::Bool, span)?;
+                    }
+                    _ => {
+                        return Err(self.error(
+                            span,
+                            format!("Unknown keyword argument `{kw_name}` for sorted()"),
+                        ));
+                    }
+                }
+            }
+            return Ok(Type::List(Box::new(item_ty)));
+        }
         if name == "max" || name == "min" {
             if args.is_empty() {
                 return Err(self.error(span, "max()/min() expect at least one argument"));
             }
+            let mut key_arg: Option<&mut Expr> = None;
+            for kw in keywords.iter_mut() {
+                let Some(kw_name) = kw.name.as_deref() else {
+                    return Err(self.error(
+                        span,
+                        "Call-site **kwargs unpacking is not supported for max()/min()",
+                    ));
+                };
+                if kw_name != "key" {
+                    return Err(self.error(
+                        span,
+                        format!("Unknown keyword argument `{kw_name}` for max()/min()"),
+                    ));
+                }
+                if key_arg.is_some() {
+                    return Err(self.error(span, "Multiple values for keyword argument `key`"));
+                }
+                key_arg = Some(&mut kw.value);
+            }
             if args.len() == 1 {
                 let iter_ty = self.check_expr(&mut args[0], None)?;
                 let item_ty = self.iter_item_type(&iter_ty, span)?;
+                if let Some(key_expr) = key_arg {
+                    let _ = self.infer_callable_return(key_expr, &item_ty, span)?;
+                }
                 return Ok(item_ty);
+            }
+            if key_arg.is_some() {
+                return Err(self.error(
+                    span,
+                    "max()/min() with key= currently supports only iterable form",
+                ));
             }
             let mut has_float = false;
             let mut has_int = false;
@@ -494,6 +571,14 @@ impl<'a> TypeChecker<'a> {
             let iter_ty = self.check_expr(&mut args[0], None)?;
             let item_ty = self.iter_item_type(&iter_ty, span)?;
             return Ok(item_ty);
+        }
+        if name == "iter" {
+            if args.len() != 1 {
+                return Err(self.error(span, "iter() expects one argument"));
+            }
+            let iter_ty = self.check_expr(&mut args[0], None)?;
+            let item_ty = self.iter_item_type(&iter_ty, span)?;
+            return Ok(Type::Iterator(Box::new(item_ty)));
         }
         if name == "bin" || name == "hex" || name == "oct" {
             if args.len() != 1 {
