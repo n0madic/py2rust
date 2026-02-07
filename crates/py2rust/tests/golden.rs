@@ -136,3 +136,32 @@ x: int = f(b=1, a=3)
         compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     assert!(out.rust.contains("f(3i64, 1i64)"));
 }
+
+#[test]
+fn renames_user_main_definition_and_calls() {
+    let source = r#"
+def main() -> int:
+    return 7
+
+def wrapper() -> int:
+    return main()
+
+top: int = main()
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+
+    // User `def main()` must be renamed to avoid colliding with generated Rust entrypoint.
+    assert!(out.rust.contains("fn __py_main("));
+    assert!(out.rust.contains("fn main() {"));
+
+    // We expect one definition + at least two call sites (`wrapper` + top-level).
+    let renamed_refs = out.rust.matches("__py_main(").count();
+    assert!(
+        renamed_refs >= 3,
+        "expected renamed function definition and call sites, got {renamed_refs} refs"
+    );
+
+    // A direct nested return call should not target `main(...)` anymore.
+    assert!(!out.rust.contains("return main("));
+}

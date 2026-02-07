@@ -64,4 +64,83 @@ fn call_bind_implicit_first_disallows_keyword_override() {
             keyword: "self".to_string()
         }
     );
+    assert_eq!(err.message(), "Unexpected keyword argument `self`");
+}
+
+#[test]
+fn call_bind_rejects_duplicate_keyword() {
+    let names = vec!["x".to_string()];
+    let kinds = vec![ParamKind::PositionalOrKeyword];
+    let has_defaults = vec![false];
+    let err = plan_non_unpacking_bind(
+        &names,
+        &kinds,
+        &has_defaults,
+        0,
+        &[Some("x"), Some("x")],
+        false,
+    )
+    .expect_err("duplicate keyword expected");
+    assert_eq!(
+        err,
+        BindError::DuplicateKeyword {
+            keyword: "x".to_string()
+        }
+    );
+    assert_eq!(err.message(), "Multiple values for argument `x`");
+}
+
+#[test]
+fn call_bind_rejects_unknown_keyword_without_varkw() {
+    let names = vec!["x".to_string()];
+    let kinds = vec![ParamKind::PositionalOrKeyword];
+    let has_defaults = vec![false];
+    let err = plan_non_unpacking_bind(&names, &kinds, &has_defaults, 0, &[Some("y")], false)
+        .expect_err("unknown keyword expected");
+    assert_eq!(
+        err,
+        BindError::UnknownKeyword {
+            keyword: "y".to_string()
+        }
+    );
+    assert_eq!(err.message(), "Unknown keyword argument `y`");
+}
+
+#[test]
+fn call_bind_rejects_keyword_unpack_token() {
+    let names = vec!["x".to_string()];
+    let kinds = vec![ParamKind::PositionalOrKeyword];
+    let has_defaults = vec![false];
+    let err = plan_non_unpacking_bind(&names, &kinds, &has_defaults, 0, &[None], false)
+        .expect_err("keyword unpack token should be rejected");
+    assert_eq!(err, BindError::KeywordUnpackUnsupported);
+    assert_eq!(
+        err.message(),
+        "Call-site **kwargs unpacking is not supported in this context yet"
+    );
+}
+
+#[test]
+fn call_bind_rejects_extra_positionals_without_varargs() {
+    let names = vec!["x".to_string()];
+    let kinds = vec![ParamKind::PositionalOrKeyword];
+    let has_defaults = vec![false];
+    let err = plan_non_unpacking_bind(&names, &kinds, &has_defaults, 2, &[], false)
+        .expect_err("argument count mismatch expected");
+    assert_eq!(err, BindError::ArgumentCountMismatch);
+    assert_eq!(err.message(), "Argument count mismatch");
+}
+
+#[test]
+fn call_bind_rejects_malformed_signature_metadata() {
+    let names = vec!["x".to_string()];
+    let kinds = vec![ParamKind::PositionalOrKeyword, ParamKind::VarArgs];
+    let has_defaults = vec![false];
+    let err = plan_non_unpacking_bind(&names, &kinds, &has_defaults, 0, &[], false)
+        .expect_err("malformed signature metadata expected");
+    assert_eq!(err, BindError::MalformedSignature);
+    assert_eq!(
+        err.message(),
+        "Internal error: malformed function signature"
+    );
 }
