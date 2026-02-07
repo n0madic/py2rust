@@ -219,6 +219,53 @@ impl<'a> TypeChecker<'a> {
                 let right_ty = self.check_expr(&mut args[1], Some(&Type::Int))?;
                 self.ensure_assignable(&right_ty, &Type::Int, span)?;
             }
+            StdlibMethodId::TimeTime
+            | StdlibMethodId::TimeTimeNs
+            | StdlibMethodId::TimeMonotonic
+            | StdlibMethodId::TimeMonotonicNs
+            | StdlibMethodId::TimePerfCounter
+            | StdlibMethodId::TimePerfCounterNs
+            | StdlibMethodId::TimeProcessTime
+            | StdlibMethodId::TimeProcessTimeNs => {}
+            StdlibMethodId::TimeSleep => {
+                let sleep_ty = self.check_expr(&mut args[0], Some(&Type::Float))?;
+                self.ensure_assignable(&sleep_ty, &Type::Float, span)?;
+            }
+            StdlibMethodId::TimeLocaltime | StdlibMethodId::TimeGmtime => {
+                if args.len() == 1 {
+                    let seconds_ty = self.check_expr(&mut args[0], Some(&Type::Float))?;
+                    self.ensure_assignable(&seconds_ty, &Type::Float, span)?;
+                }
+            }
+            StdlibMethodId::TimeStrftime => {
+                let format_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&format_ty, &Type::Str, span)?;
+                let tuple_ty = self.check_expr(&mut args[1], None)?;
+                match tuple_ty {
+                    Type::Tuple(items) => {
+                        if items.len() != 9 {
+                            return Err(
+                                self.error(span, "time.strftime() expects a 9-item time tuple")
+                            );
+                        }
+                        for item in items {
+                            if !matches!(item, Type::Unknown) {
+                                self.ensure_assignable(&item, &Type::Int, span)?;
+                            }
+                        }
+                    }
+                    Type::Unknown => {}
+                    _ => {
+                        return Err(self.error(span, "time.strftime() expects a 9-item time tuple"));
+                    }
+                }
+            }
+            StdlibMethodId::TimeStrptime => {
+                let text_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&text_ty, &Type::Str, span)?;
+                let format_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
+                self.ensure_assignable(&format_ty, &Type::Str, span)?;
+            }
         }
 
         Ok(Self::stdlib_method_return_type(spec.method_id))
@@ -289,6 +336,29 @@ impl<'a> TypeChecker<'a> {
             StdlibMethodId::MathIsNan
             | StdlibMethodId::MathIsInf
             | StdlibMethodId::MathIsFinite => Type::Bool,
+            StdlibMethodId::TimeTime
+            | StdlibMethodId::TimeMonotonic
+            | StdlibMethodId::TimePerfCounter
+            | StdlibMethodId::TimeProcessTime => Type::Float,
+            StdlibMethodId::TimeTimeNs
+            | StdlibMethodId::TimeMonotonicNs
+            | StdlibMethodId::TimePerfCounterNs
+            | StdlibMethodId::TimeProcessTimeNs => Type::Int,
+            StdlibMethodId::TimeSleep => Type::None,
+            StdlibMethodId::TimeLocaltime
+            | StdlibMethodId::TimeGmtime
+            | StdlibMethodId::TimeStrptime => Type::Tuple(vec![
+                Type::Int,
+                Type::Int,
+                Type::Int,
+                Type::Int,
+                Type::Int,
+                Type::Int,
+                Type::Int,
+                Type::Int,
+                Type::Int,
+            ]),
+            StdlibMethodId::TimeStrftime => Type::Str,
         }
     }
 }

@@ -360,6 +360,401 @@ fn py_math_perm(n: i64, k: i64) -> Result<i64, PyError> {
 }
 "#;
 
+/// Static helper body for `time.monotonic()`.
+const HELPER_PY_TIME_MONOTONIC: &str = r#"
+fn py_time_monotonic() -> f64 {
+    static __PY_TIME_MONOTONIC_START: OnceLock<std::time::Instant> = OnceLock::new();
+    __PY_TIME_MONOTONIC_START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+}
+"#;
+
+/// Static helper body for `time.monotonic_ns()`.
+const HELPER_PY_TIME_MONOTONIC_NS: &str = r#"
+fn py_time_monotonic_ns() -> i64 {
+    static __PY_TIME_MONOTONIC_NS_START: OnceLock<std::time::Instant> = OnceLock::new();
+    __PY_TIME_MONOTONIC_NS_START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos() as i64
+}
+"#;
+
+/// Static helper body for `time.perf_counter()`.
+const HELPER_PY_TIME_PERF_COUNTER: &str = r#"
+fn py_time_perf_counter() -> f64 {
+    static __PY_TIME_PERF_COUNTER_START: OnceLock<std::time::Instant> = OnceLock::new();
+    __PY_TIME_PERF_COUNTER_START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+}
+"#;
+
+/// Static helper body for `time.perf_counter_ns()`.
+const HELPER_PY_TIME_PERF_COUNTER_NS: &str = r#"
+fn py_time_perf_counter_ns() -> i64 {
+    static __PY_TIME_PERF_COUNTER_NS_START: OnceLock<std::time::Instant> = OnceLock::new();
+    __PY_TIME_PERF_COUNTER_NS_START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos() as i64
+}
+"#;
+
+/// Static helper body for `time.process_time()`.
+const HELPER_PY_TIME_PROCESS_TIME: &str = r#"
+fn py_time_process_time() -> f64 {
+    static __PY_TIME_PROCESS_TIME_START: OnceLock<std::time::Instant> = OnceLock::new();
+    __PY_TIME_PROCESS_TIME_START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+}
+"#;
+
+/// Static helper body for `time.process_time_ns()`.
+const HELPER_PY_TIME_PROCESS_TIME_NS: &str = r#"
+fn py_time_process_time_ns() -> i64 {
+    static __PY_TIME_PROCESS_TIME_NS_START: OnceLock<std::time::Instant> = OnceLock::new();
+    __PY_TIME_PROCESS_TIME_NS_START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos() as i64
+}
+"#;
+
+/// Static helper body for `time.sleep(seconds)`.
+const HELPER_PY_TIME_SLEEP: &str = r#"
+fn py_time_sleep(seconds: f64) {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_secs_f64(seconds));
+}
+"#;
+
+/// Static helper body for shared lightweight `time` tuple/date primitives.
+const HELPER_PY_TIME_CORE: &str = r#"
+type __py2rust_time_tuple = (i64, i64, i64, i64, i64, i64, i64, i64, i64);
+
+fn py_time_is_leap(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+fn py_time_days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 => 31,
+        2 => if py_time_is_leap(year) { 29 } else { 28 },
+        3 => 31,
+        4 => 30,
+        5 => 31,
+        6 => 30,
+        7 => 31,
+        8 => 31,
+        9 => 30,
+        10 => 31,
+        11 => 30,
+        12 => 31,
+        _ => panic!("invalid month in time tuple: {}", month),
+    }
+}
+
+fn py_time_day_of_year(year: i64, month: i64, mday: i64) -> i64 {
+    let mut yday = 0;
+    let mut m = 1;
+    while m < month {
+        yday += py_time_days_in_month(year, m);
+        m += 1;
+    }
+    yday + mday
+}
+
+fn py_time_civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let mday = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month, mday)
+}
+
+fn py_time_days_from_civil(year: i64, month: i64, mday: i64) -> i64 {
+    let y = year - if month <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = month + if month > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + mday - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn py_time_split_epoch(seconds: f64) -> __py2rust_time_tuple {
+    let whole = seconds.floor() as i64;
+    let day_seconds = whole.rem_euclid(86_400);
+    let days = whole.div_euclid(86_400);
+    let hour = day_seconds / 3600;
+    let minute = (day_seconds % 3600) / 60;
+    let second = day_seconds % 60;
+    let (year, month, mday) = py_time_civil_from_days(days);
+    // Python tm_wday is Monday=0 .. Sunday=6.
+    let wday = (days + 3).rem_euclid(7);
+    let yday = py_time_day_of_year(year, month, mday);
+    (year, month, mday, hour, minute, second, wday, yday, 0)
+}
+
+fn py_time_now_seconds() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(std::time::Duration::from_secs(0))
+        .as_secs_f64()
+}
+
+fn py_time_parse_fixed_digits(text: &[u8], idx: &mut usize, width: usize, field: &str) -> i64 {
+    if *idx + width > text.len() {
+        panic!("time.strptime(): unexpected end while parsing {}", field);
+    }
+    for pos in *idx..(*idx + width) {
+        if !text[pos].is_ascii_digit() {
+            panic!("time.strptime(): expected digits for {}", field);
+        }
+    }
+    let slice = std::str::from_utf8(&text[*idx..(*idx + width)])
+        .unwrap_or_else(|_| panic!("time.strptime(): invalid utf-8 in {}", field));
+    *idx += width;
+    slice
+        .parse::<i64>()
+        .unwrap_or_else(|_| panic!("time.strptime(): invalid number for {}", field))
+}
+"#;
+
+/// Static helper body for `time.localtime([secs])`.
+const HELPER_PY_TIME_LOCALTIME: &str = r#"
+fn py_time_localtime(seconds: Option<f64>) -> __py2rust_time_tuple {
+    // Lightweight behavior: localtime currently uses the same epoch split as gmtime.
+    py_time_split_epoch(seconds.unwrap_or_else(py_time_now_seconds))
+}
+"#;
+
+/// Static helper body for `time.gmtime([secs])`.
+const HELPER_PY_TIME_GMTIME: &str = r#"
+fn py_time_gmtime(seconds: Option<f64>) -> __py2rust_time_tuple {
+    py_time_split_epoch(seconds.unwrap_or_else(py_time_now_seconds))
+}
+"#;
+
+/// Static helper body for `time.strftime(format, tuple)`.
+const HELPER_PY_TIME_STRFTIME: &str = r#"
+fn py_time_strftime(format: &str, tm: &__py2rust_time_tuple) -> String {
+    let (year, month, mday, hour, minute, second, wday, yday, _isdst) = *tm;
+    let weekday_short = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let weekday_long = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
+    let month_short = [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    ];
+    let month_long = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+
+    let mut out = String::new();
+    let mut chars = format.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            out.push(ch);
+            continue;
+        }
+        let directive = chars
+            .next()
+            .unwrap_or_else(|| panic!("time.strftime(): trailing '%' in format"));
+        match directive {
+            '%' => out.push('%'),
+            'Y' => out.push_str(&format!("{:04}", year)),
+            'm' => out.push_str(&format!("{:02}", month)),
+            'd' => out.push_str(&format!("{:02}", mday)),
+            'H' => out.push_str(&format!("{:02}", hour)),
+            'M' => out.push_str(&format!("{:02}", minute)),
+            'S' => out.push_str(&format!("{:02}", second)),
+            'j' => out.push_str(&format!("{:03}", yday)),
+            // Python %w is Sunday=0..Saturday=6.
+            'w' => out.push_str(&((wday + 1).rem_euclid(7)).to_string()),
+            'a' => {
+                let idx = usize::try_from(wday)
+                    .unwrap_or_else(|_| panic!("time.strftime(): invalid weekday {}", wday));
+                out.push_str(weekday_short.get(idx).unwrap_or_else(|| {
+                    panic!("time.strftime(): invalid weekday {}", wday)
+                }));
+            }
+            'A' => {
+                let idx = usize::try_from(wday)
+                    .unwrap_or_else(|_| panic!("time.strftime(): invalid weekday {}", wday));
+                out.push_str(
+                    weekday_long
+                        .get(idx)
+                        .unwrap_or_else(|| panic!("time.strftime(): invalid weekday {}", wday)),
+                );
+            }
+            'b' => {
+                let idx = usize::try_from(month - 1)
+                    .unwrap_or_else(|_| panic!("time.strftime(): invalid month {}", month));
+                out.push_str(
+                    month_short
+                        .get(idx)
+                        .unwrap_or_else(|| panic!("time.strftime(): invalid month {}", month)),
+                );
+            }
+            'B' => {
+                let idx = usize::try_from(month - 1)
+                    .unwrap_or_else(|_| panic!("time.strftime(): invalid month {}", month));
+                out.push_str(
+                    month_long
+                        .get(idx)
+                        .unwrap_or_else(|| panic!("time.strftime(): invalid month {}", month)),
+                );
+            }
+            other => {
+                out.push('%');
+                out.push(other);
+            }
+        }
+    }
+    out
+}
+"#;
+
+/// Static helper body for `time.strptime(string, format)`.
+const HELPER_PY_TIME_STRPTIME: &str = r#"
+fn py_time_strptime(text: &str, format: &str) -> __py2rust_time_tuple {
+    let fmt = format.as_bytes();
+    let txt = text.as_bytes();
+    let mut fi: usize = 0;
+    let mut ti: usize = 0;
+
+    let mut year: i64 = 1900;
+    let mut month: i64 = 1;
+    let mut mday: i64 = 1;
+    let mut hour: i64 = 0;
+    let mut minute: i64 = 0;
+    let mut second: i64 = 0;
+    let mut wday: i64 = -1;
+    let mut yday: i64 = -1;
+
+    let mut has_month = false;
+    let mut has_mday = false;
+    let mut has_wday = false;
+    let mut has_yday = false;
+
+    while fi < fmt.len() {
+        if fmt[fi] != b'%' {
+            if ti >= txt.len() || txt[ti] != fmt[fi] {
+                panic!("time.strptime(): literal mismatch");
+            }
+            fi += 1;
+            ti += 1;
+            continue;
+        }
+        fi += 1;
+        if fi >= fmt.len() {
+            panic!("time.strptime(): trailing '%' in format");
+        }
+        match fmt[fi] as char {
+            '%' => {
+                if ti >= txt.len() || txt[ti] != b'%' {
+                    panic!("time.strptime(): expected '%' in input");
+                }
+                ti += 1;
+            }
+            'Y' => year = py_time_parse_fixed_digits(txt, &mut ti, 4, "year"),
+            'm' => {
+                month = py_time_parse_fixed_digits(txt, &mut ti, 2, "month");
+                has_month = true;
+            }
+            'd' => {
+                mday = py_time_parse_fixed_digits(txt, &mut ti, 2, "day");
+                has_mday = true;
+            }
+            'H' => hour = py_time_parse_fixed_digits(txt, &mut ti, 2, "hour"),
+            'M' => minute = py_time_parse_fixed_digits(txt, &mut ti, 2, "minute"),
+            'S' => second = py_time_parse_fixed_digits(txt, &mut ti, 2, "second"),
+            'j' => {
+                yday = py_time_parse_fixed_digits(txt, &mut ti, 3, "day of year");
+                has_yday = true;
+            }
+            'w' => {
+                // %w is Sunday=0..Saturday=6; convert to Monday=0..Sunday=6.
+                let sunday_wday = py_time_parse_fixed_digits(txt, &mut ti, 1, "weekday");
+                wday = (sunday_wday + 6).rem_euclid(7);
+                has_wday = true;
+            }
+            other => panic!("time.strptime(): unsupported format directive %{}", other),
+        }
+        fi += 1;
+    }
+
+    if ti != txt.len() {
+        panic!("time.strptime(): trailing input");
+    }
+
+    if has_yday && !(has_month || has_mday) {
+        let mut rem = yday;
+        month = 1;
+        while rem > py_time_days_in_month(year, month) {
+            rem -= py_time_days_in_month(year, month);
+            month += 1;
+        }
+        mday = rem;
+    }
+
+    if !has_yday {
+        yday = py_time_day_of_year(year, month, mday);
+    }
+    if !has_wday {
+        let days = py_time_days_from_civil(year, month, mday);
+        wday = (days + 3).rem_euclid(7);
+    }
+
+    (year, month, mday, hour, minute, second, wday, yday, -1)
+}
+"#;
+
 /// Static helper body for lightweight `re.Match` storage.
 const HELPER_PY_RE_MATCH_STRUCT: &str = r#"
 #[allow(non_camel_case_types)]
@@ -1604,6 +1999,11 @@ impl<'a> Codegen<'a> {
             || self.uses.py_json_loads
             || self.uses.py_json_dump
             || self.uses.py_json_load;
+        // `time` tuple conversions/parsing are shared by localtime/gmtime/strftime/strptime.
+        let uses_time_core = self.uses.py_time_localtime
+            || self.uses.py_time_gmtime
+            || self.uses.py_time_strftime
+            || self.uses.py_time_strptime;
 
         // PyError enum is needed for exception handling.
         if self.needs_py_error() {
@@ -1972,6 +2372,42 @@ impl<'a> Codegen<'a> {
         if self.uses.py_math_perm {
             self.push_block(HELPER_PY_MATH_PERM);
         }
+        if self.uses.py_time_monotonic {
+            self.push_block(HELPER_PY_TIME_MONOTONIC);
+        }
+        if self.uses.py_time_monotonic_ns {
+            self.push_block(HELPER_PY_TIME_MONOTONIC_NS);
+        }
+        if self.uses.py_time_perf_counter {
+            self.push_block(HELPER_PY_TIME_PERF_COUNTER);
+        }
+        if self.uses.py_time_perf_counter_ns {
+            self.push_block(HELPER_PY_TIME_PERF_COUNTER_NS);
+        }
+        if self.uses.py_time_process_time {
+            self.push_block(HELPER_PY_TIME_PROCESS_TIME);
+        }
+        if self.uses.py_time_process_time_ns {
+            self.push_block(HELPER_PY_TIME_PROCESS_TIME_NS);
+        }
+        if self.uses.py_time_sleep {
+            self.push_block(HELPER_PY_TIME_SLEEP);
+        }
+        if uses_time_core {
+            self.push_block(HELPER_PY_TIME_CORE);
+        }
+        if self.uses.py_time_localtime {
+            self.push_block(HELPER_PY_TIME_LOCALTIME);
+        }
+        if self.uses.py_time_gmtime {
+            self.push_block(HELPER_PY_TIME_GMTIME);
+        }
+        if self.uses.py_time_strftime {
+            self.push_block(HELPER_PY_TIME_STRFTIME);
+        }
+        if self.uses.py_time_strptime {
+            self.push_block(HELPER_PY_TIME_STRPTIME);
+        }
         if uses_re_match_struct {
             self.push_block(HELPER_PY_RE_MATCH_STRUCT);
         }
@@ -2059,6 +2495,17 @@ impl<'a> Codegen<'a> {
             || self.uses.py_math_lcm
             || self.uses.py_math_comb
             || self.uses.py_math_perm
+            || self.uses.py_time_monotonic
+            || self.uses.py_time_monotonic_ns
+            || self.uses.py_time_perf_counter
+            || self.uses.py_time_perf_counter_ns
+            || self.uses.py_time_process_time
+            || self.uses.py_time_process_time_ns
+            || self.uses.py_time_sleep
+            || self.uses.py_time_localtime
+            || self.uses.py_time_gmtime
+            || self.uses.py_time_strftime
+            || self.uses.py_time_strptime
             || self.uses.py_re_search
             || self.uses.py_re_match
             || self.uses.py_re_sub

@@ -29,6 +29,8 @@ pub enum StdlibModuleId {
     Json,
     /// Python `math` module.
     Math,
+    /// Python `time` module.
+    Time,
 }
 
 /// Identifier for a supported stdlib callable.
@@ -154,6 +156,32 @@ pub enum StdlibMethodId {
     MathComb,
     /// `math.perm(n, k)`
     MathPerm,
+    /// `time.time()`
+    TimeTime,
+    /// `time.time_ns()`
+    TimeTimeNs,
+    /// `time.monotonic()`
+    TimeMonotonic,
+    /// `time.monotonic_ns()`
+    TimeMonotonicNs,
+    /// `time.perf_counter()`
+    TimePerfCounter,
+    /// `time.perf_counter_ns()`
+    TimePerfCounterNs,
+    /// `time.process_time()`
+    TimeProcessTime,
+    /// `time.process_time_ns()`
+    TimeProcessTimeNs,
+    /// `time.sleep(seconds)`
+    TimeSleep,
+    /// `time.localtime([secs])`
+    TimeLocaltime,
+    /// `time.gmtime([secs])`
+    TimeGmtime,
+    /// `time.strftime(format, t)`
+    TimeStrftime,
+    /// `time.strptime(string, format)`
+    TimeStrptime,
 }
 
 /// Function pointer used to emit method-specific Rust calls in codegen.
@@ -927,6 +955,149 @@ const MATH_PERM_SPEC: StdlibMethodSpec = StdlibMethodSpec {
     codegen_handler: codegen_math_perm,
 };
 
+const TIME_TIME_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeTime,
+    module_name: "time",
+    method_name: "time",
+    shape: CallShape {
+        arity: AritySpec::Exact(0),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_time,
+};
+
+const TIME_TIME_NS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeTimeNs,
+    module_name: "time",
+    method_name: "time_ns",
+    shape: CallShape {
+        arity: AritySpec::Exact(0),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_time_ns,
+};
+
+const TIME_MONOTONIC_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeMonotonic,
+    module_name: "time",
+    method_name: "monotonic",
+    shape: CallShape {
+        arity: AritySpec::Exact(0),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_monotonic,
+};
+
+const TIME_MONOTONIC_NS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeMonotonicNs,
+    module_name: "time",
+    method_name: "monotonic_ns",
+    shape: CallShape {
+        arity: AritySpec::Exact(0),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_monotonic_ns,
+};
+
+const TIME_PERF_COUNTER_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimePerfCounter,
+    module_name: "time",
+    method_name: "perf_counter",
+    shape: CallShape {
+        arity: AritySpec::Exact(0),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_perf_counter,
+};
+
+const TIME_PERF_COUNTER_NS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimePerfCounterNs,
+    module_name: "time",
+    method_name: "perf_counter_ns",
+    shape: CallShape {
+        arity: AritySpec::Exact(0),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_perf_counter_ns,
+};
+
+const TIME_PROCESS_TIME_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeProcessTime,
+    module_name: "time",
+    method_name: "process_time",
+    shape: CallShape {
+        arity: AritySpec::Exact(0),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_process_time,
+};
+
+const TIME_PROCESS_TIME_NS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeProcessTimeNs,
+    module_name: "time",
+    method_name: "process_time_ns",
+    shape: CallShape {
+        arity: AritySpec::Exact(0),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_process_time_ns,
+};
+
+const TIME_SLEEP_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeSleep,
+    module_name: "time",
+    method_name: "sleep",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_sleep,
+};
+
+const TIME_LOCALTIME_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeLocaltime,
+    module_name: "time",
+    method_name: "localtime",
+    shape: CallShape {
+        arity: AritySpec::Range { min: 0, max: 1 },
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_localtime,
+};
+
+const TIME_GMTIME_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeGmtime,
+    module_name: "time",
+    method_name: "gmtime",
+    shape: CallShape {
+        arity: AritySpec::Range { min: 0, max: 1 },
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_gmtime,
+};
+
+const TIME_STRFTIME_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeStrftime,
+    module_name: "time",
+    method_name: "strftime",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_strftime,
+};
+
+const TIME_STRPTIME_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::TimeStrptime,
+    module_name: "time",
+    method_name: "strptime",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_time_strptime,
+};
+
 /// Resolve a module name to a known stdlib module id.
 pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
     match name {
@@ -936,6 +1107,7 @@ pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
         "re" => Some(StdlibModuleId::Re),
         "json" => Some(StdlibModuleId::Json),
         "math" => Some(StdlibModuleId::Math),
+        "time" => Some(StdlibModuleId::Time),
         _ => None,
     }
 }
@@ -1006,6 +1178,19 @@ pub fn find_stdlib_method(
         (StdlibModuleId::Math, "lcm") => Some(&MATH_LCM_SPEC),
         (StdlibModuleId::Math, "comb") => Some(&MATH_COMB_SPEC),
         (StdlibModuleId::Math, "perm") => Some(&MATH_PERM_SPEC),
+        (StdlibModuleId::Time, "time") => Some(&TIME_TIME_SPEC),
+        (StdlibModuleId::Time, "time_ns") => Some(&TIME_TIME_NS_SPEC),
+        (StdlibModuleId::Time, "monotonic") => Some(&TIME_MONOTONIC_SPEC),
+        (StdlibModuleId::Time, "monotonic_ns") => Some(&TIME_MONOTONIC_NS_SPEC),
+        (StdlibModuleId::Time, "perf_counter") => Some(&TIME_PERF_COUNTER_SPEC),
+        (StdlibModuleId::Time, "perf_counter_ns") => Some(&TIME_PERF_COUNTER_NS_SPEC),
+        (StdlibModuleId::Time, "process_time") => Some(&TIME_PROCESS_TIME_SPEC),
+        (StdlibModuleId::Time, "process_time_ns") => Some(&TIME_PROCESS_TIME_NS_SPEC),
+        (StdlibModuleId::Time, "sleep") => Some(&TIME_SLEEP_SPEC),
+        (StdlibModuleId::Time, "localtime") => Some(&TIME_LOCALTIME_SPEC),
+        (StdlibModuleId::Time, "gmtime") => Some(&TIME_GMTIME_SPEC),
+        (StdlibModuleId::Time, "strftime") => Some(&TIME_STRFTIME_SPEC),
+        (StdlibModuleId::Time, "strptime") => Some(&TIME_STRPTIME_SPEC),
         _ => None,
     }
 }
@@ -1097,6 +1282,19 @@ pub fn method_spec(method_id: StdlibMethodId) -> &'static StdlibMethodSpec {
         StdlibMethodId::MathLcm => &MATH_LCM_SPEC,
         StdlibMethodId::MathComb => &MATH_COMB_SPEC,
         StdlibMethodId::MathPerm => &MATH_PERM_SPEC,
+        StdlibMethodId::TimeTime => &TIME_TIME_SPEC,
+        StdlibMethodId::TimeTimeNs => &TIME_TIME_NS_SPEC,
+        StdlibMethodId::TimeMonotonic => &TIME_MONOTONIC_SPEC,
+        StdlibMethodId::TimeMonotonicNs => &TIME_MONOTONIC_NS_SPEC,
+        StdlibMethodId::TimePerfCounter => &TIME_PERF_COUNTER_SPEC,
+        StdlibMethodId::TimePerfCounterNs => &TIME_PERF_COUNTER_NS_SPEC,
+        StdlibMethodId::TimeProcessTime => &TIME_PROCESS_TIME_SPEC,
+        StdlibMethodId::TimeProcessTimeNs => &TIME_PROCESS_TIME_NS_SPEC,
+        StdlibMethodId::TimeSleep => &TIME_SLEEP_SPEC,
+        StdlibMethodId::TimeLocaltime => &TIME_LOCALTIME_SPEC,
+        StdlibMethodId::TimeGmtime => &TIME_GMTIME_SPEC,
+        StdlibMethodId::TimeStrftime => &TIME_STRFTIME_SPEC,
+        StdlibMethodId::TimeStrptime => &TIME_STRPTIME_SPEC,
     }
 }
 
@@ -1925,4 +2123,151 @@ fn codegen_math_perm(
     codegen.uses.py_math_perm = true;
     let (left, right) = gen_math_int_args(codegen, args)?;
     Ok(codegen.wrap_result(format!("py_math_perm({}, {})", left, right)))
+}
+
+/// Emit code for `time.time()`.
+fn codegen_time_time(
+    _codegen: &mut Codegen<'_>,
+    _args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    Ok("std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or(std::time::Duration::from_secs(0)).as_secs_f64()".to_string())
+}
+
+/// Emit code for `time.time_ns()`.
+fn codegen_time_time_ns(
+    _codegen: &mut Codegen<'_>,
+    _args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    Ok("std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or(std::time::Duration::from_secs(0)).as_nanos() as i64".to_string())
+}
+
+/// Emit code for `time.monotonic()`.
+fn codegen_time_monotonic(
+    codegen: &mut Codegen<'_>,
+    _args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_monotonic = true;
+    Ok("py_time_monotonic()".to_string())
+}
+
+/// Emit code for `time.monotonic_ns()`.
+fn codegen_time_monotonic_ns(
+    codegen: &mut Codegen<'_>,
+    _args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_monotonic_ns = true;
+    Ok("py_time_monotonic_ns()".to_string())
+}
+
+/// Emit code for `time.perf_counter()`.
+fn codegen_time_perf_counter(
+    codegen: &mut Codegen<'_>,
+    _args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_perf_counter = true;
+    Ok("py_time_perf_counter()".to_string())
+}
+
+/// Emit code for `time.perf_counter_ns()`.
+fn codegen_time_perf_counter_ns(
+    codegen: &mut Codegen<'_>,
+    _args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_perf_counter_ns = true;
+    Ok("py_time_perf_counter_ns()".to_string())
+}
+
+/// Emit code for `time.process_time()`.
+fn codegen_time_process_time(
+    codegen: &mut Codegen<'_>,
+    _args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_process_time = true;
+    Ok("py_time_process_time()".to_string())
+}
+
+/// Emit code for `time.process_time_ns()`.
+fn codegen_time_process_time_ns(
+    codegen: &mut Codegen<'_>,
+    _args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_process_time_ns = true;
+    Ok("py_time_process_time_ns()".to_string())
+}
+
+/// Emit code for `time.sleep(seconds)`.
+fn codegen_time_sleep(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_sleep = true;
+    let seconds_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Float))?;
+    Ok(format!("py_time_sleep({})", seconds_expr))
+}
+
+/// Emit code for `time.localtime([secs])`.
+fn codegen_time_localtime(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_localtime = true;
+    if args.is_empty() {
+        return Ok("py_time_localtime(None)".to_string());
+    }
+    let seconds_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Float))?;
+    Ok(format!("py_time_localtime(Some({}))", seconds_expr))
+}
+
+/// Emit code for `time.gmtime([secs])`.
+fn codegen_time_gmtime(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_gmtime = true;
+    if args.is_empty() {
+        return Ok("py_time_gmtime(None)".to_string());
+    }
+    let seconds_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Float))?;
+    Ok(format!("py_time_gmtime(Some({}))", seconds_expr))
+}
+
+/// Emit code for `time.strftime(format, t)`.
+fn codegen_time_strftime(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_strftime = true;
+    let format_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Str))?;
+    let tuple_expr = codegen.gen_expr(&args[1])?;
+    Ok(format!(
+        "py_time_strftime(&({}), &({}))",
+        format_expr, tuple_expr
+    ))
+}
+
+/// Emit code for `time.strptime(string, format)`.
+fn codegen_time_strptime(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_time_strptime = true;
+    let text_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Str))?;
+    let format_expr = codegen.gen_expr_with_expected(&args[1], Some(&Type::Str))?;
+    Ok(format!(
+        "py_time_strptime(&({}), &({}))",
+        text_expr, format_expr
+    ))
 }

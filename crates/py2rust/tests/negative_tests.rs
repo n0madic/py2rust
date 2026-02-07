@@ -310,6 +310,88 @@ sys.exit(1, 2)
 }
 
 #[test]
+fn rejects_time_call_without_import() {
+    let source = r#"
+time.time()
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("module 'time' used without import"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_from_time_import_unknown_member() {
+    let source = r#"
+from time import unknown
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("time has no supported member 'unknown'"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_wrong_arity_for_time_localtime() {
+    let source = r#"
+import time
+time.localtime(1, 2)
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("time.localtime() expects zero or one argument"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_wrong_arity_for_time_strftime() {
+    let source = r#"
+import time
+time.strftime("%Y")
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("time.strftime() expects two arguments"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_wrong_tuple_shape_for_time_strftime() {
+    let source = r#"
+import time
+time.strftime("%Y", (2024, 1, 1))
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("time.strftime() expects a 9-item time tuple"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_wrong_arity_for_time_strptime() {
+    let source = r#"
+import time
+time.strptime("2024-01-01")
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("time.strptime() expects two arguments"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
 fn rejects_implicit_str_coercion_for_user_functions() {
     let source = r#"
 def takes_text(x: str) -> str:
