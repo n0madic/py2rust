@@ -813,7 +813,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     let bound_name = binding.alias.as_deref().unwrap_or(binding.module.as_str());
                     if resolve_module(binding.module.as_str()).is_some() {
-                        // Virtual stdlib module import (os/sys/re).
+                        // Virtual stdlib module import (os/sys/re/json).
                         self.insert_var(
                             bound_name,
                             Type::Module(binding.module.clone()),

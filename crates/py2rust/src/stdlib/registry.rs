@@ -25,6 +25,8 @@ pub enum StdlibModuleId {
     Sys,
     /// Python `re` module.
     Re,
+    /// Python `json` module.
+    Json,
 }
 
 /// Identifier for a supported stdlib callable.
@@ -76,6 +78,14 @@ pub enum StdlibMethodId {
     ReMatch,
     /// `re.sub(pattern, repl, string)`
     ReSub,
+    /// `json.dumps(value)`
+    JsonDumps,
+    /// `json.loads(text)`
+    JsonLoads,
+    /// `json.dump(value, file)`
+    JsonDump,
+    /// `json.load(file)`
+    JsonLoad,
 }
 
 /// Function pointer used to emit method-specific Rust calls in codegen.
@@ -407,6 +417,50 @@ const RE_SUB_SPEC: StdlibMethodSpec = StdlibMethodSpec {
     codegen_handler: codegen_re_sub,
 };
 
+const JSON_DUMPS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::JsonDumps,
+    module_name: "json",
+    method_name: "dumps",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_json_dumps,
+};
+
+const JSON_LOADS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::JsonLoads,
+    module_name: "json",
+    method_name: "loads",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_json_loads,
+};
+
+const JSON_DUMP_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::JsonDump,
+    module_name: "json",
+    method_name: "dump",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_json_dump,
+};
+
+const JSON_LOAD_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::JsonLoad,
+    module_name: "json",
+    method_name: "load",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_json_load,
+};
+
 /// Resolve a module name to a known stdlib module id.
 pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
     match name {
@@ -414,6 +468,7 @@ pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
         "os.path" => Some(StdlibModuleId::OsPath),
         "sys" => Some(StdlibModuleId::Sys),
         "re" => Some(StdlibModuleId::Re),
+        "json" => Some(StdlibModuleId::Json),
         _ => None,
     }
 }
@@ -447,6 +502,10 @@ pub fn find_stdlib_method(
         (StdlibModuleId::Re, "search") => Some(&RE_SEARCH_SPEC),
         (StdlibModuleId::Re, "match") => Some(&RE_MATCH_SPEC),
         (StdlibModuleId::Re, "sub") => Some(&RE_SUB_SPEC),
+        (StdlibModuleId::Json, "dumps") => Some(&JSON_DUMPS_SPEC),
+        (StdlibModuleId::Json, "loads") => Some(&JSON_LOADS_SPEC),
+        (StdlibModuleId::Json, "dump") => Some(&JSON_DUMP_SPEC),
+        (StdlibModuleId::Json, "load") => Some(&JSON_LOAD_SPEC),
         _ => None,
     }
 }
@@ -496,6 +555,10 @@ pub fn method_spec(method_id: StdlibMethodId) -> &'static StdlibMethodSpec {
         StdlibMethodId::ReSearch => &RE_SEARCH_SPEC,
         StdlibMethodId::ReMatch => &RE_MATCH_SPEC,
         StdlibMethodId::ReSub => &RE_SUB_SPEC,
+        StdlibMethodId::JsonDumps => &JSON_DUMPS_SPEC,
+        StdlibMethodId::JsonLoads => &JSON_LOADS_SPEC,
+        StdlibMethodId::JsonDump => &JSON_DUMP_SPEC,
+        StdlibMethodId::JsonLoad => &JSON_LOAD_SPEC,
     }
 }
 
@@ -857,4 +920,52 @@ fn codegen_re_sub(
         "py_re_sub(&({}), &({}), &({}))",
         pattern_expr, repl_expr, value_expr
     ))
+}
+
+/// Emit code for `json.dumps(value)`.
+fn codegen_json_dumps(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_json_dumps = true;
+    let value_expr = codegen.gen_expr(&args[0])?;
+    Ok(codegen.wrap_result(format!("py_json_dumps(&({}))", value_expr)))
+}
+
+/// Emit code for `json.loads(text)`.
+fn codegen_json_loads(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_json_loads = true;
+    let text_expr = codegen.gen_expr(&args[0])?;
+    Ok(codegen.wrap_result(format!("py_json_loads(&({}))", text_expr)))
+}
+
+/// Emit code for `json.dump(value, file)`.
+fn codegen_json_dump(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_json_dump = true;
+    let value_expr = codegen.gen_expr(&args[0])?;
+    let file_expr = codegen.gen_expr(&args[1])?;
+    Ok(codegen.wrap_result(format!(
+        "py_json_dump(&({}), &mut ({}))",
+        value_expr, file_expr
+    )))
+}
+
+/// Emit code for `json.load(file)`.
+fn codegen_json_load(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_json_load = true;
+    let file_expr = codegen.gen_expr(&args[0])?;
+    Ok(codegen.wrap_result(format!("py_json_load(&mut ({}))", file_expr)))
 }

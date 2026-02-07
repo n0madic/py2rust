@@ -105,6 +105,7 @@ runtime_cases!(
     ),
     (runtime_stdlib_sys_comprehensive, "stdlib_sys", "stdlib_sys.py"),
     (runtime_stdlib_re_comprehensive, "stdlib_re", "stdlib_re.py"),
+    (runtime_stdlib_json_comprehensive, "stdlib_json", "stdlib_json.py"),
     (runtime_iteration_comprehensive, "iteration", "iteration.py"),
     (
         runtime_match_comprehensive,

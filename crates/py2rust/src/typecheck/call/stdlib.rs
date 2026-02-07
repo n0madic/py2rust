@@ -127,6 +127,38 @@ impl<'a> TypeChecker<'a> {
                 let value_ty = self.check_expr(&mut args[2], Some(&Type::Str))?;
                 self.ensure_assignable(&value_ty, &Type::Str, span)?;
             }
+            StdlibMethodId::JsonDumps => {
+                // json.dumps accepts dynamic value shapes; preserve permissive typing.
+                let _ = self.check_expr(&mut args[0], None)?;
+            }
+            StdlibMethodId::JsonLoads => {
+                let text_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&text_ty, &Type::Str, span)?;
+            }
+            StdlibMethodId::JsonDump => {
+                // json.dump accepts dynamic value shapes as the first argument.
+                let _ = self.check_expr(&mut args[0], None)?;
+                let file_ty = self.check_expr(
+                    &mut args[1],
+                    Some(&Type::Custom("__py2rust_file".to_string())),
+                )?;
+                self.ensure_assignable(
+                    &file_ty,
+                    &Type::Custom("__py2rust_file".to_string()),
+                    span,
+                )?;
+            }
+            StdlibMethodId::JsonLoad => {
+                let file_ty = self.check_expr(
+                    &mut args[0],
+                    Some(&Type::Custom("__py2rust_file".to_string())),
+                )?;
+                self.ensure_assignable(
+                    &file_ty,
+                    &Type::Custom("__py2rust_file".to_string()),
+                    span,
+                )?;
+            }
         }
 
         Ok(Self::stdlib_method_return_type(spec.method_id))
@@ -159,6 +191,11 @@ impl<'a> TypeChecker<'a> {
                 Type::Custom("__py2rust_re_match".to_string())
             }
             StdlibMethodId::ReSub => Type::Str,
+            StdlibMethodId::JsonDumps => Type::Str,
+            StdlibMethodId::JsonLoads | StdlibMethodId::JsonLoad => {
+                Type::Custom("__py2rust_json_value".to_string())
+            }
+            StdlibMethodId::JsonDump => Type::None,
         }
     }
 }

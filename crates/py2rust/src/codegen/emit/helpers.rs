@@ -343,6 +343,444 @@ fn py_re_span(value: &__py2rust_re_match) -> (i64, i64) {
 }
 "#;
 
+/// Static helper body for shared lightweight `json` value support.
+const HELPER_PY_JSON_CORE: &str = r#"
+#[allow(non_camel_case_types)]
+#[derive(Clone)]
+enum __py2rust_json_value {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Array(Vec<__py2rust_json_value>),
+    Object(std::collections::HashMap<String, __py2rust_json_value>),
+}
+
+trait PyToJsonValue {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError>;
+}
+
+impl PyToJsonValue for __py2rust_json_value {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        Ok(self.clone())
+    }
+}
+
+impl PyToJsonValue for () {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        Ok(__py2rust_json_value::Null)
+    }
+}
+
+impl PyToJsonValue for bool {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        Ok(__py2rust_json_value::Bool(*self))
+    }
+}
+
+impl PyToJsonValue for i64 {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        Ok(__py2rust_json_value::Int(*self))
+    }
+}
+
+impl PyToJsonValue for f64 {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        Ok(__py2rust_json_value::Float(*self))
+    }
+}
+
+impl PyToJsonValue for String {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        Ok(__py2rust_json_value::Str(self.clone()))
+    }
+}
+
+impl PyToJsonValue for &str {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        Ok(__py2rust_json_value::Str((*self).to_string()))
+    }
+}
+
+impl<T: PyToJsonValue> PyToJsonValue for Option<T> {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        match self {
+            Some(value) => value.to_json_value(),
+            None => Ok(__py2rust_json_value::Null),
+        }
+    }
+}
+
+impl<T: PyToJsonValue> PyToJsonValue for Vec<T> {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        let mut items: Vec<__py2rust_json_value> = Vec::new();
+        for item in self.iter() {
+            items.push(item.to_json_value()?);
+        }
+        Ok(__py2rust_json_value::Array(items))
+    }
+}
+
+impl<T: PyToJsonValue> PyToJsonValue for Arc<Mutex<Vec<T>>> {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        let items = self.lock().expect("list mutex poisoned");
+        items.to_json_value()
+    }
+}
+
+impl<T: PyToJsonValue> PyToJsonValue for Rc<RefCell<Vec<T>>> {
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        self.borrow().to_json_value()
+    }
+}
+
+impl<K, V> PyToJsonValue for std::collections::HashMap<K, V>
+where
+    K: ToString + Eq + std::hash::Hash,
+    V: PyToJsonValue,
+{
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        let mut object: std::collections::HashMap<String, __py2rust_json_value> =
+            std::collections::HashMap::new();
+        for (key, value) in self.iter() {
+            object.insert(key.to_string(), value.to_json_value()?);
+        }
+        Ok(__py2rust_json_value::Object(object))
+    }
+}
+
+impl<K, V> PyToJsonValue for Arc<Mutex<std::collections::HashMap<K, V>>>
+where
+    K: ToString + Eq + std::hash::Hash,
+    V: PyToJsonValue,
+{
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        let object = self.lock().expect("dict mutex poisoned");
+        object.to_json_value()
+    }
+}
+
+impl<K, V> PyToJsonValue for Rc<RefCell<std::collections::HashMap<K, V>>>
+where
+    K: ToString + Eq + std::hash::Hash,
+    V: PyToJsonValue,
+{
+    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+        self.borrow().to_json_value()
+    }
+}
+
+fn py_json_escape_string(value: &str) -> String {
+    let mut out = String::new();
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn py_json_render_value(value: &__py2rust_json_value) -> String {
+    match value {
+        __py2rust_json_value::Null => "null".to_string(),
+        __py2rust_json_value::Bool(v) => {
+            if *v {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        __py2rust_json_value::Int(v) => v.to_string(),
+        __py2rust_json_value::Float(v) => {
+            let mut out = v.to_string();
+            if !out.contains('.') && !out.contains('e') && !out.contains('E') {
+                out.push_str(".0");
+            }
+            out
+        }
+        __py2rust_json_value::Str(v) => py_json_escape_string(v),
+        __py2rust_json_value::Array(items) => {
+            let rendered: Vec<String> = items.iter().map(py_json_render_value).collect();
+            format!("[{}]", rendered.join(", "))
+        }
+        __py2rust_json_value::Object(entries) => {
+            let mut pairs: Vec<(&String, &__py2rust_json_value)> = entries.iter().collect();
+            pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+            let rendered: Vec<String> = pairs
+                .iter()
+                .map(|(key, value)| {
+                    format!("{}: {}", py_json_escape_string(key), py_json_render_value(value))
+                })
+                .collect();
+            format!("{{{}}}", rendered.join(", "))
+        }
+    }
+}
+
+fn py_json_skip_ws(chars: &[char], idx: &mut usize) {
+    while *idx < chars.len() && chars[*idx].is_whitespace() {
+        *idx += 1;
+    }
+}
+
+fn py_json_error(message: &str) -> PyError {
+    PyError::ValueError(message.to_string().into())
+}
+
+fn py_json_parse_string(chars: &[char], idx: &mut usize) -> Result<String, PyError> {
+    if *idx >= chars.len() || chars[*idx] != '"' {
+        return Err(py_json_error("expected string"));
+    }
+    *idx += 1;
+    let mut out = String::new();
+    while *idx < chars.len() {
+        let ch = chars[*idx];
+        *idx += 1;
+        if ch == '"' {
+            return Ok(out);
+        }
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        if *idx >= chars.len() {
+            return Err(py_json_error("unterminated escape sequence"));
+        }
+        let esc = chars[*idx];
+        *idx += 1;
+        match esc {
+            '"' => out.push('"'),
+            '\\' => out.push('\\'),
+            '/' => out.push('/'),
+            'b' => out.push('\u{08}'),
+            'f' => out.push('\u{0C}'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            'u' => {
+                if *idx + 4 > chars.len() {
+                    return Err(py_json_error("incomplete unicode escape"));
+                }
+                let hex: String = chars[*idx..(*idx + 4)].iter().collect();
+                *idx += 4;
+                let code = u32::from_str_radix(&hex, 16)
+                    .map_err(|_| py_json_error("invalid unicode escape"))?;
+                let decoded = char::from_u32(code).ok_or_else(|| py_json_error("invalid unicode scalar"))?;
+                out.push(decoded);
+            }
+            _ => return Err(py_json_error("unsupported escape sequence")),
+        }
+    }
+    Err(py_json_error("unterminated string"))
+}
+
+fn py_json_parse_number(chars: &[char], idx: &mut usize) -> Result<__py2rust_json_value, PyError> {
+    let start = *idx;
+    if chars[*idx] == '-' {
+        *idx += 1;
+    }
+    if *idx >= chars.len() {
+        return Err(py_json_error("invalid number"));
+    }
+    if chars[*idx] == '0' {
+        *idx += 1;
+    } else if chars[*idx].is_ascii_digit() {
+        while *idx < chars.len() && chars[*idx].is_ascii_digit() {
+            *idx += 1;
+        }
+    } else {
+        return Err(py_json_error("invalid number"));
+    }
+
+    let mut is_float = false;
+    if *idx < chars.len() && chars[*idx] == '.' {
+        is_float = true;
+        *idx += 1;
+        if *idx >= chars.len() || !chars[*idx].is_ascii_digit() {
+            return Err(py_json_error("invalid float"));
+        }
+        while *idx < chars.len() && chars[*idx].is_ascii_digit() {
+            *idx += 1;
+        }
+    }
+    if *idx < chars.len() && (chars[*idx] == 'e' || chars[*idx] == 'E') {
+        is_float = true;
+        *idx += 1;
+        if *idx < chars.len() && (chars[*idx] == '+' || chars[*idx] == '-') {
+            *idx += 1;
+        }
+        if *idx >= chars.len() || !chars[*idx].is_ascii_digit() {
+            return Err(py_json_error("invalid exponent"));
+        }
+        while *idx < chars.len() && chars[*idx].is_ascii_digit() {
+            *idx += 1;
+        }
+    }
+
+    let raw: String = chars[start..*idx].iter().collect();
+    if is_float {
+        let parsed = raw
+            .parse::<f64>()
+            .map_err(|_| py_json_error("invalid floating-point number"))?;
+        return Ok(__py2rust_json_value::Float(parsed));
+    }
+    let parsed = raw
+        .parse::<i64>()
+        .map_err(|_| py_json_error("invalid integer number"))?;
+    Ok(__py2rust_json_value::Int(parsed))
+}
+
+fn py_json_parse_value(chars: &[char], idx: &mut usize) -> Result<__py2rust_json_value, PyError> {
+    py_json_skip_ws(chars, idx);
+    if *idx >= chars.len() {
+        return Err(py_json_error("unexpected end of json input"));
+    }
+    match chars[*idx] {
+        'n' => {
+            if chars.get(*idx..(*idx + 4)) == Some(&['n', 'u', 'l', 'l']) {
+                *idx += 4;
+                return Ok(__py2rust_json_value::Null);
+            }
+            Err(py_json_error("invalid literal, expected null"))
+        }
+        't' => {
+            if chars.get(*idx..(*idx + 4)) == Some(&['t', 'r', 'u', 'e']) {
+                *idx += 4;
+                return Ok(__py2rust_json_value::Bool(true));
+            }
+            Err(py_json_error("invalid literal, expected true"))
+        }
+        'f' => {
+            if chars.get(*idx..(*idx + 5)) == Some(&['f', 'a', 'l', 's', 'e']) {
+                *idx += 5;
+                return Ok(__py2rust_json_value::Bool(false));
+            }
+            Err(py_json_error("invalid literal, expected false"))
+        }
+        '"' => Ok(__py2rust_json_value::Str(py_json_parse_string(chars, idx)?)),
+        '[' => {
+            *idx += 1;
+            py_json_skip_ws(chars, idx);
+            let mut items: Vec<__py2rust_json_value> = Vec::new();
+            if *idx < chars.len() && chars[*idx] == ']' {
+                *idx += 1;
+                return Ok(__py2rust_json_value::Array(items));
+            }
+            loop {
+                items.push(py_json_parse_value(chars, idx)?);
+                py_json_skip_ws(chars, idx);
+                if *idx >= chars.len() {
+                    return Err(py_json_error("unterminated array"));
+                }
+                if chars[*idx] == ',' {
+                    *idx += 1;
+                    py_json_skip_ws(chars, idx);
+                    continue;
+                }
+                if chars[*idx] == ']' {
+                    *idx += 1;
+                    break;
+                }
+                return Err(py_json_error("expected ',' or ']' in array"));
+            }
+            Ok(__py2rust_json_value::Array(items))
+        }
+        '{' => {
+            *idx += 1;
+            py_json_skip_ws(chars, idx);
+            let mut entries: std::collections::HashMap<String, __py2rust_json_value> =
+                std::collections::HashMap::new();
+            if *idx < chars.len() && chars[*idx] == '}' {
+                *idx += 1;
+                return Ok(__py2rust_json_value::Object(entries));
+            }
+            loop {
+                py_json_skip_ws(chars, idx);
+                let key = py_json_parse_string(chars, idx)?;
+                py_json_skip_ws(chars, idx);
+                if *idx >= chars.len() || chars[*idx] != ':' {
+                    return Err(py_json_error("expected ':' after object key"));
+                }
+                *idx += 1;
+                let value = py_json_parse_value(chars, idx)?;
+                entries.insert(key, value);
+                py_json_skip_ws(chars, idx);
+                if *idx >= chars.len() {
+                    return Err(py_json_error("unterminated object"));
+                }
+                if chars[*idx] == ',' {
+                    *idx += 1;
+                    py_json_skip_ws(chars, idx);
+                    continue;
+                }
+                if chars[*idx] == '}' {
+                    *idx += 1;
+                    break;
+                }
+                return Err(py_json_error("expected ',' or '}' in object"));
+            }
+            Ok(__py2rust_json_value::Object(entries))
+        }
+        '-' | '0'..='9' => py_json_parse_number(chars, idx),
+        _ => Err(py_json_error("unsupported json token")),
+    }
+}
+"#;
+
+/// Static helper body for `json.dumps(value)`.
+const HELPER_PY_JSON_DUMPS: &str = r#"
+fn py_json_dumps<T: PyToJsonValue>(value: &T) -> Result<String, PyError> {
+    let json_value = value.to_json_value()?;
+    Ok(py_json_render_value(&json_value))
+}
+"#;
+
+/// Static helper body for `json.loads(text)`.
+const HELPER_PY_JSON_LOADS: &str = r#"
+fn py_json_loads(text: &str) -> Result<__py2rust_json_value, PyError> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut idx: usize = 0;
+    let value = py_json_parse_value(&chars, &mut idx)?;
+    py_json_skip_ws(&chars, &mut idx);
+    if idx != chars.len() {
+        return Err(py_json_error("trailing data after valid json value"));
+    }
+    Ok(value)
+}
+"#;
+
+/// Static helper body for `json.dump(value, file)`.
+const HELPER_PY_JSON_DUMP: &str = r#"
+fn py_json_dump<T: PyToJsonValue>(value: &T, file: &mut std::fs::File) -> Result<(), PyError> {
+    use std::io::Write;
+    let text = py_json_dumps(value)?;
+    file.write_all(text.as_bytes())
+        .map_err(|err| PyError::IOError(err.to_string().into()))
+}
+"#;
+
+/// Static helper body for `json.load(file)`.
+const HELPER_PY_JSON_LOAD: &str = r#"
+fn py_json_load(file: &mut std::fs::File) -> Result<__py2rust_json_value, PyError> {
+    use std::io::Read;
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .map_err(|err| PyError::IOError(err.to_string().into()))?;
+    py_json_loads(&text)
+}
+"#;
+
 /// Static helper body for clonable iterator wrapper.
 const HELPER_PY_ITER: &str = r#"
 #[derive(Clone)]
@@ -1047,6 +1485,11 @@ impl<'a> Codegen<'a> {
             || self.uses.py_re_span;
         // Shared span-finding utilities are required for search/match only.
         let uses_re_core = self.uses.py_re_search || self.uses.py_re_match;
+        // `json` runtime shares a value model and parser/serializer core.
+        let uses_json_core = self.uses.py_json_dumps
+            || self.uses.py_json_loads
+            || self.uses.py_json_dump
+            || self.uses.py_json_load;
 
         // PyError enum is needed for exception handling.
         if self.needs_py_error() {
@@ -1421,6 +1864,21 @@ impl<'a> Codegen<'a> {
         if self.uses.py_re_span {
             self.push_block(HELPER_PY_RE_SPAN);
         }
+        if uses_json_core {
+            self.push_block(HELPER_PY_JSON_CORE);
+        }
+        if self.uses.py_json_dumps {
+            self.push_block(HELPER_PY_JSON_DUMPS);
+        }
+        if self.uses.py_json_loads {
+            self.push_block(HELPER_PY_JSON_LOADS);
+        }
+        if self.uses.py_json_dump {
+            self.push_block(HELPER_PY_JSON_DUMP);
+        }
+        if self.uses.py_json_load {
+            self.push_block(HELPER_PY_JSON_LOAD);
+        }
         if self.uses.print
             || self.uses.len
             || self.uses.range
@@ -1472,6 +1930,10 @@ impl<'a> Codegen<'a> {
             || self.uses.py_re_sub
             || self.uses.py_re_group
             || self.uses.py_re_span
+            || self.uses.py_json_dumps
+            || self.uses.py_json_loads
+            || self.uses.py_json_dump
+            || self.uses.py_json_load
         {
             self.push_line("");
         }
@@ -1506,6 +1968,10 @@ impl<'a> Codegen<'a> {
             || self.uses.py_os_replace
             || self.uses.py_os_makedirs
             || self.uses.py_os_path_abspath
+            || self.uses.py_json_dumps
+            || self.uses.py_json_loads
+            || self.uses.py_json_dump
+            || self.uses.py_json_load
             || self.uses.range3
     }
 
