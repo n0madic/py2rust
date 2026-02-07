@@ -27,6 +27,8 @@ pub enum StdlibModuleId {
     Re,
     /// Python `json` module.
     Json,
+    /// Python `math` module.
+    Math,
 }
 
 /// Identifier for a supported stdlib callable.
@@ -86,6 +88,72 @@ pub enum StdlibMethodId {
     JsonDump,
     /// `json.load(file)`
     JsonLoad,
+    /// `math.sqrt(x)`
+    MathSqrt,
+    /// `math.sin(x)`
+    MathSin,
+    /// `math.cos(x)`
+    MathCos,
+    /// `math.tan(x)`
+    MathTan,
+    /// `math.ceil(x)`
+    MathCeil,
+    /// `math.floor(x)`
+    MathFloor,
+    /// `math.factorial(n)`
+    MathFactorial,
+    /// `math.log(x)`
+    MathLog,
+    /// `math.log2(x)`
+    MathLog2,
+    /// `math.log10(x)`
+    MathLog10,
+    /// `math.exp(x)`
+    MathExp,
+    /// `math.asin(x)`
+    MathAsin,
+    /// `math.acos(x)`
+    MathAcos,
+    /// `math.atan(x)`
+    MathAtan,
+    /// `math.sinh(x)`
+    MathSinh,
+    /// `math.cosh(x)`
+    MathCosh,
+    /// `math.tanh(x)`
+    MathTanh,
+    /// `math.fabs(x)`
+    MathFabs,
+    /// `math.degrees(x)`
+    MathDegrees,
+    /// `math.radians(x)`
+    MathRadians,
+    /// `math.trunc(x)`
+    MathTrunc,
+    /// `math.isnan(x)`
+    MathIsNan,
+    /// `math.isinf(x)`
+    MathIsInf,
+    /// `math.isfinite(x)`
+    MathIsFinite,
+    /// `math.atan2(y, x)`
+    MathAtan2,
+    /// `math.fmod(x, y)`
+    MathFmod,
+    /// `math.copysign(x, y)`
+    MathCopySign,
+    /// `math.hypot(x, y)`
+    MathHypot,
+    /// `math.pow(x, y)`
+    MathPow,
+    /// `math.gcd(a, b)`
+    MathGcd,
+    /// `math.lcm(a, b)`
+    MathLcm,
+    /// `math.comb(n, k)`
+    MathComb,
+    /// `math.perm(n, k)`
+    MathPerm,
 }
 
 /// Function pointer used to emit method-specific Rust calls in codegen.
@@ -461,6 +529,404 @@ const JSON_LOAD_SPEC: StdlibMethodSpec = StdlibMethodSpec {
     codegen_handler: codegen_json_load,
 };
 
+const MATH_PI_ATTR_SPEC: StdlibAttributeSpec = StdlibAttributeSpec {
+    module_name: "math",
+    attribute_name: "pi",
+    type_resolver: type_math_pi_attr,
+    codegen_handler: codegen_math_pi_attr,
+};
+
+const MATH_E_ATTR_SPEC: StdlibAttributeSpec = StdlibAttributeSpec {
+    module_name: "math",
+    attribute_name: "e",
+    type_resolver: type_math_e_attr,
+    codegen_handler: codegen_math_e_attr,
+};
+
+const MATH_TAU_ATTR_SPEC: StdlibAttributeSpec = StdlibAttributeSpec {
+    module_name: "math",
+    attribute_name: "tau",
+    type_resolver: type_math_tau_attr,
+    codegen_handler: codegen_math_tau_attr,
+};
+
+const MATH_INF_ATTR_SPEC: StdlibAttributeSpec = StdlibAttributeSpec {
+    module_name: "math",
+    attribute_name: "inf",
+    type_resolver: type_math_inf_attr,
+    codegen_handler: codegen_math_inf_attr,
+};
+
+const MATH_NAN_ATTR_SPEC: StdlibAttributeSpec = StdlibAttributeSpec {
+    module_name: "math",
+    attribute_name: "nan",
+    type_resolver: type_math_nan_attr,
+    codegen_handler: codegen_math_nan_attr,
+};
+
+const MATH_SQRT_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathSqrt,
+    module_name: "math",
+    method_name: "sqrt",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_sqrt,
+};
+
+const MATH_SIN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathSin,
+    module_name: "math",
+    method_name: "sin",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_sin,
+};
+
+const MATH_COS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathCos,
+    module_name: "math",
+    method_name: "cos",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_cos,
+};
+
+const MATH_TAN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathTan,
+    module_name: "math",
+    method_name: "tan",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_tan,
+};
+
+const MATH_CEIL_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathCeil,
+    module_name: "math",
+    method_name: "ceil",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_ceil,
+};
+
+const MATH_FLOOR_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathFloor,
+    module_name: "math",
+    method_name: "floor",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_floor,
+};
+
+const MATH_FACTORIAL_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathFactorial,
+    module_name: "math",
+    method_name: "factorial",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_factorial,
+};
+
+const MATH_LOG_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathLog,
+    module_name: "math",
+    method_name: "log",
+    shape: CallShape {
+        arity: AritySpec::Range { min: 1, max: 2 },
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_log,
+};
+
+const MATH_LOG2_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathLog2,
+    module_name: "math",
+    method_name: "log2",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_log2,
+};
+
+const MATH_LOG10_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathLog10,
+    module_name: "math",
+    method_name: "log10",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_log10,
+};
+
+const MATH_EXP_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathExp,
+    module_name: "math",
+    method_name: "exp",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_exp,
+};
+
+const MATH_ASIN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathAsin,
+    module_name: "math",
+    method_name: "asin",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_asin,
+};
+
+const MATH_ACOS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathAcos,
+    module_name: "math",
+    method_name: "acos",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_acos,
+};
+
+const MATH_ATAN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathAtan,
+    module_name: "math",
+    method_name: "atan",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_atan,
+};
+
+const MATH_SINH_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathSinh,
+    module_name: "math",
+    method_name: "sinh",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_sinh,
+};
+
+const MATH_COSH_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathCosh,
+    module_name: "math",
+    method_name: "cosh",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_cosh,
+};
+
+const MATH_TANH_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathTanh,
+    module_name: "math",
+    method_name: "tanh",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_tanh,
+};
+
+const MATH_FABS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathFabs,
+    module_name: "math",
+    method_name: "fabs",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_fabs,
+};
+
+const MATH_DEGREES_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathDegrees,
+    module_name: "math",
+    method_name: "degrees",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_degrees,
+};
+
+const MATH_RADIANS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathRadians,
+    module_name: "math",
+    method_name: "radians",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_radians,
+};
+
+const MATH_TRUNC_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathTrunc,
+    module_name: "math",
+    method_name: "trunc",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_trunc,
+};
+
+const MATH_ISNAN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathIsNan,
+    module_name: "math",
+    method_name: "isnan",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_isnan,
+};
+
+const MATH_ISINF_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathIsInf,
+    module_name: "math",
+    method_name: "isinf",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_isinf,
+};
+
+const MATH_ISFINITE_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathIsFinite,
+    module_name: "math",
+    method_name: "isfinite",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_isfinite,
+};
+
+const MATH_ATAN2_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathAtan2,
+    module_name: "math",
+    method_name: "atan2",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_atan2,
+};
+
+const MATH_FMOD_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathFmod,
+    module_name: "math",
+    method_name: "fmod",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_fmod,
+};
+
+const MATH_COPYSIGN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathCopySign,
+    module_name: "math",
+    method_name: "copysign",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_copysign,
+};
+
+const MATH_HYPOT_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathHypot,
+    module_name: "math",
+    method_name: "hypot",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_hypot,
+};
+
+const MATH_POW_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathPow,
+    module_name: "math",
+    method_name: "pow",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_pow,
+};
+
+const MATH_GCD_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathGcd,
+    module_name: "math",
+    method_name: "gcd",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_gcd,
+};
+
+const MATH_LCM_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathLcm,
+    module_name: "math",
+    method_name: "lcm",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_lcm,
+};
+
+const MATH_COMB_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathComb,
+    module_name: "math",
+    method_name: "comb",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_comb,
+};
+
+const MATH_PERM_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::MathPerm,
+    module_name: "math",
+    method_name: "perm",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_math_perm,
+};
+
 /// Resolve a module name to a known stdlib module id.
 pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
     match name {
@@ -469,6 +935,7 @@ pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
         "sys" => Some(StdlibModuleId::Sys),
         "re" => Some(StdlibModuleId::Re),
         "json" => Some(StdlibModuleId::Json),
+        "math" => Some(StdlibModuleId::Math),
         _ => None,
     }
 }
@@ -506,6 +973,39 @@ pub fn find_stdlib_method(
         (StdlibModuleId::Json, "loads") => Some(&JSON_LOADS_SPEC),
         (StdlibModuleId::Json, "dump") => Some(&JSON_DUMP_SPEC),
         (StdlibModuleId::Json, "load") => Some(&JSON_LOAD_SPEC),
+        (StdlibModuleId::Math, "sqrt") => Some(&MATH_SQRT_SPEC),
+        (StdlibModuleId::Math, "sin") => Some(&MATH_SIN_SPEC),
+        (StdlibModuleId::Math, "cos") => Some(&MATH_COS_SPEC),
+        (StdlibModuleId::Math, "tan") => Some(&MATH_TAN_SPEC),
+        (StdlibModuleId::Math, "ceil") => Some(&MATH_CEIL_SPEC),
+        (StdlibModuleId::Math, "floor") => Some(&MATH_FLOOR_SPEC),
+        (StdlibModuleId::Math, "factorial") => Some(&MATH_FACTORIAL_SPEC),
+        (StdlibModuleId::Math, "log") => Some(&MATH_LOG_SPEC),
+        (StdlibModuleId::Math, "log2") => Some(&MATH_LOG2_SPEC),
+        (StdlibModuleId::Math, "log10") => Some(&MATH_LOG10_SPEC),
+        (StdlibModuleId::Math, "exp") => Some(&MATH_EXP_SPEC),
+        (StdlibModuleId::Math, "asin") => Some(&MATH_ASIN_SPEC),
+        (StdlibModuleId::Math, "acos") => Some(&MATH_ACOS_SPEC),
+        (StdlibModuleId::Math, "atan") => Some(&MATH_ATAN_SPEC),
+        (StdlibModuleId::Math, "sinh") => Some(&MATH_SINH_SPEC),
+        (StdlibModuleId::Math, "cosh") => Some(&MATH_COSH_SPEC),
+        (StdlibModuleId::Math, "tanh") => Some(&MATH_TANH_SPEC),
+        (StdlibModuleId::Math, "fabs") => Some(&MATH_FABS_SPEC),
+        (StdlibModuleId::Math, "degrees") => Some(&MATH_DEGREES_SPEC),
+        (StdlibModuleId::Math, "radians") => Some(&MATH_RADIANS_SPEC),
+        (StdlibModuleId::Math, "trunc") => Some(&MATH_TRUNC_SPEC),
+        (StdlibModuleId::Math, "isnan") => Some(&MATH_ISNAN_SPEC),
+        (StdlibModuleId::Math, "isinf") => Some(&MATH_ISINF_SPEC),
+        (StdlibModuleId::Math, "isfinite") => Some(&MATH_ISFINITE_SPEC),
+        (StdlibModuleId::Math, "atan2") => Some(&MATH_ATAN2_SPEC),
+        (StdlibModuleId::Math, "fmod") => Some(&MATH_FMOD_SPEC),
+        (StdlibModuleId::Math, "copysign") => Some(&MATH_COPYSIGN_SPEC),
+        (StdlibModuleId::Math, "hypot") => Some(&MATH_HYPOT_SPEC),
+        (StdlibModuleId::Math, "pow") => Some(&MATH_POW_SPEC),
+        (StdlibModuleId::Math, "gcd") => Some(&MATH_GCD_SPEC),
+        (StdlibModuleId::Math, "lcm") => Some(&MATH_LCM_SPEC),
+        (StdlibModuleId::Math, "comb") => Some(&MATH_COMB_SPEC),
+        (StdlibModuleId::Math, "perm") => Some(&MATH_PERM_SPEC),
         _ => None,
     }
 }
@@ -520,6 +1020,11 @@ pub fn find_stdlib_attribute(
         (StdlibModuleId::Os, "environ") => Some(&OS_ENVIRON_ATTR_SPEC),
         (StdlibModuleId::Os, "name") => Some(&OS_NAME_ATTR_SPEC),
         (StdlibModuleId::Sys, "argv") => Some(&SYS_ARGV_ATTR_SPEC),
+        (StdlibModuleId::Math, "pi") => Some(&MATH_PI_ATTR_SPEC),
+        (StdlibModuleId::Math, "e") => Some(&MATH_E_ATTR_SPEC),
+        (StdlibModuleId::Math, "tau") => Some(&MATH_TAU_ATTR_SPEC),
+        (StdlibModuleId::Math, "inf") => Some(&MATH_INF_ATTR_SPEC),
+        (StdlibModuleId::Math, "nan") => Some(&MATH_NAN_ATTR_SPEC),
         _ => None,
     }
 }
@@ -559,6 +1064,39 @@ pub fn method_spec(method_id: StdlibMethodId) -> &'static StdlibMethodSpec {
         StdlibMethodId::JsonLoads => &JSON_LOADS_SPEC,
         StdlibMethodId::JsonDump => &JSON_DUMP_SPEC,
         StdlibMethodId::JsonLoad => &JSON_LOAD_SPEC,
+        StdlibMethodId::MathSqrt => &MATH_SQRT_SPEC,
+        StdlibMethodId::MathSin => &MATH_SIN_SPEC,
+        StdlibMethodId::MathCos => &MATH_COS_SPEC,
+        StdlibMethodId::MathTan => &MATH_TAN_SPEC,
+        StdlibMethodId::MathCeil => &MATH_CEIL_SPEC,
+        StdlibMethodId::MathFloor => &MATH_FLOOR_SPEC,
+        StdlibMethodId::MathFactorial => &MATH_FACTORIAL_SPEC,
+        StdlibMethodId::MathLog => &MATH_LOG_SPEC,
+        StdlibMethodId::MathLog2 => &MATH_LOG2_SPEC,
+        StdlibMethodId::MathLog10 => &MATH_LOG10_SPEC,
+        StdlibMethodId::MathExp => &MATH_EXP_SPEC,
+        StdlibMethodId::MathAsin => &MATH_ASIN_SPEC,
+        StdlibMethodId::MathAcos => &MATH_ACOS_SPEC,
+        StdlibMethodId::MathAtan => &MATH_ATAN_SPEC,
+        StdlibMethodId::MathSinh => &MATH_SINH_SPEC,
+        StdlibMethodId::MathCosh => &MATH_COSH_SPEC,
+        StdlibMethodId::MathTanh => &MATH_TANH_SPEC,
+        StdlibMethodId::MathFabs => &MATH_FABS_SPEC,
+        StdlibMethodId::MathDegrees => &MATH_DEGREES_SPEC,
+        StdlibMethodId::MathRadians => &MATH_RADIANS_SPEC,
+        StdlibMethodId::MathTrunc => &MATH_TRUNC_SPEC,
+        StdlibMethodId::MathIsNan => &MATH_ISNAN_SPEC,
+        StdlibMethodId::MathIsInf => &MATH_ISINF_SPEC,
+        StdlibMethodId::MathIsFinite => &MATH_ISFINITE_SPEC,
+        StdlibMethodId::MathAtan2 => &MATH_ATAN2_SPEC,
+        StdlibMethodId::MathFmod => &MATH_FMOD_SPEC,
+        StdlibMethodId::MathCopySign => &MATH_COPYSIGN_SPEC,
+        StdlibMethodId::MathHypot => &MATH_HYPOT_SPEC,
+        StdlibMethodId::MathPow => &MATH_POW_SPEC,
+        StdlibMethodId::MathGcd => &MATH_GCD_SPEC,
+        StdlibMethodId::MathLcm => &MATH_LCM_SPEC,
+        StdlibMethodId::MathComb => &MATH_COMB_SPEC,
+        StdlibMethodId::MathPerm => &MATH_PERM_SPEC,
     }
 }
 
@@ -590,6 +1128,31 @@ fn type_sys_argv_attr() -> Type {
     Type::List(Box::new(Type::Str))
 }
 
+/// Resolve the static type for `math.pi`.
+fn type_math_pi_attr() -> Type {
+    Type::Float
+}
+
+/// Resolve the static type for `math.e`.
+fn type_math_e_attr() -> Type {
+    Type::Float
+}
+
+/// Resolve the static type for `math.tau`.
+fn type_math_tau_attr() -> Type {
+    Type::Float
+}
+
+/// Resolve the static type for `math.inf`.
+fn type_math_inf_attr() -> Type {
+    Type::Float
+}
+
+/// Resolve the static type for `math.nan`.
+fn type_math_nan_attr() -> Type {
+    Type::Float
+}
+
 /// Emit `os.path` attribute expression (module namespace marker only).
 fn codegen_os_path_attr(codegen: &mut Codegen<'_>, span: Span) -> Result<String, CompileError> {
     Err(codegen.error(
@@ -614,6 +1177,31 @@ fn codegen_os_name_attr(codegen: &mut Codegen<'_>, _span: Span) -> Result<String
 fn codegen_sys_argv_attr(codegen: &mut Codegen<'_>, _span: Span) -> Result<String, CompileError> {
     codegen.uses.py_sys_argv = true;
     Ok("py_sys_argv()".to_string())
+}
+
+/// Emit `math.pi` attribute expression.
+fn codegen_math_pi_attr(_codegen: &mut Codegen<'_>, _span: Span) -> Result<String, CompileError> {
+    Ok("std::f64::consts::PI".to_string())
+}
+
+/// Emit `math.e` attribute expression.
+fn codegen_math_e_attr(_codegen: &mut Codegen<'_>, _span: Span) -> Result<String, CompileError> {
+    Ok("std::f64::consts::E".to_string())
+}
+
+/// Emit `math.tau` attribute expression.
+fn codegen_math_tau_attr(_codegen: &mut Codegen<'_>, _span: Span) -> Result<String, CompileError> {
+    Ok("std::f64::consts::TAU".to_string())
+}
+
+/// Emit `math.inf` attribute expression.
+fn codegen_math_inf_attr(_codegen: &mut Codegen<'_>, _span: Span) -> Result<String, CompileError> {
+    Ok("f64::INFINITY".to_string())
+}
+
+/// Emit `math.nan` attribute expression.
+fn codegen_math_nan_attr(_codegen: &mut Codegen<'_>, _span: Span) -> Result<String, CompileError> {
+    Ok("f64::NAN".to_string())
 }
 
 /// Emit code for `os.remove(path)` after generic validation has passed.
@@ -968,4 +1556,373 @@ fn codegen_json_load(
     codegen.uses.py_json_load = true;
     let file_expr = codegen.gen_expr(&args[0])?;
     Ok(codegen.wrap_result(format!("py_json_load(&mut ({}))", file_expr)))
+}
+
+/// Render one numeric argument as `f64` for `math` unary calls.
+fn gen_math_float_arg(codegen: &mut Codegen<'_>, arg: &Expr) -> Result<String, CompileError> {
+    codegen.gen_expr_with_expected(arg, Some(&Type::Float))
+}
+
+/// Render one numeric argument as `i64` for integer-only `math` calls.
+fn gen_math_int_arg(codegen: &mut Codegen<'_>, arg: &Expr) -> Result<String, CompileError> {
+    codegen.gen_expr_with_expected(arg, Some(&Type::Int))
+}
+
+/// Render two numeric arguments as `f64`.
+fn gen_math_float_args(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+) -> Result<(String, String), CompileError> {
+    let left = gen_math_float_arg(codegen, &args[0])?;
+    let right = gen_math_float_arg(codegen, &args[1])?;
+    Ok((left, right))
+}
+
+/// Render two numeric arguments as `i64`.
+fn gen_math_int_args(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+) -> Result<(String, String), CompileError> {
+    let left = gen_math_int_arg(codegen, &args[0])?;
+    let right = gen_math_int_arg(codegen, &args[1])?;
+    Ok((left, right))
+}
+
+/// Emit code for `math.sqrt(x)`.
+fn codegen_math_sqrt(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).sqrt()", value))
+}
+
+/// Emit code for `math.sin(x)`.
+fn codegen_math_sin(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).sin()", value))
+}
+
+/// Emit code for `math.cos(x)`.
+fn codegen_math_cos(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).cos()", value))
+}
+
+/// Emit code for `math.tan(x)`.
+fn codegen_math_tan(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).tan()", value))
+}
+
+/// Emit code for `math.ceil(x)`.
+fn codegen_math_ceil(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).ceil() as i64", value))
+}
+
+/// Emit code for `math.floor(x)`.
+fn codegen_math_floor(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).floor() as i64", value))
+}
+
+/// Emit code for `math.factorial(n)`.
+fn codegen_math_factorial(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_math_factorial = true;
+    let value = gen_math_int_arg(codegen, &args[0])?;
+    Ok(codegen.wrap_result(format!("py_math_factorial({})", value)))
+}
+
+/// Emit code for `math.log(x[, base])`.
+fn codegen_math_log(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    if args.len() == 2 {
+        let base = gen_math_float_arg(codegen, &args[1])?;
+        return Ok(format!("({}).log({})", value, base));
+    }
+    Ok(format!("({}).ln()", value))
+}
+
+/// Emit code for `math.log2(x)`.
+fn codegen_math_log2(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).log2()", value))
+}
+
+/// Emit code for `math.log10(x)`.
+fn codegen_math_log10(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).log10()", value))
+}
+
+/// Emit code for `math.exp(x)`.
+fn codegen_math_exp(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).exp()", value))
+}
+
+/// Emit code for `math.asin(x)`.
+fn codegen_math_asin(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).asin()", value))
+}
+
+/// Emit code for `math.acos(x)`.
+fn codegen_math_acos(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).acos()", value))
+}
+
+/// Emit code for `math.atan(x)`.
+fn codegen_math_atan(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).atan()", value))
+}
+
+/// Emit code for `math.sinh(x)`.
+fn codegen_math_sinh(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).sinh()", value))
+}
+
+/// Emit code for `math.cosh(x)`.
+fn codegen_math_cosh(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).cosh()", value))
+}
+
+/// Emit code for `math.tanh(x)`.
+fn codegen_math_tanh(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).tanh()", value))
+}
+
+/// Emit code for `math.fabs(x)`.
+fn codegen_math_fabs(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).abs()", value))
+}
+
+/// Emit code for `math.degrees(x)`.
+fn codegen_math_degrees(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).to_degrees()", value))
+}
+
+/// Emit code for `math.radians(x)`.
+fn codegen_math_radians(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).to_radians()", value))
+}
+
+/// Emit code for `math.trunc(x)`.
+fn codegen_math_trunc(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).trunc() as i64", value))
+}
+
+/// Emit code for `math.isnan(x)`.
+fn codegen_math_isnan(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).is_nan()", value))
+}
+
+/// Emit code for `math.isinf(x)`.
+fn codegen_math_isinf(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).is_infinite()", value))
+}
+
+/// Emit code for `math.isfinite(x)`.
+fn codegen_math_isfinite(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let value = gen_math_float_arg(codegen, &args[0])?;
+    Ok(format!("({}).is_finite()", value))
+}
+
+/// Emit code for `math.atan2(y, x)`.
+fn codegen_math_atan2(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let (y, x) = gen_math_float_args(codegen, args)?;
+    Ok(format!("({}).atan2({})", y, x))
+}
+
+/// Emit code for `math.fmod(x, y)`.
+fn codegen_math_fmod(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let (left, right) = gen_math_float_args(codegen, args)?;
+    Ok(format!("({}) % ({})", left, right))
+}
+
+/// Emit code for `math.copysign(x, y)`.
+fn codegen_math_copysign(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let (left, right) = gen_math_float_args(codegen, args)?;
+    Ok(format!("({}).copysign({})", left, right))
+}
+
+/// Emit code for `math.hypot(x, y)`.
+fn codegen_math_hypot(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let (left, right) = gen_math_float_args(codegen, args)?;
+    Ok(format!("({}).hypot({})", left, right))
+}
+
+/// Emit code for `math.pow(x, y)`.
+fn codegen_math_pow(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    let (left, right) = gen_math_float_args(codegen, args)?;
+    Ok(format!("({}).powf({})", left, right))
+}
+
+/// Emit code for `math.gcd(a, b)`.
+fn codegen_math_gcd(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_math_gcd = true;
+    let (left, right) = gen_math_int_args(codegen, args)?;
+    Ok(format!("py_math_gcd({}, {})", left, right))
+}
+
+/// Emit code for `math.lcm(a, b)`.
+fn codegen_math_lcm(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_math_lcm = true;
+    let (left, right) = gen_math_int_args(codegen, args)?;
+    Ok(codegen.wrap_result(format!("py_math_lcm({}, {})", left, right)))
+}
+
+/// Emit code for `math.comb(n, k)`.
+fn codegen_math_comb(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_math_comb = true;
+    let (left, right) = gen_math_int_args(codegen, args)?;
+    Ok(codegen.wrap_result(format!("py_math_comb({}, {})", left, right)))
+}
+
+/// Emit code for `math.perm(n, k)`.
+fn codegen_math_perm(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_math_perm = true;
+    let (left, right) = gen_math_int_args(codegen, args)?;
+    Ok(codegen.wrap_result(format!("py_math_perm({}, {})", left, right)))
 }

@@ -246,6 +246,120 @@ fn py_sys_intern(value: &str) -> String {
 }
 "#;
 
+/// Static helper body for `math.factorial(n)`.
+const HELPER_PY_MATH_FACTORIAL: &str = r#"
+fn py_math_factorial(value: i64) -> Result<i64, PyError> {
+    if value < 0 {
+        return Err(PyError::ValueError(
+            "factorial() not defined for negative values".into(),
+        ));
+    }
+    let mut acc: i128 = 1;
+    let mut n: i128 = 2;
+    let end = value as i128;
+    while n <= end {
+        acc = acc
+            .checked_mul(n)
+            .ok_or_else(|| PyError::OverflowError("factorial() result too large".into()))?;
+        n += 1;
+    }
+    i64::try_from(acc).map_err(|_| PyError::OverflowError("factorial() result too large".into()))
+}
+"#;
+
+/// Static helper body for `math.gcd(a, b)`.
+const HELPER_PY_MATH_GCD: &str = r#"
+fn py_math_gcd(a: i64, b: i64) -> i64 {
+    let mut x = (a as i128).abs();
+    let mut y = (b as i128).abs();
+    while y != 0 {
+        let r = x % y;
+        x = y;
+        y = r;
+    }
+    x as i64
+}
+"#;
+
+/// Static helper body for `math.lcm(a, b)`.
+const HELPER_PY_MATH_LCM: &str = r#"
+fn py_math_lcm(a: i64, b: i64) -> Result<i64, PyError> {
+    if a == 0 || b == 0 {
+        return Ok(0);
+    }
+    // Keep this helper self-contained so it can be emitted without py_math_gcd.
+    let mut x = (a as i128).abs();
+    let mut y = (b as i128).abs();
+    while y != 0 {
+        let r = x % y;
+        x = y;
+        y = r;
+    }
+    let gcd = x;
+    let lcm = ((a as i128) / gcd)
+        .checked_mul(b as i128)
+        .ok_or_else(|| PyError::OverflowError("lcm() result too large".into()))?
+        .abs();
+    i64::try_from(lcm).map_err(|_| PyError::OverflowError("lcm() result too large".into()))
+}
+"#;
+
+/// Static helper body for `math.comb(n, k)`.
+const HELPER_PY_MATH_COMB: &str = r#"
+fn py_math_comb(n: i64, k: i64) -> Result<i64, PyError> {
+    if n < 0 || k < 0 {
+        return Err(PyError::ValueError(
+            "comb() not defined for negative values".into(),
+        ));
+    }
+    if k > n {
+        return Ok(0);
+    }
+    let n128 = n as i128;
+    let mut k128 = k as i128;
+    let alt = n128 - k128;
+    if alt < k128 {
+        k128 = alt;
+    }
+    let mut result: i128 = 1;
+    let mut i: i128 = 0;
+    while i < k128 {
+        let numerator = n128 - i;
+        let denominator = i + 1;
+        result = result
+            .checked_mul(numerator)
+            .ok_or_else(|| PyError::OverflowError("comb() result too large".into()))?
+            / denominator;
+        i += 1;
+    }
+    i64::try_from(result).map_err(|_| PyError::OverflowError("comb() result too large".into()))
+}
+"#;
+
+/// Static helper body for `math.perm(n, k)`.
+const HELPER_PY_MATH_PERM: &str = r#"
+fn py_math_perm(n: i64, k: i64) -> Result<i64, PyError> {
+    if n < 0 || k < 0 {
+        return Err(PyError::ValueError(
+            "perm() not defined for negative values".into(),
+        ));
+    }
+    if k > n {
+        return Ok(0);
+    }
+    let mut result: i128 = 1;
+    let mut factor = (n - k + 1) as i128;
+    let end = n as i128;
+    while factor <= end {
+        result = result
+            .checked_mul(factor)
+            .ok_or_else(|| PyError::OverflowError("perm() result too large".into()))?;
+        factor += 1;
+    }
+    i64::try_from(result).map_err(|_| PyError::OverflowError("perm() result too large".into()))
+}
+"#;
+
 /// Static helper body for lightweight `re.Match` storage.
 const HELPER_PY_RE_MATCH_STRUCT: &str = r#"
 #[allow(non_camel_case_types)]
@@ -1843,6 +1957,21 @@ impl<'a> Codegen<'a> {
         if self.uses.py_sys_intern {
             self.push_block(HELPER_PY_SYS_INTERN);
         }
+        if self.uses.py_math_factorial {
+            self.push_block(HELPER_PY_MATH_FACTORIAL);
+        }
+        if self.uses.py_math_gcd {
+            self.push_block(HELPER_PY_MATH_GCD);
+        }
+        if self.uses.py_math_lcm {
+            self.push_block(HELPER_PY_MATH_LCM);
+        }
+        if self.uses.py_math_comb {
+            self.push_block(HELPER_PY_MATH_COMB);
+        }
+        if self.uses.py_math_perm {
+            self.push_block(HELPER_PY_MATH_PERM);
+        }
         if uses_re_match_struct {
             self.push_block(HELPER_PY_RE_MATCH_STRUCT);
         }
@@ -1925,6 +2054,11 @@ impl<'a> Codegen<'a> {
             || self.uses.py_os_path_abspath
             || self.uses.py_sys_argv
             || self.uses.py_sys_intern
+            || self.uses.py_math_factorial
+            || self.uses.py_math_gcd
+            || self.uses.py_math_lcm
+            || self.uses.py_math_comb
+            || self.uses.py_math_perm
             || self.uses.py_re_search
             || self.uses.py_re_match
             || self.uses.py_re_sub
@@ -1972,6 +2106,10 @@ impl<'a> Codegen<'a> {
             || self.uses.py_json_loads
             || self.uses.py_json_dump
             || self.uses.py_json_load
+            || self.uses.py_math_factorial
+            || self.uses.py_math_lcm
+            || self.uses.py_math_comb
+            || self.uses.py_math_perm
             || self.uses.range3
     }
 

@@ -159,6 +159,66 @@ impl<'a> TypeChecker<'a> {
                     span,
                 )?;
             }
+            StdlibMethodId::MathSqrt
+            | StdlibMethodId::MathSin
+            | StdlibMethodId::MathCos
+            | StdlibMethodId::MathTan
+            | StdlibMethodId::MathLog2
+            | StdlibMethodId::MathLog10
+            | StdlibMethodId::MathExp
+            | StdlibMethodId::MathAsin
+            | StdlibMethodId::MathAcos
+            | StdlibMethodId::MathAtan
+            | StdlibMethodId::MathSinh
+            | StdlibMethodId::MathCosh
+            | StdlibMethodId::MathTanh
+            | StdlibMethodId::MathFabs
+            | StdlibMethodId::MathDegrees
+            | StdlibMethodId::MathRadians => {
+                let value_ty = self.check_expr(&mut args[0], Some(&Type::Float))?;
+                self.ensure_assignable(&value_ty, &Type::Float, span)?;
+            }
+            StdlibMethodId::MathLog => {
+                let value_ty = self.check_expr(&mut args[0], Some(&Type::Float))?;
+                self.ensure_assignable(&value_ty, &Type::Float, span)?;
+                if args.len() == 2 {
+                    let base_ty = self.check_expr(&mut args[1], Some(&Type::Float))?;
+                    self.ensure_assignable(&base_ty, &Type::Float, span)?;
+                }
+            }
+            StdlibMethodId::MathCeil | StdlibMethodId::MathFloor | StdlibMethodId::MathTrunc => {
+                let value_ty = self.check_expr(&mut args[0], Some(&Type::Float))?;
+                self.ensure_assignable(&value_ty, &Type::Float, span)?;
+            }
+            StdlibMethodId::MathIsNan
+            | StdlibMethodId::MathIsInf
+            | StdlibMethodId::MathIsFinite => {
+                let value_ty = self.check_expr(&mut args[0], Some(&Type::Float))?;
+                self.ensure_assignable(&value_ty, &Type::Float, span)?;
+            }
+            StdlibMethodId::MathAtan2
+            | StdlibMethodId::MathFmod
+            | StdlibMethodId::MathCopySign
+            | StdlibMethodId::MathHypot
+            | StdlibMethodId::MathPow => {
+                let left_ty = self.check_expr(&mut args[0], Some(&Type::Float))?;
+                self.ensure_assignable(&left_ty, &Type::Float, span)?;
+                let right_ty = self.check_expr(&mut args[1], Some(&Type::Float))?;
+                self.ensure_assignable(&right_ty, &Type::Float, span)?;
+            }
+            StdlibMethodId::MathFactorial => {
+                let value_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                self.ensure_assignable(&value_ty, &Type::Int, span)?;
+            }
+            StdlibMethodId::MathGcd
+            | StdlibMethodId::MathLcm
+            | StdlibMethodId::MathComb
+            | StdlibMethodId::MathPerm => {
+                let left_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                self.ensure_assignable(&left_ty, &Type::Int, span)?;
+                let right_ty = self.check_expr(&mut args[1], Some(&Type::Int))?;
+                self.ensure_assignable(&right_ty, &Type::Int, span)?;
+            }
         }
 
         Ok(Self::stdlib_method_return_type(spec.method_id))
@@ -196,6 +256,39 @@ impl<'a> TypeChecker<'a> {
                 Type::Custom("__py2rust_json_value".to_string())
             }
             StdlibMethodId::JsonDump => Type::None,
+            StdlibMethodId::MathSqrt
+            | StdlibMethodId::MathSin
+            | StdlibMethodId::MathCos
+            | StdlibMethodId::MathTan
+            | StdlibMethodId::MathLog
+            | StdlibMethodId::MathLog2
+            | StdlibMethodId::MathLog10
+            | StdlibMethodId::MathExp
+            | StdlibMethodId::MathAsin
+            | StdlibMethodId::MathAcos
+            | StdlibMethodId::MathAtan
+            | StdlibMethodId::MathSinh
+            | StdlibMethodId::MathCosh
+            | StdlibMethodId::MathTanh
+            | StdlibMethodId::MathFabs
+            | StdlibMethodId::MathDegrees
+            | StdlibMethodId::MathRadians
+            | StdlibMethodId::MathAtan2
+            | StdlibMethodId::MathFmod
+            | StdlibMethodId::MathCopySign
+            | StdlibMethodId::MathHypot
+            | StdlibMethodId::MathPow => Type::Float,
+            StdlibMethodId::MathCeil
+            | StdlibMethodId::MathFloor
+            | StdlibMethodId::MathTrunc
+            | StdlibMethodId::MathFactorial
+            | StdlibMethodId::MathGcd
+            | StdlibMethodId::MathLcm
+            | StdlibMethodId::MathComb
+            | StdlibMethodId::MathPerm => Type::Int,
+            StdlibMethodId::MathIsNan
+            | StdlibMethodId::MathIsInf
+            | StdlibMethodId::MathIsFinite => Type::Bool,
         }
     }
 }

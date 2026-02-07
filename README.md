@@ -38,7 +38,8 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
   - `sys`: `exit`, `argv`, `intern`
   - lightweight `re` (via `regex-lite`): `search`, `match`, `sub`, `Match.group(index)`, `Match.span()`
   - lightweight `json`: `dumps`, `loads`, `dump`, `load`
-- Stdlib imports: `import os`, `import os as o`, `import os.path`, `import sys`, `import re`, `import json`, `from os import remove`, `from os.path import join`, `from sys import exit`, `from sys import intern`, `from re import search`, `from json import dumps`, `from json import loads`
+  - `math`: attributes `pi`, `e`, `tau`, `inf`, `nan`; functions `sqrt`, `sin`, `cos`, `tan`, `ceil`, `floor`, `factorial`, `log`, `log2`, `log10`, `exp`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `fabs`, `degrees`, `radians`, `trunc`, `isnan`, `isinf`, `isfinite`, `atan2`, `fmod`, `copysign`, `hypot`, `pow`, `gcd`, `lcm`, `comb`, `perm`
+- Stdlib imports: `import os`, `import os as o`, `import os.path`, `import sys`, `import re`, `import json`, `import math`, `from os import remove`, `from os.path import join`, `from sys import exit`, `from sys import intern`, `from re import search`, `from json import dumps`, `from json import loads`, `from math import pi`, `from math import sqrt`
 - User imports from local files/packages: `import mymod`, `from mymod import f`, and relative package imports (`from .x import y`, `from .. import z`)
 
 ## Usage
@@ -82,7 +83,7 @@ The generated Rust injects tiny helper functions only when needed:
 - `py_len`
 - `py_range`
 - `py_round`
-- `py_os_*`, `py_sys_*`, `py_re_*`, `py_json_*`
+- `py_os_*`, `py_sys_*`, `py_re_*`, `py_json_*`, `py_math_*`
 
 ## Notes and Limitations
 - `self` can be unannotated in methods; other parameters require annotations.
@@ -92,12 +93,13 @@ The generated Rust injects tiny helper functions only when needed:
 - `bool` follows Python numeric compatibility in arithmetic/comparison contexts (subtype of `int`) while remaining `bool` in boolean-only flows.
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
 - `typing.List/Dict/Set/Tuple` annotations are aliases of `list/dict/set/tuple` annotations.
-- Imports are unified through one resolver: `typing`/`os`/`sys`/`re`/`json` stay virtual, while local user modules/packages are loaded from files and merged before type checking/codegen.
-- For registry-backed stdlib calls, module import is required (`os.remove(...)`, `sys.exit(...)`, `re.search(...)`, `json.dumps(...)` without import is a compile error).
+- Imports are unified through one resolver: `typing`/`os`/`sys`/`re`/`json`/`math` stay virtual, while local user modules/packages are loaded from files and merged before type checking/codegen.
+- For registry-backed stdlib calls, module import is required (`os.remove(...)`, `sys.exit(...)`, `re.search(...)`, `json.dumps(...)`, `math.sqrt(...)` without import is a compile error).
 - `from ... import *` is not supported for stdlib modules.
 - Supported stdlib surface is registry-driven and intentionally explicit; unsupported module members produce compile-time errors.
 - `re` support is intentionally lightweight and backed by `regex-lite` helpers (`search`, `match`, `sub`, `Match.group`, `Match.span`).
 - `json` support is intentionally lightweight and currently targets registry-backed calls (`dumps`, `loads`, `dump`, `load`) used by runtime coverage.
+- `math` support currently targets the registry-backed surface covered by runtime integration tests (constants + numeric/trig/hyperbolic/combinatorics helpers listed above).
 - When generated code uses `re`, py2rust compile/run flows auto-link `regex-lite`; direct manual `rustc` invocation must provide equivalent external crate flags.
 - Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
 - Builtins are mostly positional-only; keyword arguments are supported for `print(sep=..., end=...)`, `sorted(key=..., reverse=...)`, and iterable-form `min/max(key=...)`.

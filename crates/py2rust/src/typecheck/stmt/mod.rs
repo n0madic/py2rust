@@ -1,6 +1,8 @@
 use super::*;
 use crate::hir_visit::StmtVisitorMut;
-use crate::stdlib::registry::{find_imported_member, method_spec, resolve_module};
+use crate::stdlib::registry::{
+    find_imported_member, find_stdlib_attribute, method_spec, resolve_module,
+};
 
 mod exceptions;
 mod unpack;
@@ -813,7 +815,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     let bound_name = binding.alias.as_deref().unwrap_or(binding.module.as_str());
                     if resolve_module(binding.module.as_str()).is_some() {
-                        // Virtual stdlib module import (os/sys/re/json).
+                        // Virtual stdlib module import (os/sys/re/json/math).
                         self.insert_var(
                             bound_name,
                             Type::Module(binding.module.clone()),
@@ -830,27 +832,36 @@ impl<'a> TypeChecker<'a> {
                 if module != "typing" {
                     if let Some(module_id) = resolve_module(module.as_str()) {
                         for binding in names {
-                            let method_id = find_imported_member(module_id, binding.name.as_str())
-                                .ok_or_else(|| {
-                                    self.error(
-                                        stmt.span,
-                                        format!(
-                                            "{module} has no supported member '{}'",
-                                            binding.name
-                                        ),
-                                    )
-                                })?;
-                            let spec = method_spec(method_id);
                             let bound_name =
                                 binding.alias.as_deref().unwrap_or(binding.name.as_str());
-                            self.insert_var(
-                                bound_name,
-                                Type::StdlibFunction {
-                                    module: spec.module_name.to_string(),
-                                    method: spec.method_name.to_string(),
-                                },
+                            if let Some(method_id) =
+                                find_imported_member(module_id, binding.name.as_str())
+                            {
+                                let spec = method_spec(method_id);
+                                self.insert_var(
+                                    bound_name,
+                                    Type::StdlibFunction {
+                                        module: spec.module_name.to_string(),
+                                        method: spec.method_name.to_string(),
+                                    },
+                                    stmt.span,
+                                )?;
+                                continue;
+                            }
+                            if let Some(attr_spec) =
+                                find_stdlib_attribute(module_id, binding.name.as_str())
+                            {
+                                self.insert_var(
+                                    bound_name,
+                                    (attr_spec.type_resolver)(),
+                                    stmt.span,
+                                )?;
+                                continue;
+                            }
+                            return Err(self.error(
                                 stmt.span,
-                            )?;
+                                format!("{module} has no supported member '{}'", binding.name),
+                            ));
                         }
                     } else {
                         // User-module from-imports are rewritten by the import resolver.

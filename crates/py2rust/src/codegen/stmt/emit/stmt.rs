@@ -3,6 +3,7 @@
 use super::super::super::util::{collect_assign_counts, mut_kw_for_name};
 use super::super::super::*;
 use crate::hir_visit::StmtVisitor;
+use crate::stdlib::registry::{find_stdlib_attribute, find_stdlib_method, resolve_module};
 
 /// Immutable statement visitor that routes dispatch through `Stmt::accept`.
 struct EmitStmtVisitor<'cg, 'a, 'm> {
@@ -1181,10 +1182,53 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.push_line("}");
             }
-            StmtKind::Import { .. }
-            | StmtKind::ImportFrom { .. }
-            | StmtKind::Global { .. }
-            | StmtKind::Nonlocal { .. } => {}
+            StmtKind::Import { .. } | StmtKind::Global { .. } | StmtKind::Nonlocal { .. } => {}
+            StmtKind::ImportFrom { module, names } => {
+                if module == "typing" {
+                    return Ok(());
+                }
+                let Some(module_id) = resolve_module(module.as_str()) else {
+                    // Non-stdlib from-imports are inlined during import-resolution.
+                    return Ok(());
+                };
+                for binding in names {
+                    // Imported stdlib callables are resolved by type-based call lowering.
+                    if find_stdlib_method(module_id, binding.name.as_str()).is_some() {
+                        continue;
+                    }
+                    let Some(attr_spec) = find_stdlib_attribute(module_id, binding.name.as_str())
+                    else {
+                        return Err(self.error(
+                            stmt.span,
+                            format!("{module} has no supported member '{}'", binding.name),
+                        ));
+                    };
+                    let bound_name = binding.alias.as_deref().unwrap_or(binding.name.as_str());
+                    let bound_ty = (attr_spec.type_resolver)();
+                    // Module-marker imports (e.g. `from os import path`) do not produce
+                    // runtime values and are handled by module-typed call lowering.
+                    if matches!(bound_ty, Type::Module(_)) {
+                        continue;
+                    }
+                    let attr_expr = (attr_spec.codegen_handler)(self, stmt.span)?;
+                    if self.current_function.is_none() && self.is_global(bound_name) {
+                        let global_name = self.global_name(bound_name);
+                        let tmp = self.new_tmp();
+                        self.push_line(&format!("let {} = {};", tmp, attr_expr));
+                        self.push_line(&format!(
+                            "let _ = {}.get_or_init(|| Mutex::new({}));",
+                            global_name, tmp
+                        ));
+                        self.initialized_globals.insert(bound_name.to_string());
+                    } else {
+                        let mut_kw = mut_kw_for_name(bound_name, mut_counts);
+                        self.push_line(&format!("let {}{} = {};", mut_kw, bound_name, attr_expr));
+                        if let Some(locals) = self.local_vars.as_mut() {
+                            locals.insert(bound_name.to_string(), bound_ty.clone());
+                        }
+                    }
+                }
+            }
             StmtKind::Break => self.push_line("break;"),
             StmtKind::Continue => self.push_line("continue;"),
             StmtKind::Assert { test, msg } => {
