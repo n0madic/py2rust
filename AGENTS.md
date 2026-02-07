@@ -41,8 +41,11 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - `crates/py2rust/src/lib.rs` core compile pipeline and `main` renaming.
 - `crates/py2rust/src/lower.rs` RustPython AST -> HIR lowering.
 - `crates/py2rust/src/hir.rs` HIR definitions.
-- `crates/py2rust/src/typeck.rs` type checking and inference.
-- `crates/py2rust/src/codegen.rs` Rust codegen and helper injection.
+- `crates/py2rust/src/hir_visit.rs` macro-generated visitor traits and `accept` dispatch for `ExprKind/StmtKind`.
+- `crates/py2rust/src/callspec.rs` shared call-shape validation (arity/keywords) and canonical diagnostics.
+- `crates/py2rust/src/call_bind.rs` shared argument binding planner used by typecheck and codegen.
+- `crates/py2rust/src/typecheck/` type checking and inference.
+- `crates/py2rust/src/codegen/` Rust codegen and helper injection.
 - `crates/py2rust/src/types.rs` type system.
 - `docs/` project documentation (keep docs here).
 - `README.md` user docs.
@@ -127,20 +130,9 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 ## Test Structure
 Runtime integration tests are in `crates/py2rust/tests/`:
 - `common/mod.rs` - shared `run_py()` helper for compile+execute tests.
-- `runtime/*.rs` - categorized comprehensive runtime tests:
-  - `functions.rs` - functions and recursion
-  - `classes.rs` - classes and objects
-  - `control_flow.rs` - loops and conditionals
-  - `collections.rs` - lists, strings, tuples, dicts
-  - `operators.rs` - arithmetic, comparison, boolean
-  - `match.rs` - comprehensive `match/case` patterns
-  - `iteration.rs` - iteration protocol, comprehensions, and iterator builtins
-  - `generators.rs` - `yield`, generator expressions, `.send(...)`, `.close()`, mixed `next()/for`
-  - `global_scoping.rs` - global declarations, shadowing, and nested global writes
-  - `io.rs` - print output
-  - `assert.rs` - assertions
-  - `exceptions.rs` - try/except/finally/raise
-- Each category has one comprehensive test to minimize compilation overhead.
+- `runtime.rs` - centralized runtime-case registry macro (`runtime_cases!`) that executes all runtime fixtures.
+- `runtime/*.py` - runtime fixture programs used by the registry.
+- Runtime expectations are centralized in `runtime.rs` next to fixture registration.
 
 ## Testing
 **Best practices for test development:**

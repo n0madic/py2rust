@@ -2,6 +2,224 @@
 
 use super::super::super::util::{collect_assign_counts, mut_kw_for_name};
 use super::super::super::*;
+use crate::hir_visit::StmtVisitor;
+
+/// Immutable statement visitor that routes dispatch through `Stmt::accept`.
+struct EmitStmtVisitor<'cg, 'a, 'm> {
+    cg: &'cg mut Codegen<'a>,
+    mut_counts: &'m HashMap<String, usize>,
+    span: Span,
+}
+
+impl<'cg, 'a, 'm> StmtVisitor<Result<(), CompileError>> for EmitStmtVisitor<'cg, 'a, 'm> {
+    fn visit_let(
+        &mut self,
+        name: &str,
+        ann: Option<&TypeRef>,
+        value: &Expr,
+    ) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Let {
+                name: name.to_string(),
+                ann: ann.cloned(),
+                value: value.clone(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_assign(&mut self, target: &AssignTarget, value: &Expr) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Assign {
+                target: target.clone(),
+                value: value.clone(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_return(&mut self, value: Option<&Expr>) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Return {
+                value: value.cloned(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_if(
+        &mut self,
+        test: &Expr,
+        body: &[Stmt],
+        orelse: &[Stmt],
+    ) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::If {
+                test: test.clone(),
+                body: body.to_vec(),
+                orelse: orelse.to_vec(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_while(&mut self, test: &Expr, body: &[Stmt]) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::While {
+                test: test.clone(),
+                body: body.to_vec(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_for(
+        &mut self,
+        target: &ForTarget,
+        iter: &Expr,
+        body: &[Stmt],
+    ) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::For {
+                target: target.clone(),
+                iter: iter.clone(),
+                body: body.to_vec(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_import(&mut self, names: &[ImportBinding]) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Import {
+                names: names.to_vec(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_import_from(
+        &mut self,
+        module: &str,
+        names: &[ImportFromBinding],
+    ) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::ImportFrom {
+                module: module.to_string(),
+                names: names.to_vec(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_global(&mut self, names: &[String]) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Global {
+                names: names.to_vec(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_nonlocal(&mut self, names: &[String]) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Nonlocal {
+                names: names.to_vec(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_break(&mut self) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Break,
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_continue(&mut self) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Continue,
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_expr_stmt(&mut self, expr: &Expr) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Expr(expr.clone()),
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_assert(&mut self, test: &Expr, msg: Option<&Expr>) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Assert {
+                test: test.clone(),
+                msg: msg.cloned(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_match(&mut self, subject: &Expr, cases: &[MatchCase]) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Match {
+                subject: subject.clone(),
+                cases: cases.to_vec(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_try(
+        &mut self,
+        body: &[Stmt],
+        handlers: &[ExceptHandler],
+        orelse: &[Stmt],
+        finalbody: &[Stmt],
+    ) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Try {
+                body: body.to_vec(),
+                handlers: handlers.to_vec(),
+                orelse: orelse.to_vec(),
+                finalbody: finalbody.to_vec(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_raise(
+        &mut self,
+        exc: Option<&Expr>,
+        cause: Option<&Expr>,
+    ) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Raise {
+                exc: exc.cloned(),
+                cause: cause.cloned(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+}
 
 impl<'a> Codegen<'a> {
     fn gen_for_target(&self, target: &ForTarget) -> String {
@@ -264,6 +482,20 @@ impl<'a> Codegen<'a> {
 
     /// Emit a statement into the output buffer.
     pub(crate) fn emit_stmt(
+        &mut self,
+        stmt: &Stmt,
+        mut_counts: &HashMap<String, usize>,
+    ) -> Result<(), CompileError> {
+        let mut visitor = EmitStmtVisitor {
+            cg: self,
+            mut_counts,
+            span: stmt.span,
+        };
+        stmt.accept(&mut visitor)
+    }
+
+    /// Legacy statement emitter kept as the semantic source of truth.
+    fn emit_stmt_via_match(
         &mut self,
         stmt: &Stmt,
         mut_counts: &HashMap<String, usize>,

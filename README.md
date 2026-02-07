@@ -2,10 +2,6 @@
 
 A pragmatic transpiler that converts a restricted, statically-typed subset of Python into idiomatic Rust with a minimal runtime.
 
-## Project Layout
-- `crates/py2rust` — compiler/transpiler (Rust)
-- `crates/py2rust/src/stdlib/registry.rs` — centralized stdlib module/member registry
-
 ## Features (MVP)
 - Functions with required type annotations
 - Function signatures with defaults, keyword arguments, `*args`, keyword-only params, and `**kwargs`
@@ -68,8 +64,8 @@ Run tests:
 cargo test -p py2rust
 ```
 
-Runtime integration coverage lives in `crates/py2rust/tests/runtime/`.
-Exception coverage is consolidated in `crates/py2rust/tests/runtime/exceptions.py` and includes built-in/custom exception flows plus regression scenarios.
+Runtime integration coverage is registered centrally in `crates/py2rust/tests/runtime.rs`.
+Python fixture inputs remain in `crates/py2rust/tests/runtime/*.py`.
 
 Negative/compile-fail coverage lives in `crates/py2rust/tests/negative_tests.rs`.
 

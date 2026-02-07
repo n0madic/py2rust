@@ -7,8 +7,8 @@ mod set;
 mod string_file;
 
 use super::super::*;
-use crate::container::registry::{resolve_container_method, ContainerId};
-use crate::stdlib::registry::{resolve_method, resolve_module};
+use crate::container::registry::{find_container_method, ContainerId};
+use crate::stdlib::registry::{find_stdlib_method, resolve_module};
 
 impl<'a> Codegen<'a> {
     /// Lower attribute-based method calls with special cases for collections and format().
@@ -26,7 +26,7 @@ impl<'a> Codegen<'a> {
                     format!("module '{module_name}' is not registered in stdlib registry"),
                 )
             })?;
-            let spec = resolve_method(module_id, attr).ok_or_else(|| {
+            let spec = find_stdlib_method(module_id, attr).ok_or_else(|| {
                 self.error(
                     value.span,
                     format!("{module_name} has no supported member '{attr}'"),
@@ -74,22 +74,37 @@ impl<'a> Codegen<'a> {
             return self.gen_file_attr_call(value, attr, args, keywords);
         }
 
-        if matches!(value.ty.as_ref(), Some(Type::List(_)))
-            && resolve_container_method(ContainerId::List, attr).is_some()
-        {
-            return self.gen_list_attr_call(value, attr, args, keywords);
+        if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+            if let Some(spec) = find_container_method(ContainerId::List, attr) {
+                let keyword_names: Vec<Option<&str>> =
+                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
+                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
+                    return Err(self.error(value.span, shape_err.message()));
+                }
+                return self.gen_list_attr_call(value, attr, args, keywords);
+            }
         }
 
-        if matches!(value.ty.as_ref(), Some(Type::Dict(_, _)))
-            && resolve_container_method(ContainerId::Dict, attr).is_some()
-        {
-            return self.gen_dict_attr_call(value, attr, args, keywords);
+        if matches!(value.ty.as_ref(), Some(Type::Dict(_, _))) {
+            if let Some(spec) = find_container_method(ContainerId::Dict, attr) {
+                let keyword_names: Vec<Option<&str>> =
+                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
+                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
+                    return Err(self.error(value.span, shape_err.message()));
+                }
+                return self.gen_dict_attr_call(value, attr, args, keywords);
+            }
         }
 
-        if matches!(value.ty.as_ref(), Some(Type::Set(_)))
-            && resolve_container_method(ContainerId::Set, attr).is_some()
-        {
-            return self.gen_set_attr_call(value, attr, args, keywords);
+        if matches!(value.ty.as_ref(), Some(Type::Set(_))) {
+            if let Some(spec) = find_container_method(ContainerId::Set, attr) {
+                let keyword_names: Vec<Option<&str>> =
+                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
+                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
+                    return Err(self.error(value.span, shape_err.message()));
+                }
+                return self.gen_set_attr_call(value, attr, args, keywords);
+            }
         }
 
         if let Some(Type::Iterator(inner)) = value.ty.as_ref() {

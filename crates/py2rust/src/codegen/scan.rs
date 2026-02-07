@@ -1,5 +1,5 @@
 use super::*;
-use crate::builtin::registry::{resolve_builtin, BuiltinId};
+use crate::builtin::registry::{find_builtin, BuiltinId};
 
 /// This module scans the HIR to determine which helper functions and imports are needed.
 ///
@@ -441,7 +441,7 @@ impl<'a> Codegen<'a> {
                 keywords,
             } => {
                 if let ExprKind::Name(name) = &func.kind {
-                    if let Some(spec) = resolve_builtin(name) {
+                    if let Some(spec) = find_builtin(name) {
                         match spec.id {
                             BuiltinId::Print => self.uses.print = true,
                             BuiltinId::Len => self.uses.len = true,

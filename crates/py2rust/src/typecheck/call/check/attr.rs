@@ -1,8 +1,8 @@
 // Attribute-based call target type checking.
 
 use super::super::super::*;
-use crate::container::registry::{resolve_container_method, ContainerId};
-use crate::stdlib::registry::{resolve_method, resolve_module};
+use crate::container::registry::{find_container_method, ContainerId};
+use crate::stdlib::registry::{find_stdlib_method, resolve_module};
 
 impl<'a> TypeChecker<'a> {
     pub(super) fn check_call_attr(
@@ -28,7 +28,7 @@ impl<'a> TypeChecker<'a> {
                     format!("module '{module_name}' is not registered in stdlib registry"),
                 )
             })?;
-            let method = resolve_method(module_id, attr.as_str()).ok_or_else(|| {
+            let method = find_stdlib_method(module_id, attr.as_str()).ok_or_else(|| {
                 self.error(
                     span,
                     format!("{module_name} has no supported member '{attr}'"),
@@ -37,6 +37,13 @@ impl<'a> TypeChecker<'a> {
             return self.check_stdlib_call(method, args, keywords, span);
         }
         if let Type::List(inner) = &obj_ty {
+            if let Some(spec) = find_container_method(ContainerId::List, attr.as_str()) {
+                let keyword_names: Vec<Option<&str>> =
+                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
+                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
+                    return Err(self.error(span, shape_err.message()));
+                }
+            }
             if attr == "append" {
                 if args.len() != 1 {
                     return Err(self.error(span, "list.append() expects one argument"));
@@ -204,6 +211,13 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Type::Dict(key_ty, val_ty) = &obj_ty {
+            if let Some(spec) = find_container_method(ContainerId::Dict, attr.as_str()) {
+                let keyword_names: Vec<Option<&str>> =
+                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
+                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
+                    return Err(self.error(span, shape_err.message()));
+                }
+            }
             if attr == "get" {
                 if args.is_empty() || args.len() > 2 {
                     return Err(self.error(span, "dict.get() expects one or two arguments"));
@@ -270,9 +284,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Type::Set(inner) = &obj_ty {
-            if let Some(spec) = resolve_container_method(ContainerId::Set, attr.as_str()) {
-                if !spec.accepts_arity(args.len()) {
-                    return Err(self.error(span, spec.arity_error()));
+            if let Some(spec) = find_container_method(ContainerId::Set, attr.as_str()) {
+                let keyword_names: Vec<Option<&str>> =
+                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
+                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
+                    return Err(self.error(span, shape_err.message()));
                 }
             }
             if attr == "add" {

@@ -2,7 +2,7 @@
 
 use super::super::super::*;
 use super::AttrValueTarget;
-use crate::container::registry::{resolve_container_method, ContainerId};
+use crate::container::registry::{find_container_method, ContainerId};
 
 impl<'a> Codegen<'a> {
     /// Lower set method calls.
@@ -19,15 +19,12 @@ impl<'a> Codegen<'a> {
                 "Internal error: set handler used for non-set receiver",
             ));
         };
-        let spec = resolve_container_method(ContainerId::Set, attr).ok_or_else(|| {
+        let _ = find_container_method(ContainerId::Set, attr).ok_or_else(|| {
             self.error(
                 value.span,
                 format!("Internal error: unsupported set method `{attr}`"),
             )
         })?;
-        if !spec.accepts_arity(args.len()) {
-            return Err(self.error(value.span, spec.arity_error()));
-        }
         self.uses.hash_set = true;
 
         match attr {

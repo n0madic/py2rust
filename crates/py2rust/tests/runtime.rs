@@ -1,7 +1,7 @@
-//! Runtime integration tests - organized by category.
+//! Runtime integration tests.
 //!
-//! Each category is in a separate file under runtime/ and contains
-//! a single comprehensive test to minimize compilation overhead.
+//! All runtime suites are declared in this single registry so test wiring and
+//! expected-output policy stay centralized.
 
 mod common;
 
@@ -10,54 +10,116 @@ macro_rules! runtime_case {
     ($test_name:ident, $suite_name:literal, $source_file:literal) => {
         #[test]
         fn $test_name() {
-            crate::common::run_py($suite_name, include_str!($source_file), None);
+            crate::common::run_py(
+                $suite_name,
+                include_str!(concat!("runtime/", $source_file)),
+                None,
+            );
         }
     };
     ($test_name:ident, $suite_name:literal, $source_file:literal, $expected:expr) => {
         #[test]
         fn $test_name() {
-            crate::common::run_py($suite_name, include_str!($source_file), Some($expected));
+            crate::common::run_py(
+                $suite_name,
+                include_str!(concat!("runtime/", $source_file)),
+                Some($expected),
+            );
         }
     };
 }
 
-pub(crate) use runtime_case;
+/// Declare all runtime suites in one place.
+macro_rules! runtime_cases {
+    (
+        $(($name:ident, $suite:literal, $source:literal $(, $expected:expr)?)),* $(,)?
+    ) => {
+        $(
+            runtime_case!($name, $suite, $source $(, $expected)?);
+        )*
+    };
+}
 
-#[path = "runtime/assert.rs"]
-mod assert_tests;
-#[path = "runtime/builtins.rs"]
-mod builtins;
-#[path = "runtime/classes.rs"]
-mod classes;
-#[path = "runtime/collections.rs"]
-mod collections;
-#[path = "runtime/comprehensions.rs"]
-mod comprehensions;
-#[path = "runtime/control_flow.rs"]
-mod control_flow;
-#[path = "runtime/core_types.rs"]
-mod core_types;
-#[path = "runtime/exceptions.rs"]
-mod exceptions;
-#[path = "runtime/file_io.rs"]
-mod file_io;
-#[path = "runtime/functions.rs"]
-mod functions;
-#[path = "runtime/generators.rs"]
-mod generators;
-#[path = "runtime/global_scoping.rs"]
-mod global_scoping;
-#[path = "runtime/import.rs"]
-mod import;
-#[path = "runtime/io.rs"]
-mod io;
-#[path = "runtime/iteration.rs"]
-mod iteration;
-#[path = "runtime/match.rs"]
-mod match_tests;
-#[path = "runtime/operators.rs"]
-mod operators;
-#[path = "runtime/strings.rs"]
-mod strings;
-#[path = "runtime/types_system.rs"]
-mod types_system;
+runtime_cases!(
+    (
+        runtime_assert_comprehensive,
+        "assert",
+        "assert.py",
+        "All assertions passed!"
+    ),
+    (runtime_builtins_comprehensive, "builtins", "builtins.py"),
+    (runtime_classes_comprehensive, "classes", "classes.py"),
+    (runtime_union_method_calls, "classes_union", "classes_union.py"),
+    (
+        runtime_collections_comprehensive,
+        "collections",
+        "collections.py",
+        "All collection tests passed!"
+    ),
+    (
+        runtime_comprehensions,
+        "comprehensions",
+        "comprehensions.py",
+        "All comprehension tests passed!"
+    ),
+    (
+        runtime_control_flow_comprehensive,
+        "control_flow",
+        "control_flow.py",
+        "All control flow tests passed!"
+    ),
+    (runtime_core_types_comprehensive, "core_types", "core_types.py"),
+    (runtime_exceptions_comprehensive, "exceptions", "exceptions.py"),
+    (
+        runtime_file_io_comprehensive,
+        "file_io",
+        "file_io.py",
+        "All file I/O tests passed!"
+    ),
+    (runtime_functions_comprehensive, "functions", "functions.py"),
+    (runtime_generators_comprehensive, "generators", "generators.py"),
+    (
+        runtime_global_scoping_comprehensive,
+        "global_scoping",
+        "global_scoping.py",
+        "All global scoping tests passed!"
+    ),
+    (
+        runtime_import_comprehensive,
+        "import",
+        "import.py",
+        "All import tests passed!"
+    ),
+    (
+        runtime_io_comprehensive,
+        "io",
+        "io.py",
+        "42\nhello\ntrue\nfalse\nworld\n30\nmessage from function\n1\n2\n3"
+    ),
+    (
+        runtime_print_comprehensive,
+        "print",
+        "print.py",
+        "42\n-7\n0\n3.14\n1\n0\ntrue\nfalse\nNone\nhello\n\n\n1 2 3\na b c\n1 hello true 3.14\n1 None 2\n1-2-3\na, b, c\n12\nhello world\nline1\nline2\n1-2-3!\n[1, 2, 3]\n['a', 'b']\n[]\n(1, 2, 3)\n(42,)\n(\"hello\", \"world\")\n[[1, 2], [3, 4]]\n{}\n{\"x\": 1}\n{}\n{42}\n[104, 101, 108, 108, 111]\n[]\n30\n200\n0\n1\n2\nHello World"
+    ),
+    (runtime_sys_exit, "sys_exit", "sys_exit.py", "before sys.exit"),
+    (runtime_iteration_comprehensive, "iteration", "iteration.py"),
+    (
+        runtime_match_comprehensive,
+        "match",
+        "match.py",
+        "All match tests passed!"
+    ),
+    (
+        runtime_operators_comprehensive,
+        "operators",
+        "operators.py",
+        "All operator tests passed!"
+    ),
+    (runtime_strings_comprehensive, "strings", "strings.py"),
+    (
+        runtime_types_system_comprehensive,
+        "types_system",
+        "types_system.py"
+    )
+);

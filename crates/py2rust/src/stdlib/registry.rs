@@ -3,8 +3,10 @@
 //! The registry is the single source of truth for:
 //! - which stdlib modules are recognized,
 //! - which module members are callable,
-//! - and basic call-shape constraints (arity, keyword support).
+//! - call-shape constraints (arity, keyword support),
+//! - and method-specific codegen handlers.
 
+use crate::callspec::{AritySpec, CallShape, KeywordPolicy};
 use crate::codegen::Codegen;
 use crate::diagnostic::CompileError;
 use crate::hir::Expr;
@@ -40,23 +42,27 @@ pub struct StdlibMethodSpec {
     pub module_name: &'static str,
     /// Python member/callable name (e.g. `"remove"`).
     pub method_name: &'static str,
-    /// Minimum supported positional argument count.
-    pub min_args: usize,
-    /// Maximum supported positional argument count.
-    pub max_args: usize,
-    /// Whether keyword arguments are accepted.
-    pub allow_keywords: bool,
+    /// Unified call-shape policy.
+    pub shape: CallShape,
     /// Codegen callback for emitting this stdlib call.
     pub codegen_handler: StdlibCodegenHandler,
+}
+
+impl StdlibMethodSpec {
+    /// Return canonical callable name used in diagnostics.
+    pub fn callable_name(self) -> String {
+        format!("{}.{}()", self.module_name, self.method_name)
+    }
 }
 
 const OS_REMOVE_SPEC: StdlibMethodSpec = StdlibMethodSpec {
     method_id: StdlibMethodId::OsRemove,
     module_name: "os",
     method_name: "remove",
-    min_args: 1,
-    max_args: 1,
-    allow_keywords: false,
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
     codegen_handler: codegen_os_remove,
 };
 
@@ -64,9 +70,10 @@ const SYS_EXIT_SPEC: StdlibMethodSpec = StdlibMethodSpec {
     method_id: StdlibMethodId::SysExit,
     module_name: "sys",
     method_name: "exit",
-    min_args: 0,
-    max_args: 1,
-    allow_keywords: false,
+    shape: CallShape {
+        arity: AritySpec::Range { min: 0, max: 1 },
+        keywords: KeywordPolicy::None,
+    },
     codegen_handler: codegen_sys_exit,
 };
 
@@ -80,7 +87,10 @@ pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
 }
 
 /// Resolve a module method by module id and method name.
-pub fn resolve_method(module: StdlibModuleId, method: &str) -> Option<&'static StdlibMethodSpec> {
+pub fn find_stdlib_method(
+    module: StdlibModuleId,
+    method: &str,
+) -> Option<&'static StdlibMethodSpec> {
     match (module, method) {
         (StdlibModuleId::Os, "remove") => Some(&OS_REMOVE_SPEC),
         (StdlibModuleId::Sys, "exit") => Some(&SYS_EXIT_SPEC),
@@ -89,8 +99,8 @@ pub fn resolve_method(module: StdlibModuleId, method: &str) -> Option<&'static S
 }
 
 /// Resolve an importable module member to a stable method id.
-pub fn resolve_member(module: StdlibModuleId, member: &str) -> Option<StdlibMethodId> {
-    resolve_method(module, member).map(|spec| spec.method_id)
+pub fn find_imported_member(module: StdlibModuleId, member: &str) -> Option<StdlibMethodId> {
+    find_stdlib_method(module, member).map(|spec| spec.method_id)
 }
 
 /// Look up method metadata by stable method id.

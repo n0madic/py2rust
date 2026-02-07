@@ -1,16 +1,17 @@
-use py2rust::builtin::registry::{builtin_specs, resolve_builtin};
+use py2rust::builtin::registry::{all_builtins, find_builtin};
+use py2rust::callspec::KeywordPolicy;
 use std::collections::HashSet;
 
 #[test]
 fn builtin_registry_roundtrip_and_uniqueness() {
     let mut seen = HashSet::new();
-    for spec in builtin_specs() {
+    for spec in all_builtins() {
         assert!(
             seen.insert(spec.name),
             "duplicate builtin name in registry: {}",
             spec.name
         );
-        let resolved = resolve_builtin(spec.name).expect("builtin must resolve from its own name");
+        let resolved = find_builtin(spec.name).expect("builtin must resolve from its own name");
         assert_eq!(
             resolved.id, spec.id,
             "builtin id mismatch for {}",
@@ -21,9 +22,9 @@ fn builtin_registry_roundtrip_and_uniqueness() {
 
 #[test]
 fn builtin_keyword_policy_matches_expected_surface() {
-    let allowed: HashSet<&str> = builtin_specs()
+    let allowed: HashSet<&str> = all_builtins()
         .iter()
-        .filter(|spec| spec.allow_keywords)
+        .filter(|spec| !matches!(spec.shape.keywords, KeywordPolicy::None))
         .map(|spec| spec.name)
         .collect();
     let expected = HashSet::from(["print", "sorted", "max", "min"]);

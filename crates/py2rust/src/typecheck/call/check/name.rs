@@ -1,8 +1,9 @@
 // Name-based call target type checking.
 
 use super::super::super::*;
-use crate::builtin::registry::resolve_builtin;
-use crate::stdlib::registry::{resolve_method, resolve_module};
+use crate::builtin::registry::find_builtin;
+use crate::callspec::validate_call_shape;
+use crate::stdlib::registry::{find_stdlib_method, resolve_module};
 
 impl<'a> TypeChecker<'a> {
     pub(super) fn check_call_name(
@@ -16,12 +17,21 @@ impl<'a> TypeChecker<'a> {
         let ExprKind::Name(name) = &mut func.kind else {
             return Err(self.error(span, "Internal error: expected name call target"));
         };
-        let builtin_accepts_keywords =
-            resolve_builtin(name.as_str()).is_some_and(|spec| spec.allow_keywords);
+        let builtin_spec = find_builtin(name.as_str()).copied();
+        if let Some(spec) = builtin_spec {
+            let callable = format!("{name}()");
+            let keyword_names: Vec<Option<&str>> =
+                keywords.iter().map(|kw| kw.name.as_deref()).collect();
+            if let Err(shape_err) =
+                validate_call_shape(&callable, spec.shape, args.len(), &keyword_names)
+            {
+                return Err(self.error(span, shape_err.message()));
+            }
+        }
         let stdlib_function_accepts_keywords =
             matches!(self.lookup_var(name), Some(Type::StdlibFunction { .. }));
         if !keywords.is_empty()
-            && !builtin_accepts_keywords
+            && builtin_spec.is_none()
             && !stdlib_function_accepts_keywords
             && !self.ctx.functions.contains_key(name)
             && !self.ctx.classes.contains_key(name)
@@ -691,7 +701,7 @@ impl<'a> TypeChecker<'a> {
                         format!("module '{module}' is not registered in stdlib registry"),
                     )
                 })?;
-                let spec = resolve_method(module_id, method.as_str()).ok_or_else(|| {
+                let spec = find_stdlib_method(module_id, method.as_str()).ok_or_else(|| {
                     self.error(span, format!("{module} has no supported member '{method}'"))
                 })?;
                 return self.check_stdlib_call(spec, args, keywords, span);

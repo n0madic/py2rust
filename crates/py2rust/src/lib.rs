@@ -3,10 +3,13 @@
 #![allow(clippy::result_large_err)]
 
 pub mod builtin;
+pub mod call_bind;
+pub mod callspec;
 pub mod codegen;
 pub mod container;
 pub mod diagnostic;
 pub mod hir;
+pub mod hir_visit;
 pub mod lower;
 pub mod span;
 pub mod stdlib;

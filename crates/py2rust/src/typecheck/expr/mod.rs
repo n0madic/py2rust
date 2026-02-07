@@ -1,8 +1,189 @@
 use super::*;
+use crate::hir_visit::ExprVisitorMut;
 
 mod access;
 mod compound;
 mod ops;
+
+/// Mutable visitor that maps expression variants to type-checking handlers.
+struct CheckExprVisitor<'tc, 'a, 'e> {
+    tc: &'tc mut TypeChecker<'a>,
+    expected: Option<&'e Type>,
+    span: Span,
+    replace_with_none: bool,
+}
+
+impl<'tc, 'a, 'e> ExprVisitorMut<Result<Type, CompileError>> for CheckExprVisitor<'tc, 'a, 'e> {
+    fn visit_literal_mut(&mut self, lit: &mut Literal) -> Result<Type, CompileError> {
+        Ok(TypeChecker::literal_type(lit))
+    }
+
+    fn visit_name_mut(&mut self, name: &mut String) -> Result<Type, CompileError> {
+        let (ty, should_replace) = self.tc.check_name_expr(name, self.expected, self.span)?;
+        self.replace_with_none = should_replace;
+        Ok(ty)
+    }
+
+    fn visit_yield_mut(&mut self, value: &mut Option<Box<Expr>>) -> Result<Type, CompileError> {
+        self.tc.check_yield_expr(value.as_deref_mut(), self.span)
+    }
+
+    fn visit_call_mut(
+        &mut self,
+        func: &mut Expr,
+        args: &mut [Expr],
+        keywords: &mut [KeywordArg],
+    ) -> Result<Type, CompileError> {
+        self.tc
+            .check_call(func, args, keywords, self.expected, self.span)
+    }
+
+    fn visit_starred_mut(&mut self, value: &mut Expr) -> Result<Type, CompileError> {
+        self.tc.check_starred_expr(value, self.span)
+    }
+
+    fn visit_attr_mut(
+        &mut self,
+        value: &mut Expr,
+        attr: &mut String,
+    ) -> Result<Type, CompileError> {
+        self.tc.check_attr_expr(value, attr, self.span)
+    }
+
+    fn visit_binary_mut(
+        &mut self,
+        op: &mut BinOp,
+        left: &mut Expr,
+        right: &mut Expr,
+    ) -> Result<Type, CompileError> {
+        self.tc.check_binary_expr(op, left, right, self.span)
+    }
+
+    fn visit_unary_mut(
+        &mut self,
+        op: &mut UnaryOp,
+        inner: &mut Expr,
+    ) -> Result<Type, CompileError> {
+        self.tc.check_unary_expr(op, inner, self.span)
+    }
+
+    fn visit_compare_mut(
+        &mut self,
+        op: &mut CmpOp,
+        left: &mut Expr,
+        right: &mut Expr,
+    ) -> Result<Type, CompileError> {
+        self.tc.check_compare_expr(self.span, op, left, right)
+    }
+
+    fn visit_compare_chain_mut(
+        &mut self,
+        left: &mut Expr,
+        ops: &mut [CmpOp],
+        comparators: &mut [Expr],
+    ) -> Result<Type, CompileError> {
+        self.tc
+            .check_compare_chain_expr(self.span, left, ops, comparators)
+    }
+
+    fn visit_bool_op_mut(
+        &mut self,
+        _op: &mut BoolOp,
+        values: &mut [Expr],
+    ) -> Result<Type, CompileError> {
+        self.tc.check_bool_op_expr(values, self.span)
+    }
+
+    fn visit_list_mut(&mut self, items: &mut [Expr]) -> Result<Type, CompileError> {
+        self.tc.check_list_expr(items, self.expected, self.span)
+    }
+
+    fn visit_tuple_mut(&mut self, items: &mut [Expr]) -> Result<Type, CompileError> {
+        self.tc.check_tuple_expr(items)
+    }
+
+    fn visit_dict_mut(&mut self, items: &mut [(Expr, Expr)]) -> Result<Type, CompileError> {
+        self.tc.check_dict_expr(items, self.expected, self.span)
+    }
+
+    fn visit_set_mut(&mut self, items: &mut [Expr]) -> Result<Type, CompileError> {
+        self.tc.check_set_expr(items, self.expected, self.span)
+    }
+
+    fn visit_index_mut(
+        &mut self,
+        value: &mut Expr,
+        index: &mut Expr,
+    ) -> Result<Type, CompileError> {
+        self.tc.check_index_expr(value, index, self.span)
+    }
+
+    fn visit_slice_mut(
+        &mut self,
+        value: &mut Expr,
+        start: &mut Option<Box<Expr>>,
+        end: &mut Option<Box<Expr>>,
+        step: &mut Option<Box<Expr>>,
+    ) -> Result<Type, CompileError> {
+        self.tc.check_slice_expr(value, start, end, step, self.span)
+    }
+
+    fn visit_list_comp_mut(
+        &mut self,
+        elt: &mut Expr,
+        target: &mut String,
+        iter: &mut Expr,
+        ifs: &mut [Expr],
+        generators: &mut [CompClause],
+    ) -> Result<Type, CompileError> {
+        self.tc
+            .check_list_comp_expr(elt, target, iter, ifs, generators, self.span)
+    }
+
+    fn visit_set_comp_mut(
+        &mut self,
+        elt: &mut Expr,
+        target: &mut String,
+        iter: &mut Expr,
+        ifs: &mut [Expr],
+        generators: &mut [CompClause],
+    ) -> Result<Type, CompileError> {
+        self.tc
+            .check_set_comp_expr(elt, target, iter, ifs, generators, self.span)
+    }
+
+    fn visit_union_ctor_mut(
+        &mut self,
+        union: &mut String,
+        variant: &mut String,
+        inner: &mut Expr,
+    ) -> Result<Type, CompileError> {
+        self.tc
+            .check_union_ctor_expr(union, variant, inner, self.span)
+    }
+
+    fn visit_lambda_mut(
+        &mut self,
+        params: &mut [String],
+        body: &mut Expr,
+    ) -> Result<Type, CompileError> {
+        self.tc
+            .check_lambda_expr(params, body, self.expected, self.span)
+    }
+
+    fn visit_if_expr_mut(
+        &mut self,
+        test: &mut Expr,
+        body: &mut Expr,
+        orelse: &mut Expr,
+    ) -> Result<Type, CompileError> {
+        self.tc.check_if_expr_expr(test, body, orelse, self.span)
+    }
+
+    fn visit_block_mut(&mut self, stmts: &mut [Stmt]) -> Result<Type, CompileError> {
+        self.tc.check_block_expr(stmts)
+    }
+}
 
 /// Expression type checking.
 ///
@@ -20,75 +201,15 @@ impl<'a> TypeChecker<'a> {
         expr: &mut Expr,
         expected: Option<&Type>,
     ) -> Result<Type, CompileError> {
-        let mut replace_with_none = false;
-        let ty = match &mut expr.kind {
-            ExprKind::Literal(lit) => Self::literal_type(lit),
-            ExprKind::Name(name) => {
-                let (ty, should_replace) = self.check_name_expr(name, expected, expr.span)?;
-                replace_with_none = should_replace;
-                ty
-            }
-            ExprKind::Yield { value } => self.check_yield_expr(value.as_deref_mut(), expr.span)?,
-            ExprKind::Attr { value, attr } => self.check_attr_expr(value, attr, expr.span)?,
-            ExprKind::Call {
-                func,
-                args,
-                keywords,
-            } => self.check_call(func, args, keywords, expected, expr.span)?,
-            ExprKind::Starred { value } => self.check_starred_expr(value, expr.span)?,
-            ExprKind::Binary { op, left, right } => {
-                self.check_binary_expr(op, left, right, expr.span)?
-            }
-            ExprKind::Unary { op, expr: inner } => self.check_unary_expr(op, inner, expr.span)?,
-            ExprKind::Compare { op, left, right } => {
-                self.check_compare_expr(expr.span, op, left, right)?
-            }
-            ExprKind::CompareChain {
-                left,
-                ops,
-                comparators,
-            } => self.check_compare_chain_expr(expr.span, left, ops, comparators)?,
-            ExprKind::BoolOp { op: _, values } => self.check_bool_op_expr(values, expr.span)?,
-            ExprKind::List(items) => self.check_list_expr(items, expected, expr.span)?,
-            ExprKind::Tuple(items) => self.check_tuple_expr(items)?,
-            ExprKind::Set(items) => self.check_set_expr(items, expected, expr.span)?,
-            ExprKind::Dict(items) => self.check_dict_expr(items, expected, expr.span)?,
-            ExprKind::Index { value, index } => self.check_index_expr(value, index, expr.span)?,
-            ExprKind::Slice {
-                value,
-                start,
-                end,
-                step,
-            } => self.check_slice_expr(value, start, end, step, expr.span)?,
-            ExprKind::ListComp {
-                elt,
-                target,
-                iter,
-                ifs,
-                generators,
-            } => self.check_list_comp_expr(elt, target, iter, ifs, generators, expr.span)?,
-            ExprKind::SetComp {
-                elt,
-                target,
-                iter,
-                ifs,
-                generators,
-            } => self.check_set_comp_expr(elt, target, iter, ifs, generators, expr.span)?,
-            ExprKind::UnionCtor {
-                union,
-                variant,
-                inner,
-            } => self.check_union_ctor_expr(union, variant, inner, expr.span)?,
-            ExprKind::Lambda { params, body } => {
-                self.check_lambda_expr(params, body, expected, expr.span)?
-            }
-            ExprKind::IfExpr { test, body, orelse } => {
-                self.check_if_expr_expr(test, body, orelse, expr.span)?
-            }
-            ExprKind::Block { stmts } => self.check_block_expr(stmts)?,
+        let mut visitor = CheckExprVisitor {
+            tc: self,
+            expected,
+            span: expr.span,
+            replace_with_none: false,
         };
+        let ty = expr.accept_mut(&mut visitor)?;
 
-        if replace_with_none {
+        if visitor.replace_with_none {
             // Replace unresolved names to reduce cascading diagnostics downstream.
             expr.kind = ExprKind::Literal(Literal::None);
         }

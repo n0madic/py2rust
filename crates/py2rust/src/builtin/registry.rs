@@ -2,8 +2,11 @@
 //!
 //! This module is the single source of truth for:
 //! - builtin name resolution,
-//! - keyword-argument support policy,
+//! - keyword-argument policy,
+//! - arity policy,
 //! - and shared builtin identifiers used across type checking and codegen scans.
+
+use crate::callspec::{AritySpec, CallShape, KeywordPolicy};
 
 /// Stable identifier for a supported Python builtin function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -60,234 +63,367 @@ pub struct BuiltinSpec {
     pub id: BuiltinId,
     /// Python-visible builtin name.
     pub name: &'static str,
-    /// Whether keyword arguments are accepted.
-    pub allow_keywords: bool,
+    /// Unified call-shape policy (arity + keyword support).
+    pub shape: CallShape,
 }
+
+const PRINT_KEYWORDS: &[&str] = &["sep", "end"];
+const SORTED_KEYWORDS: &[&str] = &["key", "reverse"];
+const KEY_ONLY_KEYWORDS: &[&str] = &["key"];
 
 const BUILTIN_SPECS: [BuiltinSpec; 43] = [
     BuiltinSpec {
         id: BuiltinId::Abs,
         name: "abs",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::All,
         name: "all",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Any,
         name: "any",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Ascii,
         name: "ascii",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Bin,
         name: "bin",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Bool,
         name: "bool",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 0, max: 1 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Bytes,
         name: "bytes",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 0, max: 2 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Chr,
         name: "chr",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Dict,
         name: "dict",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 0, max: 1 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Divmod,
         name: "divmod",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(2),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Enumerate,
         name: "enumerate",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 1, max: 2 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Exit,
         name: "exit",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 0, max: 1 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Filter,
         name: "filter",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(2),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Float,
         name: "float",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 0, max: 1 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Hash,
         name: "hash",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Hex,
         name: "hex",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Id,
         name: "id",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Int,
         name: "int",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 0, max: 1 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::IsInstance,
         name: "isinstance",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(2),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Iter,
         name: "iter",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Len,
         name: "len",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::List,
         name: "list",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 0, max: 1 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Map,
         name: "map",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(2),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Max,
         name: "max",
-        allow_keywords: true,
+        shape: CallShape {
+            arity: AritySpec::AtLeast(1),
+            keywords: KeywordPolicy::Named(KEY_ONLY_KEYWORDS),
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Min,
         name: "min",
-        allow_keywords: true,
+        shape: CallShape {
+            arity: AritySpec::AtLeast(1),
+            keywords: KeywordPolicy::Named(KEY_ONLY_KEYWORDS),
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Next,
         name: "next",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Oct,
         name: "oct",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Open,
         name: "open",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 1, max: 2 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Ord,
         name: "ord",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Pow,
         name: "pow",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(2),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Print,
         name: "print",
-        allow_keywords: true,
+        shape: CallShape {
+            arity: AritySpec::Any,
+            keywords: KeywordPolicy::Named(PRINT_KEYWORDS),
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Range,
         name: "range",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 1, max: 3 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Repr,
         name: "repr",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Reversed,
         name: "reversed",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Round,
         name: "round",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 1, max: 2 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Set,
         name: "set",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 0, max: 1 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Sorted,
         name: "sorted",
-        allow_keywords: true,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::Named(SORTED_KEYWORDS),
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Str,
         name: "str",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Sum,
         name: "sum",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 1, max: 2 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Super,
         name: "super",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(0),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Tuple,
         name: "tuple",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Range { min: 0, max: 1 },
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Type,
         name: "type",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: KeywordPolicy::None,
+        },
     },
     BuiltinSpec {
         id: BuiltinId::Zip,
         name: "zip",
-        allow_keywords: false,
+        shape: CallShape {
+            arity: AritySpec::Exact(2),
+            keywords: KeywordPolicy::None,
+        },
     },
 ];
 
 /// Return all builtin specs.
-pub fn builtin_specs() -> &'static [BuiltinSpec] {
+pub fn all_builtins() -> &'static [BuiltinSpec] {
     &BUILTIN_SPECS
 }
 
 /// Resolve a builtin name to metadata.
-pub fn resolve_builtin(name: &str) -> Option<&'static BuiltinSpec> {
+pub fn find_builtin(name: &str) -> Option<&'static BuiltinSpec> {
     BUILTIN_SPECS.iter().find(|spec| spec.name == name)
 }

@@ -1,8 +1,395 @@
 use super::*;
-use crate::stdlib::registry::{method_spec, resolve_member, resolve_module};
+use crate::hir_visit::StmtVisitorMut;
+use crate::stdlib::registry::{find_imported_member, method_spec, resolve_module};
 
 mod exceptions;
 mod unpack;
+
+/// Mutable statement visitor that reuses the legacy statement checker logic.
+///
+/// The visitor is responsible for top-level `StmtKind` dispatch so that
+/// `TypeChecker::check_stmt` no longer has a large manual `match`.
+struct CheckStmtVisitor<'tc, 'a, 'e> {
+    tc: &'tc mut TypeChecker<'a>,
+    expected_ret: Option<&'e TypeRef>,
+    span: Span,
+    rewrite: Option<StmtKind>,
+}
+
+impl<'tc, 'a, 'e> StmtVisitorMut<Result<(), CompileError>> for CheckStmtVisitor<'tc, 'a, 'e> {
+    fn visit_let_mut(
+        &mut self,
+        name: &mut String,
+        ann: &mut Option<TypeRef>,
+        value: &mut Expr,
+    ) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Let {
+                name: name.clone(),
+                ann: ann.clone(),
+                value: value.clone(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Let {
+                name: new_name,
+                ann: new_ann,
+                value: new_value,
+            } => {
+                *name = new_name;
+                *ann = new_ann;
+                *value = new_value;
+            }
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_assign_mut(
+        &mut self,
+        target: &mut AssignTarget,
+        value: &mut Expr,
+    ) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Assign {
+                target: target.clone(),
+                value: value.clone(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Assign {
+                target: new_target,
+                value: new_value,
+            } => {
+                *target = new_target;
+                *value = new_value;
+            }
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_return_mut(&mut self, value: &mut Option<Expr>) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Return {
+                value: value.clone(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Return { value: new_value } => *value = new_value,
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_if_mut(
+        &mut self,
+        test: &mut Expr,
+        body: &mut [Stmt],
+        orelse: &mut [Stmt],
+    ) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::If {
+                test: test.clone(),
+                body: body.to_vec(),
+                orelse: orelse.to_vec(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::If {
+                test: new_test,
+                body: new_body,
+                orelse: new_orelse,
+            } => {
+                *test = new_test;
+                body.clone_from_slice(&new_body);
+                orelse.clone_from_slice(&new_orelse);
+            }
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_while_mut(&mut self, test: &mut Expr, body: &mut [Stmt]) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::While {
+                test: test.clone(),
+                body: body.to_vec(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::While {
+                test: new_test,
+                body: new_body,
+            } => {
+                *test = new_test;
+                body.clone_from_slice(&new_body);
+            }
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_for_mut(
+        &mut self,
+        target: &mut ForTarget,
+        iter: &mut Expr,
+        body: &mut [Stmt],
+    ) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::For {
+                target: target.clone(),
+                iter: iter.clone(),
+                body: body.to_vec(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::For {
+                target: new_target,
+                iter: new_iter,
+                body: new_body,
+            } => {
+                *target = new_target;
+                *iter = new_iter;
+                body.clone_from_slice(&new_body);
+            }
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_import_mut(&mut self, names: &mut [ImportBinding]) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Import {
+                names: names.to_vec(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Import { names: new_names } => names.clone_from_slice(&new_names),
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_import_from_mut(
+        &mut self,
+        module: &mut String,
+        names: &mut [ImportFromBinding],
+    ) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::ImportFrom {
+                module: module.clone(),
+                names: names.to_vec(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::ImportFrom {
+                module: new_module,
+                names: new_names,
+            } => {
+                *module = new_module;
+                names.clone_from_slice(&new_names);
+            }
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_global_mut(&mut self, names: &mut [String]) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Global {
+                names: names.to_vec(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Global { names: new_names } => names.clone_from_slice(&new_names),
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_nonlocal_mut(&mut self, names: &mut [String]) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Nonlocal {
+                names: names.to_vec(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Nonlocal { names: new_names } => names.clone_from_slice(&new_names),
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_break_mut(&mut self) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Break,
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        if !matches!(tmp.kind, StmtKind::Break) {
+            self.rewrite = Some(tmp.kind);
+        }
+        Ok(())
+    }
+
+    fn visit_continue_mut(&mut self) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Continue,
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        if !matches!(tmp.kind, StmtKind::Continue) {
+            self.rewrite = Some(tmp.kind);
+        }
+        Ok(())
+    }
+
+    fn visit_expr_stmt_mut(&mut self, expr: &mut Expr) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Expr(expr.clone()),
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Expr(new_expr) => *expr = new_expr,
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_assert_mut(
+        &mut self,
+        test: &mut Expr,
+        msg: &mut Option<Expr>,
+    ) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Assert {
+                test: test.clone(),
+                msg: msg.clone(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Assert {
+                test: new_test,
+                msg: new_msg,
+            } => {
+                *test = new_test;
+                *msg = new_msg;
+            }
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_match_mut(
+        &mut self,
+        subject: &mut Expr,
+        cases: &mut [MatchCase],
+    ) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Match {
+                subject: subject.clone(),
+                cases: cases.to_vec(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Match {
+                subject: new_subject,
+                cases: new_cases,
+            } => {
+                *subject = new_subject;
+                cases.clone_from_slice(&new_cases);
+            }
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_try_mut(
+        &mut self,
+        body: &mut [Stmt],
+        handlers: &mut [ExceptHandler],
+        orelse: &mut [Stmt],
+        finalbody: &mut [Stmt],
+    ) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Try {
+                body: body.to_vec(),
+                handlers: handlers.to_vec(),
+                orelse: orelse.to_vec(),
+                finalbody: finalbody.to_vec(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Try {
+                body: new_body,
+                handlers: new_handlers,
+                orelse: new_orelse,
+                finalbody: new_finalbody,
+            } => {
+                body.clone_from_slice(&new_body);
+                handlers.clone_from_slice(&new_handlers);
+                orelse.clone_from_slice(&new_orelse);
+                finalbody.clone_from_slice(&new_finalbody);
+            }
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+
+    fn visit_raise_mut(
+        &mut self,
+        exc: &mut Option<Expr>,
+        cause: &mut Option<Expr>,
+    ) -> Result<(), CompileError> {
+        let mut tmp = Stmt {
+            kind: StmtKind::Raise {
+                exc: exc.clone(),
+                cause: cause.clone(),
+            },
+            span: self.span,
+        };
+        self.tc.check_stmt_via_match(&mut tmp, self.expected_ret)?;
+        match tmp.kind {
+            StmtKind::Raise {
+                exc: new_exc,
+                cause: new_cause,
+            } => {
+                *exc = new_exc;
+                *cause = new_cause;
+            }
+            other => self.rewrite = Some(other),
+        }
+        Ok(())
+    }
+}
 
 /// Statement type checking.
 ///
@@ -26,6 +413,25 @@ impl<'a> TypeChecker<'a> {
     /// expected_ret is the function's return type annotation, used to
     /// validate return statements.
     pub(super) fn check_stmt(
+        &mut self,
+        stmt: &mut Stmt,
+        expected_ret: Option<&TypeRef>,
+    ) -> Result<(), CompileError> {
+        let mut visitor = CheckStmtVisitor {
+            tc: self,
+            expected_ret,
+            span: stmt.span,
+            rewrite: None,
+        };
+        stmt.accept_mut(&mut visitor)?;
+        if let Some(new_kind) = visitor.rewrite {
+            stmt.kind = new_kind;
+        }
+        Ok(())
+    }
+
+    /// Legacy statement checker implementation kept as the semantic source of truth.
+    fn check_stmt_via_match(
         &mut self,
         stmt: &mut Stmt,
         expected_ret: Option<&TypeRef>,
@@ -623,7 +1029,7 @@ impl<'a> TypeChecker<'a> {
                     let module_id = resolve_module(module.as_str())
                         .ok_or_else(|| self.error(stmt.span, "Unsupported import"))?;
                     for binding in names {
-                        let method_id = resolve_member(module_id, binding.name.as_str())
+                        let method_id = find_imported_member(module_id, binding.name.as_str())
                             .ok_or_else(|| {
                                 self.error(
                                     stmt.span,

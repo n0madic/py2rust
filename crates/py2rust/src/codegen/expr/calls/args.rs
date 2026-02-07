@@ -1,6 +1,7 @@
 // Argument resolution and unpacking call paths.
 
 use super::super::*;
+use crate::call_bind::{plan_non_unpacking_bind, BoundArg};
 use crate::typecheck::FunctionSig;
 
 impl<'a> Codegen<'a> {
@@ -21,106 +22,50 @@ impl<'a> Codegen<'a> {
                 format!("Internal error: arity mismatch in {func_name}"),
             ));
         }
-        let mut positional_params = Vec::new();
-        let mut vararg_idx = None;
-        let mut varkw_idx = None;
-        for (idx, param) in params.iter().enumerate() {
-            match param.kind {
-                ParamKind::PositionalOrKeyword => positional_params.push(idx),
-                ParamKind::VarArgs => vararg_idx = Some(idx),
-                ParamKind::KeywordOnly => {}
-                ParamKind::VarKeywords => varkw_idx = Some(idx),
-            }
-        }
+        let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+        let param_kinds: Vec<ParamKind> = params.iter().map(|p| p.kind).collect();
+        let has_defaults: Vec<bool> = params.iter().map(|p| p.default.is_some()).collect();
+        let keyword_names: Vec<Option<&str>> =
+            keywords.iter().map(|kw| kw.name.as_deref()).collect();
+        let plan = plan_non_unpacking_bind(
+            &param_names,
+            &param_kinds,
+            &has_defaults,
+            args.len(),
+            &keyword_names,
+            implicit_first,
+        )
+        .map_err(|err| {
+            self.error(
+                params.last().map(|p| p.span).unwrap_or(Span::new(0, 0)),
+                err.message(),
+            )
+        })?;
 
         let mut out: Vec<Option<Expr>> = vec![None; params.len()];
-        let mut positional_cursor = 0usize;
-        if implicit_first && !positional_params.is_empty() && positional_params[0] == 0 {
+        if implicit_first && !plan.positional_params.is_empty() && plan.positional_params[0] == 0 {
             out[0] = Some(Expr {
                 kind: ExprKind::Literal(Literal::None),
                 span: params[0].span,
                 ty: Some(param_types[0].clone()),
             });
-            positional_cursor = 1;
         }
 
-        let mut vararg_values = Vec::new();
-        for arg in args {
-            if matches!(arg.kind, ExprKind::Starred { .. }) {
-                return Err(self.error(
-                    arg.span,
-                    "Call-site *args unpacking is not supported in this context yet",
-                ));
-            }
-            if positional_cursor < positional_params.len() {
-                let param_idx = positional_params[positional_cursor];
-                out[param_idx] = Some(arg.clone());
-                positional_cursor += 1;
-            } else if vararg_idx.is_some() {
-                vararg_values.push(arg.clone());
-            } else {
-                return Err(self.error(
-                    params.last().map(|p| p.span).unwrap_or(Span::new(0, 0)),
-                    "Argument count mismatch",
-                ));
-            }
-        }
-
-        let mut seen_keywords = std::collections::HashSet::new();
-        let mut varkw_values: Vec<(String, Expr)> = Vec::new();
-        for kw in keywords {
-            let Some(kw_name) = kw.name.as_deref() else {
-                return Err(self.error(
-                    kw.value.span,
-                    "Call-site **kwargs unpacking is not supported in this context yet",
-                ));
+        for (idx, maybe_source) in plan.bound.iter().copied().enumerate() {
+            let Some(source) = maybe_source else {
+                continue;
             };
-            if !seen_keywords.insert(kw_name.to_string()) {
-                return Err(self.error(
-                    kw.value.span,
-                    format!("Multiple values for argument `{kw_name}`"),
-                ));
-            }
-            let direct_param_idx = params
-                .iter()
-                .enumerate()
-                .find(|(_, p)| {
-                    p.name == kw_name
-                        && matches!(
-                            p.kind,
-                            ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly
-                        )
-                })
-                .map(|(idx, _)| idx);
-            if let Some(param_idx) = direct_param_idx {
-                if implicit_first && param_idx == 0 && positional_params.first() == Some(&0) {
-                    return Err(self.error(
-                        kw.value.span,
-                        format!("Unexpected keyword argument `{kw_name}`"),
-                    ));
-                }
-                if out[param_idx].is_some() {
-                    return Err(self.error(
-                        kw.value.span,
-                        format!("Multiple values for argument `{kw_name}`"),
-                    ));
-                }
-                out[param_idx] = Some(kw.value.clone());
-            } else if varkw_idx.is_some() {
-                varkw_values.push((kw_name.to_string(), kw.value.clone()));
-            } else {
-                return Err(self.error(
-                    kw.value.span,
-                    format!("Unknown keyword argument `{kw_name}`"),
-                ));
-            }
+            out[idx] = Some(match source {
+                BoundArg::Positional(pos_idx) => args[pos_idx].clone(),
+                BoundArg::Keyword(kw_idx) => keywords[kw_idx].value.clone(),
+            });
         }
 
         for (idx, param) in params.iter().enumerate() {
             if matches!(param.kind, ParamKind::VarArgs | ParamKind::VarKeywords) {
                 continue;
             }
-            if implicit_first && idx == 0 && positional_params.first() == Some(&0) {
+            if implicit_first && idx == 0 && plan.positional_params.first() == Some(&0) {
                 continue;
             }
             if out[idx].is_some() {
@@ -144,20 +89,32 @@ impl<'a> Codegen<'a> {
             });
         }
 
-        if let Some(vararg_idx) = vararg_idx {
+        if let Some(vararg_idx) = plan.vararg_idx {
+            let mut vararg_values = Vec::new();
+            for pos_idx in plan.vararg_positional.iter().copied() {
+                vararg_values.push(args[pos_idx].clone());
+            }
             out[vararg_idx] = Some(Expr {
                 kind: ExprKind::List(vararg_values),
                 span: params[vararg_idx].span,
                 ty: Some(param_types[vararg_idx].clone()),
             });
-        } else if !vararg_values.is_empty() {
+        } else if !plan.vararg_positional.is_empty() {
             return Err(self.error(
                 params.last().map(|p| p.span).unwrap_or(Span::new(0, 0)),
                 "Argument count mismatch",
             ));
         }
 
-        if let Some(varkw_idx) = varkw_idx {
+        if let Some(varkw_idx) = plan.varkw_idx {
+            let mut varkw_values: Vec<(String, Expr)> = Vec::new();
+            for kw_idx in plan.varkw_keywords.iter().copied() {
+                let kw_name = keywords[kw_idx]
+                    .name
+                    .as_deref()
+                    .expect("non-unpacking planner guarantees keyword names");
+                varkw_values.push((kw_name.to_string(), keywords[kw_idx].value.clone()));
+            }
             let mut items = Vec::new();
             for (name, value) in varkw_values {
                 items.push((
@@ -174,7 +131,7 @@ impl<'a> Codegen<'a> {
                 span: params[varkw_idx].span,
                 ty: Some(param_types[varkw_idx].clone()),
             });
-        } else if !varkw_values.is_empty() {
+        } else if !plan.varkw_keywords.is_empty() {
             return Err(self.error(
                 params.last().map(|p| p.span).unwrap_or(Span::new(0, 0)),
                 "Unknown keyword argument",

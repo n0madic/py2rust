@@ -7,7 +7,7 @@ mod format;
 mod stdlib;
 
 use super::super::*;
-use crate::stdlib::registry::{resolve_method, resolve_module};
+use crate::stdlib::registry::{find_stdlib_method, resolve_module};
 
 impl<'a> Codegen<'a> {
     /// Lower a call expression, including builtins and method calls.
@@ -25,7 +25,7 @@ impl<'a> Codegen<'a> {
                     format!("module '{module}' is not registered in stdlib registry"),
                 )
             })?;
-            let spec = resolve_method(module_id, method.as_str()).ok_or_else(|| {
+            let spec = find_stdlib_method(module_id, method.as_str()).ok_or_else(|| {
                 self.error(
                     expr.span,
                     format!("{module} has no supported member '{method}'"),

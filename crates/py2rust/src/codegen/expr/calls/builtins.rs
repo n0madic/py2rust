@@ -1,7 +1,8 @@
 // Builtin function call lowering.
 
 use super::super::*;
-use crate::builtin::registry::resolve_builtin;
+use crate::builtin::registry::find_builtin;
+use crate::callspec::validate_call_shape;
 
 impl<'a> Codegen<'a> {
     /// Try to lower a builtin call; return Some(expr) if handled.
@@ -12,14 +13,16 @@ impl<'a> Codegen<'a> {
         args: &[Expr],
         keywords: &[KeywordArg],
     ) -> Result<Option<String>, CompileError> {
-        let builtin_spec = resolve_builtin(name);
-        let is_builtin_name = builtin_spec.is_some();
-        let builtin_accepts_keywords = builtin_spec.is_some_and(|spec| spec.allow_keywords);
-        if is_builtin_name && !builtin_accepts_keywords && !keywords.is_empty() {
-            return Err(self.error(
-                expr.span,
-                format!("Keyword arguments are not supported for {name}()"),
-            ));
+        let builtin_spec = find_builtin(name);
+        if let Some(spec) = builtin_spec {
+            let callable = format!("{name}()");
+            let keyword_names: Vec<Option<&str>> =
+                keywords.iter().map(|kw| kw.name.as_deref()).collect();
+            if let Err(shape_err) =
+                validate_call_shape(&callable, spec.shape, args.len(), &keyword_names)
+            {
+                return Err(self.error(expr.span, shape_err.message()));
+            }
         }
         if name == "print" {
             self.uses.print = true;

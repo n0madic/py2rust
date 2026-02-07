@@ -8,6 +8,166 @@ mod lambda;
 mod ops;
 
 use super::*;
+use crate::hir_visit::ExprVisitor;
+
+/// Immutable visitor that maps expression variants to codegen handlers.
+struct GenExprVisitor<'cg, 'a> {
+    cg: &'cg mut Codegen<'a>,
+    expr: &'cg Expr,
+}
+
+impl<'cg, 'a> ExprVisitor<Result<String, CompileError>> for GenExprVisitor<'cg, 'a> {
+    fn visit_literal(&mut self, lit: &Literal) -> Result<String, CompileError> {
+        self.cg.gen_literal_expr(self.expr, lit)
+    }
+
+    fn visit_name(&mut self, name: &str) -> Result<String, CompileError> {
+        self.cg.gen_name_expr(name)
+    }
+
+    fn visit_yield(&mut self, _value: &Option<Box<Expr>>) -> Result<String, CompileError> {
+        Err(self.cg.error(
+            self.expr.span,
+            "yield expressions are only emitted through generator wrappers",
+        ))
+    }
+
+    fn visit_call(
+        &mut self,
+        func: &Expr,
+        args: &[Expr],
+        keywords: &[KeywordArg],
+    ) -> Result<String, CompileError> {
+        self.cg.gen_call_expr(self.expr, func, args, keywords)
+    }
+
+    fn visit_starred(&mut self, _value: &Expr) -> Result<String, CompileError> {
+        Err(self.cg.error(
+            self.expr.span,
+            "Starred arguments are only valid directly inside call expressions",
+        ))
+    }
+
+    fn visit_attr(&mut self, value: &Expr, attr: &str) -> Result<String, CompileError> {
+        self.cg.gen_attr_expr(value, attr)
+    }
+
+    fn visit_binary(
+        &mut self,
+        op: &BinOp,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<String, CompileError> {
+        self.cg.gen_binary_expr(self.expr, op, left, right)
+    }
+
+    fn visit_unary(&mut self, op: &UnaryOp, inner: &Expr) -> Result<String, CompileError> {
+        self.cg.gen_unary_expr(op, inner)
+    }
+
+    fn visit_compare(
+        &mut self,
+        op: &CmpOp,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<String, CompileError> {
+        self.cg.gen_compare_expr(self.expr, op, left, right)
+    }
+
+    fn visit_compare_chain(
+        &mut self,
+        left: &Expr,
+        ops: &[CmpOp],
+        comparators: &[Expr],
+    ) -> Result<String, CompileError> {
+        self.cg
+            .gen_compare_chain_expr(self.expr, left, ops, comparators)
+    }
+
+    fn visit_bool_op(&mut self, op: &BoolOp, values: &[Expr]) -> Result<String, CompileError> {
+        self.cg.gen_boolop_expr(op, values)
+    }
+
+    fn visit_list(&mut self, items: &[Expr]) -> Result<String, CompileError> {
+        self.cg.gen_list_expr(self.expr, items)
+    }
+
+    fn visit_tuple(&mut self, items: &[Expr]) -> Result<String, CompileError> {
+        self.cg.gen_tuple_expr(self.expr, items)
+    }
+
+    fn visit_dict(&mut self, items: &[(Expr, Expr)]) -> Result<String, CompileError> {
+        self.cg.gen_dict_expr(self.expr, items)
+    }
+
+    fn visit_set(&mut self, items: &[Expr]) -> Result<String, CompileError> {
+        self.cg.gen_set_expr(self.expr, items)
+    }
+
+    fn visit_index(&mut self, value: &Expr, index: &Expr) -> Result<String, CompileError> {
+        self.cg.gen_index_expr(self.expr, value, index)
+    }
+
+    fn visit_slice(
+        &mut self,
+        value: &Expr,
+        start: Option<&Expr>,
+        end: Option<&Expr>,
+        step: Option<&Expr>,
+    ) -> Result<String, CompileError> {
+        self.cg.gen_slice_expr(self.expr, value, start, end, step)
+    }
+
+    fn visit_list_comp(
+        &mut self,
+        elt: &Expr,
+        target: &str,
+        iter: &Expr,
+        ifs: &[Expr],
+        generators: &[CompClause],
+    ) -> Result<String, CompileError> {
+        self.cg
+            .gen_list_comp_expr(elt, target, iter, ifs, generators)
+    }
+
+    fn visit_set_comp(
+        &mut self,
+        elt: &Expr,
+        target: &str,
+        iter: &Expr,
+        ifs: &[Expr],
+        generators: &[CompClause],
+    ) -> Result<String, CompileError> {
+        self.cg
+            .gen_set_comp_expr(elt, target, iter, ifs, generators)
+    }
+
+    fn visit_union_ctor(
+        &mut self,
+        union: &str,
+        variant: &str,
+        inner: &Expr,
+    ) -> Result<String, CompileError> {
+        self.cg.gen_union_ctor_expr(union, variant, inner)
+    }
+
+    fn visit_lambda(&mut self, params: &[String], body: &Expr) -> Result<String, CompileError> {
+        self.cg.gen_lambda_expr(self.expr, params, body)
+    }
+
+    fn visit_if_expr(
+        &mut self,
+        test: &Expr,
+        body: &Expr,
+        orelse: &Expr,
+    ) -> Result<String, CompileError> {
+        self.cg.gen_if_expr(test, body, orelse)
+    }
+
+    fn visit_block(&mut self, stmts: &[Stmt]) -> Result<String, CompileError> {
+        self.cg.gen_block_expr(stmts)
+    }
+}
 
 impl<'a> Codegen<'a> {
     /// Generate Rust code for an expression.
@@ -26,71 +186,7 @@ impl<'a> Codegen<'a> {
     /// - Globals: Access via OnceLock mutex wrapper for thread-safe mutation
     /// - Builtins: Many Python builtins (print, len, range) are emitted as helper calls
     pub(crate) fn gen_expr(&mut self, expr: &Expr) -> Result<String, CompileError> {
-        match &expr.kind {
-            ExprKind::Literal(lit) => self.gen_literal_expr(expr, lit),
-            ExprKind::Name(name) => self.gen_name_expr(name),
-            ExprKind::Yield { .. } => Err(self.error(
-                expr.span,
-                "yield expressions are only emitted through generator wrappers",
-            )),
-            ExprKind::Attr { value, attr } => self.gen_attr_expr(value, attr),
-            ExprKind::Call {
-                func,
-                args,
-                keywords,
-            } => self.gen_call_expr(expr, func, args, keywords),
-            ExprKind::Starred { .. } => Err(self.error(
-                expr.span,
-                "Starred arguments are only valid directly inside call expressions",
-            )),
-            ExprKind::Binary { op, left, right } => self.gen_binary_expr(expr, op, left, right),
-            ExprKind::Unary { op, expr: inner } => self.gen_unary_expr(op, inner),
-            ExprKind::Compare { op, left, right } => self.gen_compare_expr(expr, op, left, right),
-            ExprKind::CompareChain {
-                left,
-                ops,
-                comparators,
-            } => self.gen_compare_chain_expr(expr, left, ops, comparators),
-            ExprKind::BoolOp { op, values } => self.gen_boolop_expr(op, values),
-            ExprKind::List(items) => self.gen_list_expr(expr, items),
-            ExprKind::Tuple(items) => self.gen_tuple_expr(expr, items),
-            ExprKind::Dict(items) => self.gen_dict_expr(expr, items),
-            ExprKind::Set(items) => self.gen_set_expr(expr, items),
-            ExprKind::Index { value, index } => self.gen_index_expr(expr, value, index),
-            ExprKind::Slice {
-                value,
-                start,
-                end,
-                step,
-            } => self.gen_slice_expr(
-                expr,
-                value,
-                start.as_deref(),
-                end.as_deref(),
-                step.as_deref(),
-            ),
-            ExprKind::ListComp {
-                elt,
-                target,
-                iter,
-                ifs,
-                generators,
-            } => self.gen_list_comp_expr(elt, target, iter, ifs, generators),
-            ExprKind::SetComp {
-                elt,
-                target,
-                iter,
-                ifs,
-                generators,
-            } => self.gen_set_comp_expr(elt, target, iter, ifs, generators),
-            ExprKind::Lambda { params, body } => self.gen_lambda_expr(expr, params, body),
-            ExprKind::IfExpr { test, body, orelse } => self.gen_if_expr(test, body, orelse),
-            ExprKind::Block { stmts } => self.gen_block_expr(stmts),
-            ExprKind::UnionCtor {
-                union,
-                variant,
-                inner,
-            } => self.gen_union_ctor_expr(union, variant, inner),
-        }
+        let mut visitor = GenExprVisitor { cg: self, expr };
+        expr.accept(&mut visitor)
     }
 }
