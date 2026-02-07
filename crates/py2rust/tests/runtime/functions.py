@@ -1421,6 +1421,108 @@ assert result_factory6a == 10, f"times_two: expected 10, got {result_factory6a}"
 assert result_factory6b == 50, f"times_ten: expected 50, got {result_factory6b}"
 print("Same factory with different args passed")
 
+# Test 7: Wrapper with 3 captures (func + 2 factory args)
+def make_linear_factory(a: int, b: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            # wrapper captures: func, a, b = 3 captures total
+            return func(x) * a + b
+        return wrapper
+    return decorator
+
+@make_linear_factory(3, 7)
+def identity_3cap_factory(x: int) -> int:
+    return x
+
+result_factory7 = identity_3cap_factory(10)
+assert result_factory7 == 37, f"3 captures: expected 37, got {result_factory7}"  # 10 * 3 + 7 = 37
+print("3 captures (func + 2 args) passed")
+
+# Test 8: Wrapper with 4 captures (func + 3 factory args)
+def make_quadratic_factory(a: int, b: int, c: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            # wrapper captures: func, a, b, c = 4 captures total
+            return func(x) * a + b * x + c
+        return wrapper
+    return decorator
+
+@make_quadratic_factory(2, 3, 5)
+def identity_4cap_factory(x: int) -> int:
+    return x
+
+result_factory8 = identity_4cap_factory(4)
+assert result_factory8 == 25, f"4 captures: expected 25, got {result_factory8}"  # 4 * 2 + 3 * 4 + 5 = 25
+print("4 captures (func + 3 args) passed")
+
+# Test 9: Wrapper with 5 captures (func + 4 factory args)
+def make_poly_5cap_factory(a: int, b: int, c: int, d: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            # wrapper captures: func, a, b, c, d = 5 captures total
+            return func(x) + a + b + c + d
+        return wrapper
+    return decorator
+
+@make_poly_5cap_factory(1, 2, 3, 4)
+def base_5cap_factory(x: int) -> int:
+    return x * 10
+
+result_factory9 = base_5cap_factory(5)
+assert result_factory9 == 60, f"5 captures: expected 60, got {result_factory9}"  # 5 * 10 + 1 + 2 + 3 + 4 = 60
+print("5 captures (func + 4 args) passed")
+
+# Test 10: Wrapper with 6 captures (func + 5 factory args)
+def make_sum_6cap_factory(v1: int, v2: int, v3: int, v4: int, v5: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            # wrapper captures: func, v1..v5 = 6 captures total
+            return func(x) + v1 + v2 + v3 + v4 + v5
+        return wrapper
+    return decorator
+
+@make_sum_6cap_factory(1, 2, 3, 4, 5)
+def base_6cap_factory(x: int) -> int:
+    return x
+
+result_factory10 = base_6cap_factory(100)
+assert result_factory10 == 115, f"6 captures: expected 115, got {result_factory10}"  # 100 + 1+2+3+4+5 = 115
+print("6 captures (func + 5 args) passed")
+
+# Test 11: Wrapper with 7 captures (func + 6 factory args)
+def make_sum_7cap_factory(v1: int, v2: int, v3: int, v4: int, v5: int, v6: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            # wrapper captures: func, v1..v6 = 7 captures total
+            return func(x) + v1 + v2 + v3 + v4 + v5 + v6
+        return wrapper
+    return decorator
+
+@make_sum_7cap_factory(1, 2, 3, 4, 5, 6)
+def base_7cap_factory(x: int) -> int:
+    return x
+
+result_factory11 = base_7cap_factory(100)
+assert result_factory11 == 121, f"7 captures: expected 121, got {result_factory11}"  # 100 + 1+2+3+4+5+6 = 121
+print("7 captures (func + 6 args) passed")
+
+# Test 12: Wrapper with 8 captures (func + 7 factory args) - maximum supported
+def make_sum_8cap_factory(v1: int, v2: int, v3: int, v4: int, v5: int, v6: int, v7: int):
+    def decorator(func):
+        def wrapper(x: int) -> int:
+            # wrapper captures: func, v1..v7 = 8 captures total
+            return func(x) + v1 + v2 + v3 + v4 + v5 + v6 + v7
+        return wrapper
+    return decorator
+
+@make_sum_8cap_factory(1, 2, 3, 4, 5, 6, 7)
+def base_8cap_factory(x: int) -> int:
+    return x
+
+result_factory12 = base_8cap_factory(100)
+assert result_factory12 == 128, f"8 captures: expected 128, got {result_factory12}"  # 100 + 1+2+3+4+5+6+7 = 128
+print("8 captures (func + 7 args) passed")
+
 print("All decorator factory tests passed!")
 
 print("All function tests passed!")
