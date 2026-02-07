@@ -1,5 +1,7 @@
 use super::*;
-use crate::stdlib::registry::{find_stdlib_attribute, resolve_module};
+use crate::stdlib::registry::{
+    find_stdlib_attribute, find_stdlib_runtime_attribute, is_stdlib_runtime_type, resolve_module,
+};
 
 impl<'a> TypeChecker<'a> {
     /// Map literal syntax to its direct static type.
@@ -152,6 +154,15 @@ impl<'a> TypeChecker<'a> {
         }
         match value_ty {
             Type::Custom(class_name) => {
+                if let Some(attr_spec) = find_stdlib_runtime_attribute(class_name.as_str(), attr) {
+                    return Ok((attr_spec.type_resolver)());
+                }
+                if is_stdlib_runtime_type(class_name.as_str()) {
+                    return Err(self.error(
+                        span,
+                        format!("{class_name} has no supported member '{attr}'"),
+                    ));
+                }
                 let class_info = self
                     .ctx
                     .classes

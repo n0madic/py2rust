@@ -31,6 +31,8 @@ pub enum StdlibModuleId {
     Math,
     /// Python `time` module.
     Time,
+    /// Python `subprocess` module.
+    Subprocess,
 }
 
 /// Identifier for a supported stdlib callable.
@@ -182,6 +184,8 @@ pub enum StdlibMethodId {
     TimeStrftime,
     /// `time.strptime(string, format)`
     TimeStrptime,
+    /// `subprocess.run(args, capture_output=False, check=False)`
+    SubprocessRun,
 }
 
 /// Function pointer used to emit method-specific Rust calls in codegen.
@@ -228,6 +232,17 @@ pub struct StdlibAttributeSpec {
     pub type_resolver: StdlibAttrTypeResolver,
     /// Codegen callback for emitting this attribute access.
     pub codegen_handler: StdlibAttrCodegenHandler,
+}
+
+/// Static runtime-object attribute metadata used by type checking.
+#[derive(Debug, Clone, Copy)]
+pub struct StdlibRuntimeAttributeSpec {
+    /// Internal runtime type name (e.g. `"__stdlib_subprocess_completed_process"`).
+    pub type_name: &'static str,
+    /// Python attribute name (e.g. `"returncode"`).
+    pub attribute_name: &'static str,
+    /// Type resolver for this attribute.
+    pub type_resolver: StdlibAttrTypeResolver,
 }
 
 const OS_REMOVE_SPEC: StdlibMethodSpec = StdlibMethodSpec {
@@ -1098,6 +1113,46 @@ const TIME_STRPTIME_SPEC: StdlibMethodSpec = StdlibMethodSpec {
     codegen_handler: codegen_time_strptime,
 };
 
+const SUBPROCESS_RUN_KEYWORDS: &[&str] = &["capture_output", "check"];
+const SUBPROCESS_RUN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::SubprocessRun,
+    module_name: "subprocess",
+    method_name: "run",
+    shape: CallShape {
+        arity: AritySpec::Range { min: 1, max: 3 },
+        keywords: KeywordPolicy::Named(SUBPROCESS_RUN_KEYWORDS),
+    },
+    codegen_handler: codegen_subprocess_run,
+};
+
+const SUBPROCESS_COMPLETED_PROCESS_ARGS_ATTR_SPEC: StdlibRuntimeAttributeSpec =
+    StdlibRuntimeAttributeSpec {
+        type_name: "__stdlib_subprocess_completed_process",
+        attribute_name: "args",
+        type_resolver: type_subprocess_completed_process_args_attr,
+    };
+
+const SUBPROCESS_COMPLETED_PROCESS_RETURNCODE_ATTR_SPEC: StdlibRuntimeAttributeSpec =
+    StdlibRuntimeAttributeSpec {
+        type_name: "__stdlib_subprocess_completed_process",
+        attribute_name: "returncode",
+        type_resolver: type_subprocess_completed_process_returncode_attr,
+    };
+
+const SUBPROCESS_COMPLETED_PROCESS_STDOUT_ATTR_SPEC: StdlibRuntimeAttributeSpec =
+    StdlibRuntimeAttributeSpec {
+        type_name: "__stdlib_subprocess_completed_process",
+        attribute_name: "stdout",
+        type_resolver: type_subprocess_completed_process_stream_attr,
+    };
+
+const SUBPROCESS_COMPLETED_PROCESS_STDERR_ATTR_SPEC: StdlibRuntimeAttributeSpec =
+    StdlibRuntimeAttributeSpec {
+        type_name: "__stdlib_subprocess_completed_process",
+        attribute_name: "stderr",
+        type_resolver: type_subprocess_completed_process_stream_attr,
+    };
+
 /// Resolve a module name to a known stdlib module id.
 pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
     match name {
@@ -1108,6 +1163,7 @@ pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
         "json" => Some(StdlibModuleId::Json),
         "math" => Some(StdlibModuleId::Math),
         "time" => Some(StdlibModuleId::Time),
+        "subprocess" => Some(StdlibModuleId::Subprocess),
         _ => None,
     }
 }
@@ -1191,6 +1247,7 @@ pub fn find_stdlib_method(
         (StdlibModuleId::Time, "gmtime") => Some(&TIME_GMTIME_SPEC),
         (StdlibModuleId::Time, "strftime") => Some(&TIME_STRFTIME_SPEC),
         (StdlibModuleId::Time, "strptime") => Some(&TIME_STRPTIME_SPEC),
+        (StdlibModuleId::Subprocess, "run") => Some(&SUBPROCESS_RUN_SPEC),
         _ => None,
     }
 }
@@ -1212,6 +1269,33 @@ pub fn find_stdlib_attribute(
         (StdlibModuleId::Math, "nan") => Some(&MATH_NAN_ATTR_SPEC),
         _ => None,
     }
+}
+
+/// Resolve a runtime-object attribute by internal type name and attribute name.
+pub fn find_stdlib_runtime_attribute(
+    type_name: &str,
+    attribute: &str,
+) -> Option<&'static StdlibRuntimeAttributeSpec> {
+    match (type_name, attribute) {
+        ("__stdlib_subprocess_completed_process", "args") => {
+            Some(&SUBPROCESS_COMPLETED_PROCESS_ARGS_ATTR_SPEC)
+        }
+        ("__stdlib_subprocess_completed_process", "returncode") => {
+            Some(&SUBPROCESS_COMPLETED_PROCESS_RETURNCODE_ATTR_SPEC)
+        }
+        ("__stdlib_subprocess_completed_process", "stdout") => {
+            Some(&SUBPROCESS_COMPLETED_PROCESS_STDOUT_ATTR_SPEC)
+        }
+        ("__stdlib_subprocess_completed_process", "stderr") => {
+            Some(&SUBPROCESS_COMPLETED_PROCESS_STDERR_ATTR_SPEC)
+        }
+        _ => None,
+    }
+}
+
+/// Return true when `type_name` belongs to a registered stdlib runtime object.
+pub fn is_stdlib_runtime_type(type_name: &str) -> bool {
+    matches!(type_name, "__stdlib_subprocess_completed_process")
 }
 
 /// Resolve an importable module member to a stable method id.
@@ -1295,6 +1379,7 @@ pub fn method_spec(method_id: StdlibMethodId) -> &'static StdlibMethodSpec {
         StdlibMethodId::TimeGmtime => &TIME_GMTIME_SPEC,
         StdlibMethodId::TimeStrftime => &TIME_STRFTIME_SPEC,
         StdlibMethodId::TimeStrptime => &TIME_STRPTIME_SPEC,
+        StdlibMethodId::SubprocessRun => &SUBPROCESS_RUN_SPEC,
     }
 }
 
@@ -1349,6 +1434,21 @@ fn type_math_inf_attr() -> Type {
 /// Resolve the static type for `math.nan`.
 fn type_math_nan_attr() -> Type {
     Type::Float
+}
+
+/// Resolve the static type for `subprocess.CompletedProcess.args`.
+fn type_subprocess_completed_process_args_attr() -> Type {
+    Type::List(Box::new(Type::Str))
+}
+
+/// Resolve the static type for `subprocess.CompletedProcess.returncode`.
+fn type_subprocess_completed_process_returncode_attr() -> Type {
+    Type::Int
+}
+
+/// Resolve the static type for `subprocess.CompletedProcess.stdout/stderr`.
+fn type_subprocess_completed_process_stream_attr() -> Type {
+    Type::Option(Box::new(Type::Str))
 }
 
 /// Emit `os.path` attribute expression (module namespace marker only).
@@ -2270,4 +2370,47 @@ fn codegen_time_strptime(
         "py_time_strptime(&({}), &({}))",
         text_expr, format_expr
     ))
+}
+
+/// Emit code for `subprocess.run(args, capture_output=False, check=False)`.
+fn codegen_subprocess_run(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_subprocess_run = true;
+    let args_expr =
+        codegen.gen_expr_with_expected(&args[0], Some(&Type::List(Box::new(Type::Str))))?;
+
+    let capture_output_kw = keyword_value(keywords, "capture_output");
+    if args.len() >= 2 && capture_output_kw.is_some() {
+        return Err(codegen.error(
+            args[1].span,
+            "Multiple values for keyword argument `capture_output`",
+        ));
+    }
+    let capture_output_expr = if let Some(expr) = capture_output_kw {
+        codegen.gen_expr_with_expected(expr, Some(&Type::Bool))?
+    } else if args.len() >= 2 {
+        codegen.gen_expr_with_expected(&args[1], Some(&Type::Bool))?
+    } else {
+        "false".to_string()
+    };
+
+    let check_kw = keyword_value(keywords, "check");
+    if args.len() >= 3 && check_kw.is_some() {
+        return Err(codegen.error(args[2].span, "Multiple values for keyword argument `check`"));
+    }
+    let check_expr = if let Some(expr) = check_kw {
+        codegen.gen_expr_with_expected(expr, Some(&Type::Bool))?
+    } else if args.len() >= 3 {
+        codegen.gen_expr_with_expected(&args[2], Some(&Type::Bool))?
+    } else {
+        "false".to_string()
+    };
+
+    Ok(codegen.wrap_result(format!(
+        "py_subprocess_run(&({}), {}, {})",
+        args_expr, capture_output_expr, check_expr
+    )))
 }

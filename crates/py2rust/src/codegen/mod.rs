@@ -106,6 +106,7 @@ pub(crate) struct Uses {
     pub(crate) py_time_gmtime: bool,
     pub(crate) py_time_strftime: bool,
     pub(crate) py_time_strptime: bool,
+    pub(crate) py_subprocess_run: bool,
     pub(crate) py_iter: bool,
     pub(crate) py_repr: bool,
     pub(crate) py_int: bool,

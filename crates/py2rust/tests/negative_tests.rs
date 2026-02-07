@@ -392,6 +392,60 @@ time.strptime("2024-01-01")
 }
 
 #[test]
+fn rejects_subprocess_call_without_import() {
+    let source = r#"
+subprocess.run(["echo", "hello"])
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("module 'subprocess' used without import"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_from_subprocess_import_unknown_member() {
+    let source = r#"
+from subprocess import unknown
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("subprocess has no supported member 'unknown'"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_wrong_arity_for_subprocess_run() {
+    let source = r#"
+import subprocess
+subprocess.run()
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("subprocess.run() expects"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_subprocess_run_duplicate_capture_output() {
+    let source = r#"
+import subprocess
+subprocess.run(["echo", "hello"], True, capture_output=False)
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("Multiple values for keyword argument `capture_output`"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
 fn rejects_implicit_str_coercion_for_user_functions() {
     let source = r#"
 def takes_text(x: str) -> str:

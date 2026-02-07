@@ -23,13 +23,6 @@ impl<'a> TypeChecker<'a> {
             return Err(self.error(span, shape_err.message()));
         }
 
-        // Helper for keyword argument lookup after call-shape validation.
-        let find_keyword_idx = |name: &str| {
-            keywords
-                .iter()
-                .position(|kw| kw.name.as_deref() == Some(name))
-        };
-
         // Validate argument types for each registered method.
         match spec.method_id {
             StdlibMethodId::OsRemove
@@ -60,7 +53,9 @@ impl<'a> TypeChecker<'a> {
 
                 // CPython-style duplicate handling: positional + keyword for the same
                 // semantic parameter is rejected.
-                let exist_ok_idx = find_keyword_idx("exist_ok");
+                let exist_ok_idx = keywords
+                    .iter()
+                    .position(|kw| kw.name.as_deref() == Some("exist_ok"));
                 if args.len() == 2 && exist_ok_idx.is_some() {
                     return Err(self.error(span, "Multiple values for keyword argument `exist_ok`"));
                 }
@@ -78,7 +73,9 @@ impl<'a> TypeChecker<'a> {
                 let key_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
                 self.ensure_assignable(&key_ty, &Type::Str, span)?;
 
-                let default_idx = find_keyword_idx("default");
+                let default_idx = keywords
+                    .iter()
+                    .position(|kw| kw.name.as_deref() == Some("default"));
                 if args.len() == 2 && default_idx.is_some() {
                     return Err(self.error(span, "Multiple values for keyword argument `default`"));
                 }
@@ -266,6 +263,45 @@ impl<'a> TypeChecker<'a> {
                 let format_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
                 self.ensure_assignable(&format_ty, &Type::Str, span)?;
             }
+            StdlibMethodId::SubprocessRun => {
+                let argv_ty =
+                    self.check_expr(&mut args[0], Some(&Type::List(Box::new(Type::Str))))?;
+                self.ensure_assignable(&argv_ty, &Type::List(Box::new(Type::Str)), span)?;
+
+                let capture_output_idx = keywords
+                    .iter()
+                    .position(|kw| kw.name.as_deref() == Some("capture_output"));
+                if args.len() >= 2 && capture_output_idx.is_some() {
+                    return Err(self.error(
+                        span,
+                        "Multiple values for keyword argument `capture_output`",
+                    ));
+                }
+                if args.len() >= 2 {
+                    let capture_output_ty = self.check_expr(&mut args[1], Some(&Type::Bool))?;
+                    self.ensure_assignable(&capture_output_ty, &Type::Bool, span)?;
+                }
+                if let Some(idx) = capture_output_idx {
+                    let capture_output_ty =
+                        self.check_expr(&mut keywords[idx].value, Some(&Type::Bool))?;
+                    self.ensure_assignable(&capture_output_ty, &Type::Bool, span)?;
+                }
+
+                let check_idx = keywords
+                    .iter()
+                    .position(|kw| kw.name.as_deref() == Some("check"));
+                if args.len() >= 3 && check_idx.is_some() {
+                    return Err(self.error(span, "Multiple values for keyword argument `check`"));
+                }
+                if args.len() >= 3 {
+                    let check_ty = self.check_expr(&mut args[2], Some(&Type::Bool))?;
+                    self.ensure_assignable(&check_ty, &Type::Bool, span)?;
+                }
+                if let Some(idx) = check_idx {
+                    let check_ty = self.check_expr(&mut keywords[idx].value, Some(&Type::Bool))?;
+                    self.ensure_assignable(&check_ty, &Type::Bool, span)?;
+                }
+            }
         }
 
         Ok(Self::stdlib_method_return_type(spec.method_id))
@@ -359,6 +395,9 @@ impl<'a> TypeChecker<'a> {
                 Type::Int,
             ]),
             StdlibMethodId::TimeStrftime => Type::Str,
+            StdlibMethodId::SubprocessRun => {
+                Type::Custom("__stdlib_subprocess_completed_process".to_string())
+            }
         }
     }
 }

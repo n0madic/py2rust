@@ -108,6 +108,11 @@ runtime_cases!(
     (runtime_stdlib_json_comprehensive, "stdlib_json", "stdlib_json.py"),
     (runtime_stdlib_math_comprehensive, "stdlib_math", "stdlib_math.py"),
     (runtime_stdlib_time_comprehensive, "stdlib_time", "stdlib_time.py"),
+    (
+        runtime_stdlib_subprocess_comprehensive,
+        "stdlib_subprocess",
+        "stdlib_subprocess.py"
+    ),
     (runtime_iteration_comprehensive, "iteration", "iteration.py"),
     (
         runtime_match_comprehensive,

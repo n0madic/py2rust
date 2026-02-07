@@ -246,6 +246,95 @@ fn py_sys_intern(value: &str) -> String {
 }
 "#;
 
+/// Static helper body for lightweight `subprocess.CompletedProcess` storage.
+const HELPER_PY_SUBPROCESS_COMPLETED_PROCESS: &str = r#"
+#[allow(non_camel_case_types)]
+#[derive(Clone)]
+struct __stdlib_subprocess_completed_process {
+    args: Arc<Mutex<Vec<String>>>,
+    returncode: i64,
+    stdout: Option<String>,
+    stderr: Option<String>,
+}
+"#;
+
+/// Static helper body for `subprocess.run(args, capture_output=False, check=False)`.
+const HELPER_PY_SUBPROCESS_RUN: &str = r#"
+trait PySubprocessArgs {
+    fn to_subprocess_args(&self) -> Vec<String>;
+}
+
+impl PySubprocessArgs for Vec<String> {
+    fn to_subprocess_args(&self) -> Vec<String> {
+        self.clone()
+    }
+}
+
+impl PySubprocessArgs for Arc<Mutex<Vec<String>>> {
+    fn to_subprocess_args(&self) -> Vec<String> {
+        self.lock().expect("subprocess args list mutex poisoned").clone()
+    }
+}
+
+impl PySubprocessArgs for Rc<RefCell<Vec<String>>> {
+    fn to_subprocess_args(&self) -> Vec<String> {
+        self.borrow().clone()
+    }
+}
+
+fn py_subprocess_run(
+    args: &impl PySubprocessArgs,
+    capture_output: bool,
+    check: bool,
+) -> Result<__stdlib_subprocess_completed_process, PyError> {
+    let args = args.to_subprocess_args();
+    if args.is_empty() {
+        return Err(PyError::ValueError(
+            "subprocess.run() args must contain at least one command element".into(),
+        ));
+    }
+
+    let mut command = std::process::Command::new(&args[0]);
+    if args.len() > 1 {
+        command.args(&args[1..]);
+    }
+
+    if capture_output {
+        let output = command
+            .output()
+            .map_err(|e| PyError::IOError(e.to_string().into()))?;
+        let returncode = output.status.code().unwrap_or(-1);
+        if check && returncode != 0 {
+            return Err(PyError::RuntimeError(
+                format!("subprocess.run() check failed with returncode {}", returncode).into(),
+            ));
+        }
+        return Ok(__stdlib_subprocess_completed_process {
+            args: Arc::new(Mutex::new(args)),
+            returncode: returncode as i64,
+            stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
+            stderr: Some(String::from_utf8_lossy(&output.stderr).to_string()),
+        });
+    }
+
+    let status = command
+        .status()
+        .map_err(|e| PyError::IOError(e.to_string().into()))?;
+    let returncode = status.code().unwrap_or(-1);
+    if check && returncode != 0 {
+        return Err(PyError::RuntimeError(
+            format!("subprocess.run() check failed with returncode {}", returncode).into(),
+        ));
+    }
+    Ok(__stdlib_subprocess_completed_process {
+        args: Arc::new(Mutex::new(args)),
+        returncode: returncode as i64,
+        stdout: None,
+        stderr: None,
+    })
+}
+"#;
+
 /// Static helper body for `math.factorial(n)`.
 const HELPER_PY_MATH_FACTORIAL: &str = r#"
 fn py_math_factorial(value: i64) -> Result<i64, PyError> {
@@ -2357,6 +2446,10 @@ impl<'a> Codegen<'a> {
         if self.uses.py_sys_intern {
             self.push_block(HELPER_PY_SYS_INTERN);
         }
+        if self.uses.py_subprocess_run {
+            self.push_block(HELPER_PY_SUBPROCESS_COMPLETED_PROCESS);
+            self.push_block(HELPER_PY_SUBPROCESS_RUN);
+        }
         if self.uses.py_math_factorial {
             self.push_block(HELPER_PY_MATH_FACTORIAL);
         }
@@ -2490,6 +2583,7 @@ impl<'a> Codegen<'a> {
             || self.uses.py_os_path_abspath
             || self.uses.py_sys_argv
             || self.uses.py_sys_intern
+            || self.uses.py_subprocess_run
             || self.uses.py_math_factorial
             || self.uses.py_math_gcd
             || self.uses.py_math_lcm
@@ -2549,6 +2643,7 @@ impl<'a> Codegen<'a> {
             || self.uses.py_os_replace
             || self.uses.py_os_makedirs
             || self.uses.py_os_path_abspath
+            || self.uses.py_subprocess_run
             || self.uses.py_json_dumps
             || self.uses.py_json_loads
             || self.uses.py_json_dump
