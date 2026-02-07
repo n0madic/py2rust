@@ -23,6 +23,6 @@ impl<'a> Codegen<'a> {
         ) {
             return Err(self.error(span, shape_err.message()));
         }
-        (spec.codegen_handler)(self, args)
+        (spec.codegen_handler)(self, args, keywords)
     }
 }

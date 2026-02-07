@@ -1,6 +1,7 @@
 // Small, self-contained expression forms (literals, names, attrs, ifs).
 
 use super::super::*;
+use crate::stdlib::registry::{find_stdlib_attribute, resolve_module};
 
 impl<'a> Codegen<'a> {
     /// Lower a literal to its Rust expression form.
@@ -139,6 +140,21 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
+        }
+        if let Some(Type::Module(module_name)) = value.ty.as_ref() {
+            let module_id = resolve_module(module_name.as_str()).ok_or_else(|| {
+                self.error(
+                    value.span,
+                    format!("module '{module_name}' is not registered in stdlib registry"),
+                )
+            })?;
+            let attr_spec = find_stdlib_attribute(module_id, attr).ok_or_else(|| {
+                self.error(
+                    value.span,
+                    format!("{module_name} has no supported member '{attr}'"),
+                )
+            })?;
+            return (attr_spec.codegen_handler)(self, value.span);
         }
         if let Some(Type::Option(inner)) = value.ty.as_ref() {
             if let Type::Custom(class_name) = inner.as_ref() {

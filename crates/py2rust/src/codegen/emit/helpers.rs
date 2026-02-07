@@ -60,6 +60,178 @@ fn py_os_remove(path: &str) -> Result<(), PyError> {
 }
 "#;
 
+/// Static helper body for `os.getcwd()`.
+const HELPER_PY_OS_GETCWD: &str = r#"
+fn py_os_getcwd() -> Result<String, PyError> {
+    std::env::current_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(|e| PyError::IOError(e.to_string().into()))
+}
+"#;
+
+/// Static helper body for `os.chdir(path)`.
+const HELPER_PY_OS_CHDIR: &str = r#"
+fn py_os_chdir(path: &str) -> Result<(), PyError> {
+    std::env::set_current_dir(path).map_err(|e| PyError::IOError(e.to_string().into()))
+}
+"#;
+
+/// Static helper body for `os.mkdir(path)`.
+const HELPER_PY_OS_MKDIR: &str = r#"
+fn py_os_mkdir(path: &str) -> Result<(), PyError> {
+    std::fs::create_dir(path).map_err(|e| PyError::IOError(e.to_string().into()))
+}
+"#;
+
+/// Static helper body for `os.listdir(path)`.
+const HELPER_PY_OS_LISTDIR: &str = r#"
+fn py_os_listdir(path: &str) -> Result<Arc<Mutex<Vec<String>>>, PyError> {
+    let mut entries = Vec::new();
+    let dir = std::fs::read_dir(path).map_err(|e| PyError::IOError(e.to_string().into()))?;
+    for entry in dir {
+        let entry = entry.map_err(|e| PyError::IOError(e.to_string().into()))?;
+        entries.push(entry.file_name().to_string_lossy().to_string());
+    }
+    Ok(Arc::new(Mutex::new(entries)))
+}
+"#;
+
+/// Static helper body for `os.rmdir(path)`.
+const HELPER_PY_OS_RMDIR: &str = r#"
+fn py_os_rmdir(path: &str) -> Result<(), PyError> {
+    std::fs::remove_dir(path).map_err(|e| PyError::IOError(e.to_string().into()))
+}
+"#;
+
+/// Static helper body for `os.rename(src, dst)`.
+const HELPER_PY_OS_RENAME: &str = r#"
+fn py_os_rename(src: &str, dst: &str) -> Result<(), PyError> {
+    std::fs::rename(src, dst).map_err(|e| PyError::IOError(e.to_string().into()))
+}
+"#;
+
+/// Static helper body for `os.replace(src, dst)`.
+const HELPER_PY_OS_REPLACE: &str = r#"
+fn py_os_replace(src: &str, dst: &str) -> Result<(), PyError> {
+    std::fs::rename(src, dst).map_err(|e| PyError::IOError(e.to_string().into()))
+}
+"#;
+
+/// Static helper body for `os.makedirs(path, exist_ok)`.
+const HELPER_PY_OS_MAKEDIRS: &str = r#"
+fn py_os_makedirs(path: &str, exist_ok: bool) -> Result<(), PyError> {
+    if !exist_ok && std::path::Path::new(path).exists() {
+        return Err(PyError::IOError(format!("File exists: {}", path).into()));
+    }
+    std::fs::create_dir_all(path).map_err(|e| PyError::IOError(e.to_string().into()))
+}
+"#;
+
+/// Static helper body for `os.getenv(key, default)`.
+const HELPER_PY_OS_GETENV: &str = r#"
+fn py_os_getenv(key: &str, default: Option<String>) -> Option<String> {
+    std::env::var(key).ok().or(default)
+}
+"#;
+
+/// Static helper body for `os.environ`.
+const HELPER_PY_OS_ENVIRON: &str = r#"
+fn py_os_environ() -> Arc<Mutex<std::collections::HashMap<String, String>>> {
+    Arc::new(Mutex::new(std::env::vars().collect()))
+}
+"#;
+
+/// Static helper body for `os.name`.
+const HELPER_PY_OS_NAME: &str = r#"
+fn py_os_name() -> String {
+    if cfg!(windows) {
+        "nt".to_string()
+    } else {
+        "posix".to_string()
+    }
+}
+"#;
+
+/// Static helper body for `os.path.join(parts...)`.
+const HELPER_PY_OS_PATH_JOIN: &str = r#"
+fn py_os_path_join(parts: &[&str]) -> String {
+    let mut path = std::path::PathBuf::new();
+    for part in parts {
+        path.push(part);
+    }
+    path.to_string_lossy().to_string()
+}
+"#;
+
+/// Static helper body for `os.path.exists(path)`.
+const HELPER_PY_OS_PATH_EXISTS: &str = r#"
+fn py_os_path_exists(path: &str) -> bool {
+    std::path::Path::new(path).exists()
+}
+"#;
+
+/// Static helper body for `os.path.isfile(path)`.
+const HELPER_PY_OS_PATH_IS_FILE: &str = r#"
+fn py_os_path_is_file(path: &str) -> bool {
+    std::path::Path::new(path).is_file()
+}
+"#;
+
+/// Static helper body for `os.path.isdir(path)`.
+const HELPER_PY_OS_PATH_IS_DIR: &str = r#"
+fn py_os_path_is_dir(path: &str) -> bool {
+    std::path::Path::new(path).is_dir()
+}
+"#;
+
+/// Static helper body for `os.path.basename(path)`.
+const HELPER_PY_OS_PATH_BASENAME: &str = r#"
+fn py_os_path_basename(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+"#;
+
+/// Static helper body for `os.path.dirname(path)`.
+const HELPER_PY_OS_PATH_DIRNAME: &str = r#"
+fn py_os_path_dirname(path: &str) -> String {
+    std::path::Path::new(path)
+        .parent()
+        .map(|parent| parent.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+"#;
+
+/// Static helper body for `os.path.split(path)`.
+const HELPER_PY_OS_PATH_SPLIT: &str = r#"
+fn py_os_path_split(path: &str) -> (String, String) {
+    let p = std::path::Path::new(path);
+    let dir = p
+        .parent()
+        .map(|parent| parent.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let base = p
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    (dir, base)
+}
+"#;
+
+/// Static helper body for `os.path.abspath(path)`.
+const HELPER_PY_OS_PATH_ABSPATH: &str = r#"
+fn py_os_path_abspath(path: &str) -> Result<String, PyError> {
+    let candidate = std::path::PathBuf::from(path);
+    if candidate.is_absolute() {
+        return Ok(candidate.to_string_lossy().to_string());
+    }
+    let cwd = std::env::current_dir().map_err(|e| PyError::IOError(e.to_string().into()))?;
+    Ok(cwd.join(candidate).to_string_lossy().to_string())
+}
+"#;
+
 /// Static helper body for clonable iterator wrapper.
 const HELPER_PY_ITER: &str = r#"
 #[derive(Clone)]
@@ -1043,8 +1215,65 @@ impl<'a> Codegen<'a> {
         if self.uses.py_file {
             self.push_block(HELPER_PY_FILE);
         }
-        if self.uses.py_file || self.uses.py_os_remove {
+        if self.uses.py_os_remove {
             self.push_block(HELPER_PY_OS_REMOVE);
+        }
+        if self.uses.py_os_getcwd {
+            self.push_block(HELPER_PY_OS_GETCWD);
+        }
+        if self.uses.py_os_chdir {
+            self.push_block(HELPER_PY_OS_CHDIR);
+        }
+        if self.uses.py_os_mkdir {
+            self.push_block(HELPER_PY_OS_MKDIR);
+        }
+        if self.uses.py_os_listdir {
+            self.push_block(HELPER_PY_OS_LISTDIR);
+        }
+        if self.uses.py_os_rmdir {
+            self.push_block(HELPER_PY_OS_RMDIR);
+        }
+        if self.uses.py_os_rename {
+            self.push_block(HELPER_PY_OS_RENAME);
+        }
+        if self.uses.py_os_replace {
+            self.push_block(HELPER_PY_OS_REPLACE);
+        }
+        if self.uses.py_os_makedirs {
+            self.push_block(HELPER_PY_OS_MAKEDIRS);
+        }
+        if self.uses.py_os_getenv {
+            self.push_block(HELPER_PY_OS_GETENV);
+        }
+        if self.uses.py_os_environ {
+            self.push_block(HELPER_PY_OS_ENVIRON);
+        }
+        if self.uses.py_os_name {
+            self.push_block(HELPER_PY_OS_NAME);
+        }
+        if self.uses.py_os_path_join {
+            self.push_block(HELPER_PY_OS_PATH_JOIN);
+        }
+        if self.uses.py_os_path_exists {
+            self.push_block(HELPER_PY_OS_PATH_EXISTS);
+        }
+        if self.uses.py_os_path_is_file {
+            self.push_block(HELPER_PY_OS_PATH_IS_FILE);
+        }
+        if self.uses.py_os_path_is_dir {
+            self.push_block(HELPER_PY_OS_PATH_IS_DIR);
+        }
+        if self.uses.py_os_path_basename {
+            self.push_block(HELPER_PY_OS_PATH_BASENAME);
+        }
+        if self.uses.py_os_path_dirname {
+            self.push_block(HELPER_PY_OS_PATH_DIRNAME);
+        }
+        if self.uses.py_os_path_split {
+            self.push_block(HELPER_PY_OS_PATH_SPLIT);
+        }
+        if self.uses.py_os_path_abspath {
+            self.push_block(HELPER_PY_OS_PATH_ABSPATH);
         }
         if self.uses.print
             || self.uses.len
@@ -1071,6 +1300,25 @@ impl<'a> Codegen<'a> {
             || self.uses.py_str_slice_step
             || self.uses.py_file
             || self.uses.py_os_remove
+            || self.uses.py_os_getcwd
+            || self.uses.py_os_chdir
+            || self.uses.py_os_mkdir
+            || self.uses.py_os_listdir
+            || self.uses.py_os_rmdir
+            || self.uses.py_os_rename
+            || self.uses.py_os_replace
+            || self.uses.py_os_makedirs
+            || self.uses.py_os_getenv
+            || self.uses.py_os_environ
+            || self.uses.py_os_name
+            || self.uses.py_os_path_join
+            || self.uses.py_os_path_exists
+            || self.uses.py_os_path_is_file
+            || self.uses.py_os_path_is_dir
+            || self.uses.py_os_path_basename
+            || self.uses.py_os_path_dirname
+            || self.uses.py_os_path_split
+            || self.uses.py_os_path_abspath
         {
             self.push_line("");
         }
@@ -1096,6 +1344,15 @@ impl<'a> Codegen<'a> {
             || self.uses.py_str_slice_step
             || self.uses.py_file
             || self.uses.py_os_remove
+            || self.uses.py_os_getcwd
+            || self.uses.py_os_chdir
+            || self.uses.py_os_mkdir
+            || self.uses.py_os_listdir
+            || self.uses.py_os_rmdir
+            || self.uses.py_os_rename
+            || self.uses.py_os_replace
+            || self.uses.py_os_makedirs
+            || self.uses.py_os_path_abspath
             || self.uses.range3
     }
 

@@ -90,6 +90,7 @@ runtime_cases!(
         "import.py",
         "All import tests passed!"
     ),
+    (runtime_stdlib_os_comprehensive, "stdlib_os", "stdlib_os.py"),
     (
         runtime_io_comprehensive,
         "io",

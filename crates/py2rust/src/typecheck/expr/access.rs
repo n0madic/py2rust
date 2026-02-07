@@ -1,4 +1,5 @@
 use super::*;
+use crate::stdlib::registry::{find_stdlib_attribute, resolve_module};
 
 impl<'a> TypeChecker<'a> {
     /// Map literal syntax to its direct static type.
@@ -104,6 +105,21 @@ impl<'a> TypeChecker<'a> {
         }
 
         let value_ty = self.check_expr(value, None)?;
+        if let Type::Module(module_name) = &value_ty {
+            let module_id = resolve_module(module_name.as_str()).ok_or_else(|| {
+                self.error(
+                    span,
+                    format!("module '{module_name}' is not registered in stdlib registry"),
+                )
+            })?;
+            let attr_spec = find_stdlib_attribute(module_id, attr).ok_or_else(|| {
+                self.error(
+                    span,
+                    format!("{module_name} has no supported member '{attr}'"),
+                )
+            })?;
+            return Ok((attr_spec.type_resolver)());
+        }
         if matches!(value_ty, Type::Unknown) {
             if let ExprKind::Name(name) = &value.kind {
                 if let Some(class_name) = self.current_class.as_ref() {
@@ -127,7 +143,6 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-
         if let ExprKind::Name(name) = &value.kind {
             if let Some(class_info) = self.ctx.classes.get(name) {
                 if let Some(attr_info) = class_info.class_attrs.get(attr) {
@@ -135,7 +150,6 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-
         match value_ty {
             Type::Custom(class_name) => {
                 let class_info = self
