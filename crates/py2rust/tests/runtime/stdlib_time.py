@@ -108,7 +108,15 @@ assert epoch_gm[7] == 1
 assert epoch_gm[8] == 0
 
 epoch_local = time.localtime(0.0)
-assert epoch_local == epoch_gm
+assert epoch_local[0] > 0
+assert 1 <= epoch_local[1] <= 12
+assert 1 <= epoch_local[2] <= 31
+assert 0 <= epoch_local[3] <= 23
+assert 0 <= epoch_local[4] <= 59
+assert 0 <= epoch_local[5] <= 59
+assert 0 <= epoch_local[6] <= 6
+assert 1 <= epoch_local[7] <= 366
+assert epoch_local[8] == 0 or epoch_local[8] == 1
 
 now_gm = time.gmtime()
 now_local = time.localtime()
@@ -130,7 +138,16 @@ assert plus_one[0] == 1970
 assert plus_one[1] == 1
 assert plus_one[2] == 1
 assert plus_one[5] == 1
-assert time.localtime(-1.0) == before_epoch
+before_epoch_local = time.localtime(-1.0)
+assert before_epoch_local[0] > 0
+assert 1 <= before_epoch_local[1] <= 12
+assert 1 <= before_epoch_local[2] <= 31
+assert 0 <= before_epoch_local[3] <= 23
+assert 0 <= before_epoch_local[4] <= 59
+assert 0 <= before_epoch_local[5] <= 59
+assert 0 <= before_epoch_local[6] <= 6
+assert 1 <= before_epoch_local[7] <= 366
+assert before_epoch_local[8] == 0 or before_epoch_local[8] == 1
 print("localtime()/gmtime() tests passed")
 
 # ===========================================================
@@ -220,7 +237,10 @@ from time import gmtime, localtime, strftime, strptime
 import_gm = gmtime(0.0)
 import_local = localtime(0.0)
 assert import_gm[0] == 1970
-assert import_local == import_gm
+assert import_local[0] > 0
+assert 1 <= import_local[1] <= 12
+assert 1 <= import_local[2] <= 31
+assert import_local[8] == 0 or import_local[8] == 1
 assert strftime("%Y-%m-%d", import_gm) == "1970-01-01"
 
 import_parsed = strptime(

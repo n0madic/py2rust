@@ -10,7 +10,8 @@ use std::process::{Command, Output};
 /// 3. It simplifies the CLI (no Cargo.toml needed)
 ///
 /// Note: generated Rust may reference external helper crates (for example
-/// `regex-lite` or `indexmap`) that must be linked explicitly when invoking rustc.
+/// `regex-lite`, `indexmap`, or `chrono`) that must be linked explicitly when
+/// invoking rustc.
 #[derive(Debug, Clone)]
 pub struct RustcOptions {
     /// Rust edition to use (2021 is the latest stable as of writing)
@@ -47,6 +48,7 @@ pub fn compile_rustc(
         .arg(bin_path);
     maybe_link_regex_lite(&mut cmd, rs_path)?;
     maybe_link_indexmap(&mut cmd, rs_path)?;
+    maybe_link_chrono(&mut cmd, rs_path)?;
     if opts.strip_symbols {
         // -C strip=symbols removes debug info, reducing binary size significantly
         cmd.arg("-C").arg("strip=symbols");
@@ -96,6 +98,27 @@ fn maybe_link_indexmap(cmd: &mut Command, rs_path: &Path) -> std::io::Result<()>
     Ok(())
 }
 
+/// Link `chrono` when generated code references it.
+fn maybe_link_chrono(cmd: &mut Command, rs_path: &Path) -> std::io::Result<()> {
+    let source = fs::read_to_string(rs_path)?;
+    if !source.contains("chrono::") {
+        return Ok(());
+    }
+    let lib_path = find_chrono_rlib().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "generated code requires chrono, but libchrono*.rlib was not found",
+        )
+    })?;
+    if let Some(parent) = lib_path.parent() {
+        cmd.arg("-L")
+            .arg(format!("dependency={}", parent.display()));
+    }
+    cmd.arg("--extern")
+        .arg(format!("chrono={}", lib_path.display()));
+    Ok(())
+}
+
 /// Resolve the built `regex-lite` rlib path from common Cargo target locations.
 fn find_regex_lite_rlib() -> Option<PathBuf> {
     find_dependency_rlib("regex_lite")
@@ -104,6 +127,11 @@ fn find_regex_lite_rlib() -> Option<PathBuf> {
 /// Resolve the built `indexmap` rlib path from common Cargo target locations.
 fn find_indexmap_rlib() -> Option<PathBuf> {
     find_dependency_rlib("indexmap")
+}
+
+/// Resolve the built `chrono` rlib path from common Cargo target locations.
+fn find_chrono_rlib() -> Option<PathBuf> {
+    find_dependency_rlib("chrono")
 }
 
 /// Resolve a dependency rlib path from common Cargo target locations.

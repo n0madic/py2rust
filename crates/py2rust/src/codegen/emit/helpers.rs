@@ -630,9 +630,51 @@ fn py_time_parse_fixed_digits(text: &[u8], idx: &mut usize, width: usize, field:
 
 /// Static helper body for `time.localtime([secs])`.
 const HELPER_PY_TIME_LOCALTIME: &str = r#"
+fn py_time_local_offset_seconds(year: i32, month: u32, mday: u32) -> i32 {
+    // Sample noon instead of midnight to avoid ambiguous/non-existent local midnight
+    // around DST transitions.
+    let local_result = chrono::TimeZone::with_ymd_and_hms(&chrono::Local, year, month, mday, 12, 0, 0);
+    let dt = local_result
+        .single()
+        .or_else(|| local_result.earliest())
+        .or_else(|| local_result.latest())
+        .unwrap_or_else(|| panic!("time.localtime(): invalid local date {}-{:02}-{:02}", year, month, mday));
+    chrono::Offset::fix(dt.offset()).local_minus_utc()
+}
+
+fn py_time_is_dst_local(dt: &chrono::DateTime<chrono::Local>) -> i64 {
+    let year = chrono::Datelike::year(dt);
+    let jan_offset = py_time_local_offset_seconds(year, 1, 1);
+    let jul_offset = py_time_local_offset_seconds(year, 7, 1);
+    if jan_offset == jul_offset {
+        return 0;
+    }
+    let current_offset = chrono::Offset::fix(dt.offset()).local_minus_utc();
+    let standard_offset = std::cmp::min(jan_offset, jul_offset);
+    if current_offset > standard_offset {
+        1
+    } else {
+        0
+    }
+}
+
 fn py_time_localtime(seconds: Option<f64>) -> __py_time_tuple {
-    // Lightweight behavior: localtime currently uses the same epoch split as gmtime.
-    py_time_split_epoch(seconds.unwrap_or_else(py_time_now_seconds))
+    let seconds = seconds.unwrap_or_else(py_time_now_seconds);
+    let whole = seconds.floor() as i64;
+    let utc = chrono::DateTime::<chrono::Utc>::from_timestamp(whole, 0)
+        .unwrap_or_else(|| panic!("time.localtime(): timestamp out of range"));
+    let local = utc.with_timezone(&chrono::Local);
+    (
+        i64::from(chrono::Datelike::year(&local)),
+        i64::from(chrono::Datelike::month(&local)),
+        i64::from(chrono::Datelike::day(&local)),
+        i64::from(chrono::Timelike::hour(&local)),
+        i64::from(chrono::Timelike::minute(&local)),
+        i64::from(chrono::Timelike::second(&local)),
+        i64::from(chrono::Datelike::weekday(&local).num_days_from_monday()),
+        i64::from(chrono::Datelike::ordinal(&local)),
+        py_time_is_dst_local(&local),
+    )
 }
 "#;
 
