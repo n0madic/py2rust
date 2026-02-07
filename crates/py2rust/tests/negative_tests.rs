@@ -112,6 +112,34 @@ z: int = good(x=5, unknown=1)
 }
 
 #[test]
+fn supports_positional_only_parameters() {
+    let source = r#"
+def add(x: int, /, y: int) -> int:
+    return x + y
+
+value: int = add(1, y=2)
+assert value == 3
+"#;
+    expect_success(source);
+}
+
+#[test]
+fn rejects_keyword_for_positional_only_parameter() {
+    let source = r#"
+def add(x: int, /, y: int) -> int:
+    return x + y
+
+value: int = add(x=1, y=2)
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("Positional-only argument passed as keyword"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
 fn rejects_slice_step_zero() {
     let source = r#"
 def bad(lst: list[int]) -> list[int]:

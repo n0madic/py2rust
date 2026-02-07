@@ -21,7 +21,7 @@ pub enum BoundArg {
 pub struct BoundCallPlan {
     /// Direct bindings for regular parameters (same length as parameter list).
     pub bound: Vec<Option<BoundArg>>,
-    /// Parameter indices with positional-or-keyword behavior.
+    /// Parameter indices that accept positional values (positional-only and positional-or-keyword).
     pub positional_params: Vec<usize>,
     /// Index of `*args` parameter, if present.
     pub vararg_idx: Option<usize>,
@@ -46,6 +46,8 @@ pub enum BindError {
     UnknownKeyword { keyword: String },
     /// Unexpected keyword for implicit-first-arg path.
     UnexpectedKeyword { keyword: String },
+    /// Keyword was used for a positional-only parameter.
+    PositionalOnlyAsKeyword { keyword: String },
     /// Too many positional arguments with no `*args`.
     ArgumentCountMismatch,
     /// Required argument is missing.
@@ -66,6 +68,9 @@ impl BindError {
             Self::UnknownKeyword { keyword } => format!("Unknown keyword argument `{keyword}`"),
             Self::UnexpectedKeyword { keyword } => {
                 format!("Unexpected keyword argument `{keyword}`")
+            }
+            Self::PositionalOnlyAsKeyword { keyword } => {
+                format!("Positional-only argument passed as keyword: `{keyword}`")
             }
             Self::ArgumentCountMismatch => "Argument count mismatch".to_string(),
             Self::MissingRequired { name } => format!("Missing required argument `{name}`"),
@@ -94,7 +99,9 @@ pub fn plan_non_unpacking_bind(
     let mut varkw_idx = None;
     for (idx, kind) in param_kinds.iter().enumerate() {
         match kind {
-            ParamKind::PositionalOrKeyword => positional_params.push(idx),
+            ParamKind::PositionalOnly | ParamKind::PositionalOrKeyword => {
+                positional_params.push(idx)
+            }
             ParamKind::VarArgs => vararg_idx = Some(idx),
             ParamKind::KeywordOnly => {}
             ParamKind::VarKeywords => varkw_idx = Some(idx),
@@ -128,6 +135,13 @@ pub fn plan_non_unpacking_bind(
         };
         if !seen_kw.insert((*kw_name).to_string()) {
             return Err(BindError::DuplicateKeyword {
+                keyword: (*kw_name).to_string(),
+            });
+        }
+        if param_names.iter().enumerate().any(|(idx, name)| {
+            *name == *kw_name && matches!(param_kinds[idx], ParamKind::PositionalOnly)
+        }) {
+            return Err(BindError::PositionalOnlyAsKeyword {
                 keyword: (*kw_name).to_string(),
             });
         }
@@ -166,7 +180,7 @@ pub fn plan_non_unpacking_bind(
     for idx in 0..param_len {
         if !matches!(
             param_kinds[idx],
-            ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly
+            ParamKind::PositionalOnly | ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly
         ) {
             continue;
         }

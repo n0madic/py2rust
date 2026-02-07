@@ -209,7 +209,6 @@ impl<'a> Lowerer<'a> {
     ///
     /// Unsupported features that will error:
     /// - Type parameters (generics)
-    /// - Positional-only parameters (/)
     ///
     /// Missing type annotations default to TypeRef::Unknown and will be inferred during
     /// type checking if possible.
@@ -223,15 +222,10 @@ impl<'a> Lowerer<'a> {
             return Err(self.error(func.range(), "Type parameters are not supported"));
         }
 
-        // Positional-only args (`/`) are still outside our supported subset.
-        if !func.args.posonlyargs.is_empty() {
-            return Err(self.error(func.range(), "positional-only args are not supported"));
-        }
-
         // Lower parameters in Python binding order:
-        // regular args, optional *args, keyword-only args, optional **kwargs.
+        // positional-only args, regular args, optional *args, keyword-only args, optional **kwargs.
         let mut params = Vec::new();
-        for (idx, arg) in func.args.args.iter().enumerate() {
+        for (idx, arg) in func.args.posonlyargs.iter().enumerate() {
             let def = &arg.def;
             let name_str = self.ident(def.arg.as_str());
             let default = match &arg.default {
@@ -250,7 +244,7 @@ impl<'a> Lowerer<'a> {
                     };
                     params.push(Param {
                         name: name_str,
-                        kind: ParamKind::PositionalOrKeyword,
+                        kind: ParamKind::PositionalOnly,
                         ann,
                         default: None,
                         span: Span::from(def.range),
@@ -266,13 +260,54 @@ impl<'a> Lowerer<'a> {
             };
             params.push(Param {
                 name: name_str,
+                kind: ParamKind::PositionalOnly,
+                ann,
+                default,
+                span: Span::from(def.range),
+            });
+        }
+        for (idx, arg) in func.args.args.iter().enumerate() {
+            let def = &arg.def;
+            let name_str = self.ident(def.arg.as_str());
+            let default = match &arg.default {
+                Some(expr) => Some(self.lower_expr(expr)?),
+                None => None,
+            };
+
+            // Special handling for `self` parameter in methods.
+            // In this group, idx == 0 means first positional-or-keyword argument.
+            if idx == 0 && name_str == "self" && func.args.posonlyargs.is_empty() {
+                if let Some(self_name) = self_type {
+                    let ann = if let Some(ann_expr) = &def.annotation {
+                        self.lower_type_ref(ann_expr)?
+                    } else {
+                        // Infer self type as the class name.
+                        TypeRef::Name(self_name.to_string())
+                    };
+                    params.push(Param {
+                        name: name_str,
+                        kind: ParamKind::PositionalOrKeyword,
+                        ann,
+                        default: None,
+                        span: Span::from(def.range),
+                    });
+                    continue;
+                }
+            }
+
+            // Positional-or-keyword parameters.
+            let ann = match &def.annotation {
+                Some(expr) => self.lower_type_ref(expr)?,
+                None => TypeRef::Unknown,
+            };
+            params.push(Param {
+                name: name_str,
                 kind: ParamKind::PositionalOrKeyword,
                 ann,
                 default,
                 span: Span::from(def.range),
             });
         }
-
         // `*args`
         if let Some(vararg) = &func.args.vararg {
             let ann = match &vararg.annotation {

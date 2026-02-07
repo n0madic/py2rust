@@ -132,6 +132,25 @@ fn call_bind_rejects_extra_positionals_without_varargs() {
 }
 
 #[test]
+fn call_bind_rejects_keyword_for_positional_only_param() {
+    let names = vec!["x".to_string(), "y".to_string()];
+    let kinds = vec![ParamKind::PositionalOnly, ParamKind::PositionalOrKeyword];
+    let has_defaults = vec![false, false];
+    let err = plan_non_unpacking_bind(&names, &kinds, &has_defaults, 0, &[Some("x")], false)
+        .expect_err("keyword for positional-only parameter should be rejected");
+    assert_eq!(
+        err,
+        BindError::PositionalOnlyAsKeyword {
+            keyword: "x".to_string()
+        }
+    );
+    assert_eq!(
+        err.message(),
+        "Positional-only argument passed as keyword: `x`"
+    );
+}
+
+#[test]
 fn call_bind_rejects_malformed_signature_metadata() {
     let names = vec!["x".to_string()];
     let kinds = vec![ParamKind::PositionalOrKeyword, ParamKind::VarArgs];

@@ -175,7 +175,9 @@ impl<'a> Codegen<'a> {
                 continue;
             };
             let candidate = match param.kind {
-                ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly => sig_ty.clone(),
+                ParamKind::PositionalOnly
+                | ParamKind::PositionalOrKeyword
+                | ParamKind::KeywordOnly => sig_ty.clone(),
                 ParamKind::VarArgs => match sig_ty {
                     Type::List(inner) => *inner.clone(),
                     _ => Type::Unknown,
@@ -274,6 +276,17 @@ impl<'a> Codegen<'a> {
         }
 
         lines.push(format!("let mut {pos_idx}: usize = 0;", pos_idx = pos_idx));
+        // Preserve CPython behavior: positional-only names cannot arrive via kwargs,
+        // even when `**kwargs` is present in the callee signature.
+        for param in &def.params {
+            if matches!(param.kind, ParamKind::PositionalOnly) {
+                lines.push(format!(
+                    "if {kw_map}.contains_key(\"{param_name}\") {{ return Err(PyError::TypeError(\"Positional-only argument passed as keyword: `{param_name}`\".into())); }}",
+                    kw_map = kw_map,
+                    param_name = param.name
+                ));
+            }
+        }
         // Call-site unpacking can fail at runtime (missing args, unknown kwargs, etc.),
         // so this path always materializes a `Result<_, PyError>` binder.
         self.uses.py_error = true;
@@ -298,6 +311,15 @@ impl<'a> Codegen<'a> {
             };
 
             match param.kind {
+                ParamKind::PositionalOnly => {
+                    lines.push(format!(
+                        "let {arg_var} = if {pos_idx} < {pos_vec}.len() {{ let v = {pos_vec}[{pos_idx}].clone(); {pos_idx} += 1; v }} else {{ {fallback} }};",
+                        arg_var = arg_var,
+                        pos_idx = pos_idx,
+                        pos_vec = pos_vec,
+                        fallback = fallback
+                    ));
+                }
                 ParamKind::PositionalOrKeyword => {
                     lines.push(format!(
                         "let {arg_var} = if {pos_idx} < {pos_vec}.len() {{ let v = {pos_vec}[{pos_idx}].clone(); {pos_idx} += 1; v }} else if let Some(v) = {kw_map}.remove(\"{param_name}\") {{ v }} else {{ {fallback} }};",

@@ -4,7 +4,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 
 ## Features (MVP)
 - Functions with required type annotations
-- Function signatures with defaults, keyword arguments, `*args`, keyword-only params, and `**kwargs`
+- Function signatures with positional-only params (`/`), defaults, keyword arguments, `*args`, keyword-only params, and `**kwargs`
 - Basic types: `int`, `float`, `bool`, `str`, `bytes`, `None`
 - Collections: `list[T]`, `dict[K, V]`, `tuple[...]`, `set[T]`
 - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, chained comparisons
@@ -114,8 +114,7 @@ The generated Rust injects tiny helper functions only when needed:
 - `generator.send(...)` expects a non-`None` value once the generator has started.
 - `round(x)` with a float input currently keeps a float result (`round(3.0)` -> `3.0`), while integer inputs stay integer.
 - Call-site `**kwargs` unpacking requires a `dict[str, T]` expression.
-- Positional-only parameters (`/`) are not supported.
-- Nested `def` lowering currently rejects advanced parameter forms (`*args`, keyword-only, `**kwargs`) inside nested local functions.
+- Nested `def` lowering currently rejects advanced parameter forms (`/`, `*args`, keyword-only, `**kwargs`) inside nested local functions.
 - `global x` requires `x` to exist at module scope, and declaration order follows CPython rules (`global` must appear before first use in the function).
 - `__init__` is treated as a constructor; it must only assign `self` fields.
 - Class decorators and decorator calls are rejected (e.g. `@decorator()` or `@dataclass`).

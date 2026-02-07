@@ -363,7 +363,9 @@ impl<'a> Codegen<'a> {
     fn resolve_decl_param_type(&self, param: &Param) -> Result<Type, CompileError> {
         let base = self.resolve_type_ref(&param.ann, param.span)?;
         Ok(match param.kind {
-            ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly => base,
+            ParamKind::PositionalOnly | ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly => {
+                base
+            }
             ParamKind::VarArgs => Type::List(Box::new(base)),
             ParamKind::VarKeywords => Type::Dict(Box::new(Type::Str), Box::new(base)),
         })

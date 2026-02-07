@@ -118,6 +118,14 @@ impl<'a> TypeChecker<'a> {
                 if !seen_keywords.insert(name.to_string()) {
                     return Err(self.error(span, format!("Multiple values for argument `{name}`")));
                 }
+                if sig.param_names.iter().enumerate().any(|(idx, param_name)| {
+                    param_name == name && matches!(sig.param_kinds[idx], ParamKind::PositionalOnly)
+                }) {
+                    return Err(self.error(
+                        span,
+                        format!("Positional-only argument passed as keyword: `{name}`"),
+                    ));
+                }
                 let direct_param = sig
                     .param_names
                     .iter()

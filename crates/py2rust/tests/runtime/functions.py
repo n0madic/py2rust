@@ -48,6 +48,14 @@ def test_typing_import() -> None:
 
 test_typing_import()
 
+# Positional-only parameter support (`/`)
+def positional_mix(a: int, /, b: int, *, c: int = 0) -> int:
+    return a + b + c
+
+assert positional_mix(1, 2) == 3, "positional-only basic call failed"
+assert positional_mix(1, 2, c=3) == 6, "positional-only with kw-only failed"
+assert positional_mix(1, b=2, c=4) == 7, "mixed positional and keyword call failed"
+
 # ===== SECTION: Recursion =====
 
 def factorial_recursive(n: int) -> int:

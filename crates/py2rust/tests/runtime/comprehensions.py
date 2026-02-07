@@ -89,7 +89,4 @@ def squared_set() -> set[int]:
 
 assert squared_set() == {0, 1, 4, 9, 16}
 
-# Note: Dict comprehensions are not yet supported by the transpiler.
-# TODO: Add dict comprehension tests when support is implemented.
-
 print("All comprehension tests passed!")

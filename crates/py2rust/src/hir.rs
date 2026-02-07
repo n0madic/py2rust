@@ -66,12 +66,14 @@ pub struct Param {
 
 /// Function parameter kinds supported by the transpiler.
 ///
+/// - PositionalOnly: parameter before `/` (`def f(x, /): ...`)
 /// - PositionalOrKeyword: regular parameter (`def f(x): ...`)
 /// - VarArgs: captures extra positional args (`def f(*args): ...`)
 /// - KeywordOnly: parameter after `*` or `*args` (`def f(*, x): ...`)
 /// - VarKeywords: captures extra keyword args (`def f(**kwargs): ...`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
+    PositionalOnly,
     PositionalOrKeyword,
     VarArgs,
     KeywordOnly,

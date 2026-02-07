@@ -39,7 +39,9 @@ impl<'a> TypeChecker<'a> {
             return Err(self.error(param.span, "Iterator[T] is only allowed as a return type"));
         }
         Ok(match param.kind {
-            ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly => ty,
+            ParamKind::PositionalOnly | ParamKind::PositionalOrKeyword | ParamKind::KeywordOnly => {
+                ty
+            }
             ParamKind::VarArgs => Type::List(Box::new(ty)),
             ParamKind::VarKeywords => Type::Dict(Box::new(Type::Str), Box::new(ty)),
         })
