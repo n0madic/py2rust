@@ -10,6 +10,7 @@ pub mod container;
 pub mod diagnostic;
 pub mod hir;
 pub mod hir_visit;
+pub mod import_resolver;
 pub mod lower;
 pub mod span;
 pub mod stdlib;
@@ -20,6 +21,7 @@ pub mod types;
 use crate::codegen::Codegen;
 use crate::diagnostic::{CompileError, Warning};
 use crate::hir_visit::{ExprWalkerMut, StmtWalkerMut};
+use crate::import_resolver::resolve_program_imports;
 use crate::lower::Lowerer;
 use crate::span::Span;
 use crate::typecheck::TypeChecker;
@@ -68,7 +70,10 @@ pub fn compile(
     })?;
 
     // Phase 2: Lower to HIR
-    let mut program = Lowerer::new(source, filename).lower(&suite)?;
+    let program = Lowerer::new(source, filename).lower(&suite)?;
+
+    // Resolve user-module/package imports into a merged HIR program.
+    let mut program = resolve_program_imports(program, source, filename)?;
 
     // Handle user-defined `main()` function collision
     rename_user_main(&mut program);

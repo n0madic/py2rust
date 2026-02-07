@@ -34,6 +34,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Builtins: `abs`, `all`, `any`, `ascii`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `iter`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `type`, `zip`
 - Stdlib modules (registry-backed): `os.remove(path)` and `sys.exit([code])`
 - Stdlib imports: `import os`, `import os as o`, `from os import remove`, `from os import remove as rm`, `import sys`, `from sys import exit`
+- User imports from local files/packages: `import mymod`, `from mymod import f`, and relative package imports (`from .x import y`, `from .. import z`)
 
 ## Usage
 
@@ -86,7 +87,7 @@ The generated Rust injects tiny helper functions only when needed:
 - `bool` follows Python numeric compatibility in arithmetic/comparison contexts (subtype of `int`) while remaining `bool` in boolean-only flows.
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
 - `typing.List/Dict/Set/Tuple` annotations are aliases of `list/dict/set/tuple` annotations.
-- Import support is intentionally strict: only `typing`, `os`, and `sys` modules are currently accepted.
+- Imports are unified through one resolver: `typing`/`os`/`sys` stay virtual, while local user modules/packages are loaded from files and merged before type checking/codegen.
 - For registry-backed stdlib calls, module import is required (`os.remove(...)` / `sys.exit(...)` without import is a compile error).
 - `from ... import *` is not supported for stdlib modules.
 - Supported stdlib members are currently limited to `os.remove` and `sys.exit`.

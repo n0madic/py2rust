@@ -12,7 +12,9 @@ impl<'a> Codegen<'a> {
     ///
     /// HashMap/HashSet are only imported if actually used (tracked by scan pass).
     pub(crate) fn emit_header(&mut self) {
-        self.push_line("#![allow(unused)]");
+        // Import names are namespace-mangled for collision safety and may violate
+        // Rust style lints in generated code.
+        self.push_line("#![allow(unused, non_snake_case, non_camel_case_types)]");
         if self.uses.hash_map {
             self.push_line("use std::collections::HashMap;");
         }

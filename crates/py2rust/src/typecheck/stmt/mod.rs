@@ -811,34 +811,55 @@ impl<'a> TypeChecker<'a> {
                         // Typing imports are annotation-only and have no runtime binding.
                         continue;
                     }
-                    let _module_id = resolve_module(binding.module.as_str())
-                        .ok_or_else(|| self.error(stmt.span, "Unsupported import"))?;
                     let bound_name = binding.alias.as_deref().unwrap_or(binding.module.as_str());
-                    self.insert_var(bound_name, Type::Module(binding.module.clone()), stmt.span)?;
+                    if resolve_module(binding.module.as_str()).is_some() {
+                        // Virtual stdlib module import (os/sys).
+                        self.insert_var(
+                            bound_name,
+                            Type::Module(binding.module.clone()),
+                            stmt.span,
+                        )?;
+                    } else {
+                        // User-module imports are resolved by the import pass.
+                        // Keep a permissive placeholder for remaining dynamic uses.
+                        self.insert_var(bound_name, Type::Unknown, stmt.span)?;
+                    }
                 }
             }
             StmtKind::ImportFrom { module, names } => {
                 if module != "typing" {
-                    let module_id = resolve_module(module.as_str())
-                        .ok_or_else(|| self.error(stmt.span, "Unsupported import"))?;
-                    for binding in names {
-                        let method_id = find_imported_member(module_id, binding.name.as_str())
-                            .ok_or_else(|| {
-                                self.error(
-                                    stmt.span,
-                                    format!("{module} has no supported member '{}'", binding.name),
-                                )
-                            })?;
-                        let spec = method_spec(method_id);
-                        let bound_name = binding.alias.as_deref().unwrap_or(binding.name.as_str());
-                        self.insert_var(
-                            bound_name,
-                            Type::StdlibFunction {
-                                module: spec.module_name.to_string(),
-                                method: spec.method_name.to_string(),
-                            },
-                            stmt.span,
-                        )?;
+                    if let Some(module_id) = resolve_module(module.as_str()) {
+                        for binding in names {
+                            let method_id = find_imported_member(module_id, binding.name.as_str())
+                                .ok_or_else(|| {
+                                    self.error(
+                                        stmt.span,
+                                        format!(
+                                            "{module} has no supported member '{}'",
+                                            binding.name
+                                        ),
+                                    )
+                                })?;
+                            let spec = method_spec(method_id);
+                            let bound_name =
+                                binding.alias.as_deref().unwrap_or(binding.name.as_str());
+                            self.insert_var(
+                                bound_name,
+                                Type::StdlibFunction {
+                                    module: spec.module_name.to_string(),
+                                    method: spec.method_name.to_string(),
+                                },
+                                stmt.span,
+                            )?;
+                        }
+                    } else {
+                        // User-module from-imports are rewritten by the import resolver.
+                        // Keep unresolved names permissive to avoid false negatives.
+                        for binding in names {
+                            let bound_name =
+                                binding.alias.as_deref().unwrap_or(binding.name.as_str());
+                            self.insert_var(bound_name, Type::Unknown, stmt.span)?;
+                        }
                     }
                 }
             }

@@ -370,36 +370,40 @@ impl<'a> Lowerer<'a> {
                     self.lower_runtime_match_stmt(&def.subject, &def.cases, def.range())?
                 }
             }
-            // Import statement: import os, import os as o
-            // We allow:
-            // - typing (for annotations)
-            // - os/sys (for supported stdlib calls)
-            // All other imports are rejected.
+            // Import statement: import module, import module as alias
+            // We preserve the module path as-is and defer module resolution
+            // (stdlib virtual modules vs user files/packages) to the import pass.
             ast::Stmt::Import(import) => {
                 let mut names = Vec::new();
                 for alias in &import.names {
                     let module = self.ident(alias.name.as_str());
-                    if !matches!(module.as_str(), "typing" | "os" | "sys") {
-                        return Err(self.error(stmt.range(), "Unsupported import"));
-                    }
                     let alias = alias.asname.as_ref().map(|name| self.ident(name.as_str()));
                     names.push(ImportBinding { module, alias });
                 }
                 StmtKind::Import { names }
             }
-            // From-import: from os import remove, from os import remove as rm
-            // and from typing import ...
+            // From-import: from module import name, including relative imports.
+            //
+            // Representation detail:
+            // - absolute import: "pkg.mod"
+            // - relative import: ".mod", "..", "..mod"
+            //   (leading dots encode relative level)
             ast::Stmt::ImportFrom(import) => {
-                let module_name = import
-                    .module
-                    .as_ref()
-                    .map(|m| self.ident(m.as_str()))
-                    .ok_or_else(|| self.error(stmt.range(), "Unsupported import"))?;
-                let level_ok = import.level.map(|lvl| lvl.to_u32()).unwrap_or(0) == 0;
-                if !level_ok {
-                    return Err(self.error(stmt.range(), "Unsupported import"));
-                }
-                if !matches!(module_name.as_str(), "typing" | "os" | "sys") {
+                let level = import.level.map(|lvl| lvl.to_u32()).unwrap_or(0);
+                let module_name = if level == 0 {
+                    import
+                        .module
+                        .as_ref()
+                        .map(|m| self.ident(m.as_str()))
+                        .ok_or_else(|| self.error(stmt.range(), "Unsupported import"))?
+                } else {
+                    let mut composed = ".".repeat(level as usize);
+                    if let Some(module) = import.module.as_ref() {
+                        composed.push_str(&self.ident(module.as_str()));
+                    }
+                    composed
+                };
+                if level == 0 && module_name.is_empty() {
                     return Err(self.error(stmt.range(), "Unsupported import"));
                 }
                 let mut names = Vec::new();
