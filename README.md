@@ -28,6 +28,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Enum-like `Union` aliases via `A | B` type aliases
 - `match/case` for literals/singletons, capture and wildcard patterns, `|` patterns, guards, and list sequence/star patterns
 - `match/case` on union variants (class patterns) with `__match_args__` support
+- Exception handling: `try/except/else/finally`, `raise`, bare re-raise, typed handlers, bare `except:`, and custom exception subclasses rooted in supported built-in exceptions
 - Custom iterators via `__iter__` and `next`
 - List, set, and dict comprehensions (including multiple generator clauses)
 - Generator functions (`yield`) with `next(...)`, `.send(...)`, `.close()`, and generator expressions
@@ -68,6 +69,7 @@ cargo test -p py2rust
 ```
 
 Runtime integration coverage lives in `crates/py2rust/tests/runtime/`.
+Exception coverage is consolidated in `crates/py2rust/tests/runtime/exceptions.py` and includes built-in/custom exception flows plus regression scenarios.
 
 Negative/compile-fail coverage lives in `crates/py2rust/tests/negative_tests.rs`.
 
@@ -106,6 +108,7 @@ The generated Rust injects tiny helper functions only when needed:
 - Class-pattern `match` (e.g. `case Point(x, y):`) currently requires a union-typed subject.
 - Guards on class-pattern union matches are currently rejected.
 - `dict` indexing raises `KeyError` (propagated as `PyError`).
+- `raise X from Y` / `raise X from None` syntax is accepted, but explicit cause/context metadata is not yet preserved in generated Rust.
 - Mixed-type tuple iteration falls back to gradual typing (`Unknown`/`PyRepr`) where static unification is not possible.
 - Tuple slicing requires literal integer bounds (including negative literals).
 - String indexing/slicing is character-based (Unicode scalar values).

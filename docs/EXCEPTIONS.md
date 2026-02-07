@@ -24,9 +24,11 @@ This document describes the exception handling implementation for py2rust, which
 - Converts Python `raise` statements to HIR
 - Handles exception handler binding (`except ValueError as e:`)
 - Supports `except Exception` as a catch-all
+- Supports bare `except:` as a catch-all
+- Parses `raise X from Y` / `raise X from None` syntax
 
 ✅ **Type Checking**
-- Validates exception types (built-in)
+- Validates exception types (built-in and user-defined exception subclasses)
 - Type checks try/except/else/finally blocks
 - Validates raise statements
 - Prevents re-raise outside except handlers
@@ -126,7 +128,14 @@ def caller():
 - `NotImplementedError`
 - `IOError`
 - `OverflowError`
+- `GeneratorExit`
+- `MemoryError`
 - `Exception` (catch-all)
+
+### Custom Exceptions
+- User-defined exception classes are supported when they inherit (single inheritance chain) from a supported built-in exception root.
+- Custom exceptions map to their built-in root variant in generated `PyError`.
+- Exception inheritance chains are resolved for `raise`, `except`, and catch compatibility.
 
 ## Known Limitations
 
@@ -145,11 +154,9 @@ Some edge cases:
 - Try/except blocks that don't catch all exception types will propagate
 - Partial exception handling is conservative (assumes propagation)
 
-### Not Yet Implemented
-- Custom exception classes (user-defined)
-- Exception chaining (`raise X from Y`)
-- Bare `except:` clauses (catch-all without type)
-- Re-raise within nested except handlers
+### Current Limitations
+- `raise X from Y` and `raise X from None` are accepted, but explicit cause/context metadata is currently not preserved in generated Rust.
+- Custom exception hierarchies must be single-inheritance chains rooted in a supported built-in exception.
 
 ## Generated Code Examples
 
@@ -234,8 +241,7 @@ pub fn example() -> () {
 ## Future Enhancements
 
 Potential improvements:
-1. Support for custom exception classes
+1. Preserve explicit cause/context metadata for `raise ... from ...`
 2. Better variable scoping in try/except/else
-3. Exception chaining support
-4. More precise throw analysis for partial exception handling
-5. Optimization of match patterns for common cases
+3. More precise throw analysis for partial exception handling
+4. Optimization of match patterns for common cases
