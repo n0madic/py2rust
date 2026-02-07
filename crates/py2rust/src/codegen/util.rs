@@ -344,6 +344,8 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                             | "readlines"
                             | "write"
                             | "close"
+                            | "__enter__"
+                            | "__exit__"
                     ) {
                         if let ExprKind::Name(name) = &value.kind {
                             *counts.entry(name.clone()).or_insert(0) += 1;

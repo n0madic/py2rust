@@ -28,7 +28,8 @@ impl<'a> TypeChecker<'a> {
             Type::Dict(key, _) => Ok(*key.clone()),
             Type::Tuple(items) => {
                 if items.is_empty() {
-                    Err(self.error(span, "Cannot iterate over empty tuple"))
+                    // Empty tuple is iterable at runtime; item type is never observed.
+                    Ok(Type::Unknown)
                 } else if items.iter().all(|t| t == &items[0]) {
                     Ok(items[0].clone())
                 } else {

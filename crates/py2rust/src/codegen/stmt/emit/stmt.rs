@@ -758,10 +758,11 @@ impl<'a> Codegen<'a> {
                 let in_throwing_fn = self.current_function_throws();
                 let in_try_with_value = self.try_block_return_type.is_some();
                 let try_uses_option = self.try_block_returns_option;
+                let in_lambda = self.lambda_depth > 0;
 
                 // Inside try blocks with value returns, wrap as `Ok(Some(..))` so
                 // non-returning branches can still fall through via `Ok(None)`.
-                let wrap_in_ok = in_throwing_fn || in_try_with_value;
+                let wrap_in_ok = (in_throwing_fn || in_try_with_value) && !in_lambda;
 
                 if let Some(expr) = value {
                     let expected = if let Some(lambda_ret) =
@@ -960,11 +961,26 @@ impl<'a> Codegen<'a> {
             StmtKind::Continue => self.push_line("continue;"),
             StmtKind::Assert { test, msg } => {
                 let test_expr = self.gen_expr(test)?;
-                if let Some(msg) = msg {
-                    let msg_expr = self.gen_expr(msg)?;
-                    self.push_line(&format!("assert!({}, \"{{}}\", {});", test_expr, msg_expr));
+                let msg_expr = if let Some(msg) = msg {
+                    self.gen_expr(msg)?
                 } else {
-                    self.push_line(&format!("assert!({});", test_expr));
+                    "\"assertion failed\".to_string()".to_string()
+                };
+                self.uses.py_error = true;
+                let in_throwing_context = self.lambda_depth == 0
+                    && (self.try_block_return_type.is_some()
+                        || matches!(self.current_function_ret.as_ref(), Some(Type::Result(_, _)))
+                        || (self.current_function.is_none() && self.top_level_can_throw));
+                if in_throwing_context {
+                    self.push_line(&format!(
+                        "if !({}) {{ return Err(PyError::AssertionError({})); }}",
+                        test_expr, msg_expr
+                    ));
+                } else {
+                    self.push_line(&format!(
+                        "if !({}) {{ panic!(\"AssertionError: {{}}\", {}); }}",
+                        test_expr, msg_expr
+                    ));
                 }
             }
             StmtKind::Expr(expr) => {

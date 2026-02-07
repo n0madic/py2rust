@@ -39,7 +39,7 @@ impl<'a> TypeChecker<'a> {
         span: Span,
     ) -> Result<(), CompileError> {
         if let Some(exc_expr) = exc {
-            // Special handling for built-in exception constructors.
+            // Special handling for built-in and custom exception constructors.
             if let ExprKind::Call {
                 func,
                 args,
@@ -47,7 +47,7 @@ impl<'a> TypeChecker<'a> {
             } = &mut exc_expr.kind
             {
                 if let ExprKind::Name(exc_name) = &func.kind {
-                    if self.is_builtin_exception(exc_name) {
+                    if self.resolve_exception_variant_name(exc_name).is_some() {
                         // Validate arguments (should be string message).
                         if !args.is_empty() {
                             self.check_expr(&mut args[0], Some(&Type::Str))?;
@@ -80,7 +80,7 @@ impl<'a> TypeChecker<'a> {
                 } = &mut cause_expr.kind
                 {
                     if let ExprKind::Name(exc_name) = &func.kind {
-                        if self.is_builtin_exception(exc_name) {
+                        if self.resolve_exception_variant_name(exc_name).is_some() {
                             if !args.is_empty() {
                                 self.check_expr(&mut args[0], Some(&Type::Str))?;
                             }
@@ -99,7 +99,9 @@ impl<'a> TypeChecker<'a> {
                     .ty
                     .as_ref()
                     .ok_or_else(|| self.error(span, "Cause type unknown"))?;
-                self.validate_exception_type(cause_ty, span)?;
+                if !matches!(cause_ty, Type::None) {
+                    self.validate_exception_type(cause_ty, span)?;
+                }
             }
         } else {
             // Re-raise: must be in except handler.
@@ -123,12 +125,13 @@ impl<'a> TypeChecker<'a> {
 
         // Bind exception to name if present.
         if let Some(name) = &handler.name {
-            let exc_type = handler
-                .exc_type
-                .as_ref()
-                .map(|t| Type::Exception(t.clone()))
-                .unwrap_or(Type::Exception("PyError".to_string()));
-            self.insert_var(name, exc_type, handler.span)?;
+            // Specific handlers bind the payload message (`String`).
+            // Catch-all handlers bind the full `PyError` object for re-raise flows.
+            let bound_ty = match handler.exc_type.as_deref() {
+                Some("Exception") | None => Type::Exception("PyError".to_string()),
+                Some(_) => Type::Str,
+            };
+            self.insert_var(name, bound_ty, handler.span)?;
         }
 
         self.except_handler_depth += 1;
@@ -144,39 +147,17 @@ impl<'a> TypeChecker<'a> {
     fn validate_exception_type(&self, ty: &Type, span: Span) -> Result<(), CompileError> {
         match ty {
             Type::Exception(_) => Ok(()),
-            Type::Custom(name) if self.is_builtin_exception(name) => Ok(()),
-            Type::Custom(name) if self.ctx.classes.contains_key(name) => Ok(()),
+            Type::Custom(name) if self.resolve_exception_variant_name(name).is_some() => Ok(()),
             _ => Err(self.error(span, "Invalid exception type")),
         }
     }
 
     /// Validate an exception type name in an `except SomeError` clause.
     fn validate_exception_name(&self, name: &str, span: Span) -> Result<(), CompileError> {
-        if self.is_builtin_exception(name) || self.ctx.classes.contains_key(name) {
+        if self.resolve_exception_variant_name(name).is_some() {
             Ok(())
         } else {
             Err(self.error(span, format!("Unknown exception type: {}", name)))
         }
-    }
-
-    /// Check whether a name is a supported built-in exception class.
-    fn is_builtin_exception(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "Exception"
-                | "ValueError"
-                | "TypeError"
-                | "RuntimeError"
-                | "KeyError"
-                | "IndexError"
-                | "AttributeError"
-                | "ZeroDivisionError"
-                | "NameError"
-                | "AssertionError"
-                | "StopIteration"
-                | "NotImplementedError"
-                | "IOError"
-                | "OverflowError"
-        )
     }
 }

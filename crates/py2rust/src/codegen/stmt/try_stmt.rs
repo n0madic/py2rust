@@ -19,11 +19,15 @@ impl<'a> Codegen<'a> {
         // Check if try body contains return with a value.
         let try_return_type = self.find_try_return_type(body);
         let has_value_return = try_return_type.is_some();
+        // Drop-based finally captures mutable references across the whole try scope.
+        // For plain statement try-blocks in non-throwing functions, emit finally inline
+        // after try handling to avoid borrow conflicts.
+        let use_drop_finally = has_finally && (has_value_return || in_throwing_fn);
 
         // Collect variables declared in try body that might be used in else.
         let try_vars = self.collect_try_block_vars(body);
 
-        if has_finally {
+        if use_drop_finally {
             // Use Drop trait for guaranteed cleanup.
             self.push_line("{"); // Open finally scope.
             self.indent += 1;
@@ -83,7 +87,11 @@ impl<'a> Codegen<'a> {
         // Track that we're inside a try block with value return.
         let prev_try_return_type = self.try_block_return_type.take();
         let prev_try_returns_option = self.try_block_returns_option;
-        self.try_block_return_type = try_return_type.clone();
+        self.try_block_return_type = if has_value_return {
+            try_return_type.clone()
+        } else {
+            Some(Type::None)
+        };
         self.try_block_returns_option = try_returns_option;
 
         // Emit try body, but if we have else block, wrap Let statements.
@@ -263,8 +271,14 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        if has_finally && !use_drop_finally {
+            for stmt in finalbody {
+                self.emit_stmt(stmt, mut_counts)?;
+            }
+        }
+
         // Close the finally scope if we opened it.
-        if has_finally {
+        if use_drop_finally {
             self.indent -= 1;
             self.push_line("}"); // Close the scope that contains Finally.
         }
@@ -408,10 +422,18 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.push_line("}");
             } else {
+                let variant = self
+                    .resolve_exception_variant_name(exc_type)
+                    .ok_or_else(|| {
+                        self.error(
+                            handler.span,
+                            format!("Unknown exception type for handler: {exc_type}"),
+                        )
+                    })?;
                 let pattern = if let Some(name) = &handler.name {
-                    format!("Err(PyError::{}({}))", exc_type, name)
+                    format!("Err(PyError::{}({}))", variant.as_str(), name)
                 } else {
-                    format!("Err(PyError::{}(_e))", exc_type)
+                    format!("Err(PyError::{}(_e))", variant.as_str())
                 };
 
                 self.push_line(&format!("{} => {{", pattern));
@@ -422,7 +444,8 @@ impl<'a> Codegen<'a> {
                     let exc_var = handler.name.as_deref().unwrap_or("_e");
                     self.push_line(&format!(
                         "let _current_exception = PyError::{}({}.clone());",
-                        exc_type, exc_var
+                        variant.as_str(),
+                        exc_var
                     ));
                 }
 

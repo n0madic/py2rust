@@ -243,4 +243,52 @@ impl<'a> TypeChecker<'a> {
         self.scopes.pop();
         Ok(self.ctx.clone())
     }
+
+    /// Return true when a name refers to a built-in Python exception type we support.
+    pub(super) fn is_builtin_exception_name(name: &str) -> bool {
+        matches!(
+            name,
+            "Exception"
+                | "ValueError"
+                | "TypeError"
+                | "RuntimeError"
+                | "KeyError"
+                | "IndexError"
+                | "AttributeError"
+                | "ZeroDivisionError"
+                | "NameError"
+                | "AssertionError"
+                | "StopIteration"
+                | "NotImplementedError"
+                | "IOError"
+                | "OverflowError"
+                | "GeneratorExit"
+                | "MemoryError"
+        )
+    }
+
+    /// Resolve a custom exception class name to its built-in root variant.
+    ///
+    /// For built-ins this returns the same name. For user-defined exceptions this walks
+    /// the class inheritance chain until it reaches a built-in exception base.
+    pub(super) fn resolve_exception_variant_name(&self, name: &str) -> Option<String> {
+        if Self::is_builtin_exception_name(name) {
+            return Some(name.to_string());
+        }
+
+        let mut current = name;
+        let mut seen: HashSet<&str> = HashSet::new();
+        loop {
+            if !seen.insert(current) {
+                // Defensive cycle guard for malformed inheritance graphs.
+                return None;
+            }
+            let class_info = self.ctx.classes.get(current)?;
+            let base = class_info.base.as_deref()?;
+            if Self::is_builtin_exception_name(base) {
+                return Some(base.to_string());
+            }
+            current = base;
+        }
+    }
 }

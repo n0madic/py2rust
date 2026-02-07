@@ -119,6 +119,20 @@ impl ThrowAnalyzer {
                 // Bare raise statement - always propagates
                 StmtKind::Raise { .. } => return true,
 
+                StmtKind::Expr(expr)
+                | StmtKind::Let { value: expr, .. }
+                | StmtKind::Return { value: Some(expr) } => {
+                    if self.expr_contains_uncaught_raise(expr) {
+                        return true;
+                    }
+                }
+
+                StmtKind::Assign { value, .. } => {
+                    if self.expr_contains_uncaught_raise(value) {
+                        return true;
+                    }
+                }
+
                 // Try/except block - need to check if exceptions are caught
                 StmtKind::Try {
                     body,
@@ -181,6 +195,88 @@ impl ThrowAnalyzer {
             }
         }
         false
+    }
+
+    /// Recursively inspect expression trees for embedded block raises.
+    fn expr_contains_uncaught_raise(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Block { stmts } => self.has_uncaught_raise(stmts),
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
+                self.expr_contains_uncaught_raise(func)
+                    || args
+                        .iter()
+                        .any(|arg| self.expr_contains_uncaught_raise(arg))
+                    || keywords
+                        .iter()
+                        .any(|kw| self.expr_contains_uncaught_raise(&kw.value))
+            }
+            ExprKind::Starred { value } => self.expr_contains_uncaught_raise(value),
+            ExprKind::Yield { value } => value
+                .as_ref()
+                .is_some_and(|inner| self.expr_contains_uncaught_raise(inner)),
+            ExprKind::Attr { value, .. } => self.expr_contains_uncaught_raise(value),
+            ExprKind::Binary { left, right, .. } | ExprKind::Compare { left, right, .. } => {
+                self.expr_contains_uncaught_raise(left) || self.expr_contains_uncaught_raise(right)
+            }
+            ExprKind::Unary { expr, .. } => self.expr_contains_uncaught_raise(expr),
+            ExprKind::CompareChain {
+                left, comparators, ..
+            } => {
+                self.expr_contains_uncaught_raise(left)
+                    || comparators
+                        .iter()
+                        .any(|cmp| self.expr_contains_uncaught_raise(cmp))
+            }
+            ExprKind::BoolOp { values, .. }
+            | ExprKind::List(values)
+            | ExprKind::Tuple(values)
+            | ExprKind::Set(values) => values
+                .iter()
+                .any(|value| self.expr_contains_uncaught_raise(value)),
+            ExprKind::Dict(items) => items.iter().any(|(k, v)| {
+                self.expr_contains_uncaught_raise(k) || self.expr_contains_uncaught_raise(v)
+            }),
+            ExprKind::Index { value, index } => {
+                self.expr_contains_uncaught_raise(value) || self.expr_contains_uncaught_raise(index)
+            }
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } => {
+                self.expr_contains_uncaught_raise(value)
+                    || start
+                        .as_ref()
+                        .is_some_and(|inner| self.expr_contains_uncaught_raise(inner))
+                    || end
+                        .as_ref()
+                        .is_some_and(|inner| self.expr_contains_uncaught_raise(inner))
+                    || step
+                        .as_ref()
+                        .is_some_and(|inner| self.expr_contains_uncaught_raise(inner))
+            }
+            ExprKind::ListComp { elt, iter, ifs, .. }
+            | ExprKind::SetComp { elt, iter, ifs, .. } => {
+                self.expr_contains_uncaught_raise(elt)
+                    || self.expr_contains_uncaught_raise(iter)
+                    || ifs
+                        .iter()
+                        .any(|cond| self.expr_contains_uncaught_raise(cond))
+            }
+            ExprKind::UnionCtor { inner, .. } => self.expr_contains_uncaught_raise(inner),
+            ExprKind::Lambda { body, .. } => self.expr_contains_uncaught_raise(body),
+            ExprKind::IfExpr { test, body, orelse } => {
+                self.expr_contains_uncaught_raise(test)
+                    || self.expr_contains_uncaught_raise(body)
+                    || self.expr_contains_uncaught_raise(orelse)
+            }
+            ExprKind::Literal(_) | ExprKind::Name(_) => false,
+        }
     }
 
     /// Check if statements contain calls to throwing functions (not caught).

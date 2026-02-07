@@ -332,7 +332,9 @@ impl<'a> Codegen<'a> {
         }
         for param in iter {
             let ty = self.resolve_decl_param_type(param)?;
-            let ty_str = if matches!(ty, Type::Unknown) {
+            let ty_str = if func.name == "__exit__" && matches!(ty, Type::Unknown) {
+                "i64".to_string()
+            } else if matches!(ty, Type::Unknown) {
                 "()".to_string()
             } else {
                 // Convert to borrowed type for method parameters.

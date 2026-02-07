@@ -368,6 +368,13 @@ impl<'a> TypeChecker<'a> {
                 if let Some(key_expr) = key_arg {
                     let _ = self.infer_callable_return(key_expr, &item_ty, span)?;
                 }
+                if matches!(item_ty, Type::Unknown) {
+                    if let Some(expected_ty) = expected {
+                        if !matches!(expected_ty, Type::Unknown) {
+                            return Ok(expected_ty.clone());
+                        }
+                    }
+                }
                 return Ok(item_ty);
             }
             if key_arg.is_some() {

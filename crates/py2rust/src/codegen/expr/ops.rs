@@ -165,14 +165,75 @@ impl<'a> Codegen<'a> {
                 ));
             }
         }
+        if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul)
+            && matches!(expr.ty.as_ref(), Some(Type::Int))
+            && self.current_function.is_some()
+        {
+            let left_expr = self.gen_numeric_operand(left, false)?;
+            let right_expr = self.gen_numeric_operand(right, false)?;
+            let left_checked = format!("({}).to_owned()", left_expr);
+            let right_checked = format!("({}).to_owned()", right_expr);
+            let checked_method = match op {
+                BinOp::Add => "checked_add",
+                BinOp::Sub => "checked_sub",
+                BinOp::Mul => "checked_mul",
+                _ => unreachable!(),
+            };
+            self.uses.py_error = true;
+            let guarded = format!(
+                "{}.{}({}).ok_or_else(|| PyError::OverflowError(\"integer overflow\".to_string()))",
+                left_checked, checked_method, right_checked
+            );
+            return Ok(self.wrap_result(guarded));
+        }
         if matches!(op, BinOp::FloorDiv) {
             let is_float = matches!(expr.ty.as_ref(), Some(Type::Float));
             let left_expr = self.gen_numeric_operand(left, is_float)?;
             let right_expr = self.gen_numeric_operand(right, is_float)?;
+            let right_is_zero_literal = matches!(&right.kind, ExprKind::Literal(Literal::Int(0)))
+                || matches!(&right.kind, ExprKind::Literal(Literal::Float(v)) if *v == 0.0);
+            let needs_zero_guard = right_is_zero_literal || self.current_function.is_some();
+            if needs_zero_guard {
+                self.uses.py_error = true;
+                let rhs_tmp = self.new_tmp();
+                let guarded = if is_float {
+                    format!(
+                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0.0f64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".to_string())) }} else {{ Ok(({left_expr} / {rhs_tmp}).floor()) }} }}"
+                    )
+                } else {
+                    format!(
+                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0i64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".to_string())) }} else {{ Ok({left_expr}.div_euclid({rhs_tmp})) }} }}"
+                    )
+                };
+                return Ok(self.wrap_result(guarded));
+            }
             if is_float {
                 return Ok(format!("(({} / {}).floor())", left_expr, right_expr));
             }
             return Ok(format!("({}.div_euclid({}))", left_expr, right_expr));
+        }
+        if matches!(op, BinOp::Mod) {
+            let is_float = matches!(expr.ty.as_ref(), Some(Type::Float));
+            let left_expr = self.gen_numeric_operand(left, is_float)?;
+            let right_expr = self.gen_numeric_operand(right, is_float)?;
+            let right_is_zero_literal = matches!(&right.kind, ExprKind::Literal(Literal::Int(0)))
+                || matches!(&right.kind, ExprKind::Literal(Literal::Float(v)) if *v == 0.0);
+            let needs_zero_guard = right_is_zero_literal || self.current_function.is_some();
+            if needs_zero_guard {
+                self.uses.py_error = true;
+                let rhs_tmp = self.new_tmp();
+                let guarded = if is_float {
+                    format!(
+                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0.0f64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".to_string())) }} else {{ Ok({left_expr} % {rhs_tmp}) }} }}"
+                    )
+                } else {
+                    format!(
+                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0i64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".to_string())) }} else {{ Ok({left_expr} % {rhs_tmp}) }} }}"
+                    )
+                };
+                return Ok(self.wrap_result(guarded));
+            }
+            return Ok(format!("({} % {})", left_expr, right_expr));
         }
         if matches!(op, BinOp::Pow) {
             let is_float = matches!(expr.ty.as_ref(), Some(Type::Float));

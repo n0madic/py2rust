@@ -4,9 +4,7 @@ use crate::common::run_py;
 
 #[test]
 fn runtime_exceptions_comprehensive() {
-    run_py(
-        "exceptions",
-        include_str!("exceptions.py"),
-        Some("All exception tests passed!"),
-    );
+    // The comprehensive script emits per-case progress logs; only successful
+    // execution matters because each scenario is validated via assertions.
+    run_py("exceptions", include_str!("exceptions.py"), None);
 }

@@ -635,6 +635,7 @@ fn py_list_str<T: PyListRepr>(list: &Arc<Mutex<Vec<T>>>) -> String {
 const HELPER_PY_ERROR_ENUM: &str = r#"
 #[derive(Debug, Clone)]
 pub enum PyError {
+    Exception(String),
     ValueError(String),
     TypeError(String),
     RuntimeError(String),
@@ -648,11 +649,14 @@ pub enum PyError {
     NotImplementedError(String),
     IOError(String),
     OverflowError(String),
+    GeneratorExit(String),
+    MemoryError(String),
 }
 
 impl std::fmt::Display for PyError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
+            PyError::Exception(msg) => write!(f, "Exception: {}", msg),
             PyError::ValueError(msg) => write!(f, "ValueError: {}", msg),
             PyError::TypeError(msg) => write!(f, "TypeError: {}", msg),
             PyError::RuntimeError(msg) => write!(f, "RuntimeError: {}", msg),
@@ -666,6 +670,8 @@ impl std::fmt::Display for PyError {
             PyError::NotImplementedError(msg) => write!(f, "NotImplementedError: {}", msg),
             PyError::IOError(msg) => write!(f, "IOError: {}", msg),
             PyError::OverflowError(msg) => write!(f, "OverflowError: {}", msg),
+            PyError::GeneratorExit(msg) => write!(f, "GeneratorExit: {}", msg),
+            PyError::MemoryError(msg) => write!(f, "MemoryError: {}", msg),
         }
     }
 }

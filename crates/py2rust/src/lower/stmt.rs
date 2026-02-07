@@ -202,84 +202,10 @@ impl<'a> Lowerer<'a> {
                 }
             }
             // Context manager: with expr as name: body
-            //
-            // We lower this to a block with explicit close() calls:
-            // with open("x") as f:
-            //     body
-            // becomes:
-            // {
-            //     __tmp = open("x")
-            //     f = __tmp
-            //     body
-            //     __tmp.close()
-            // }
-            //
-            // For multiple with-items, close() calls are appended in reverse order.
             ast::Stmt::With(with_stmt) => {
-                let mut block_stmts = Vec::new();
-                let mut close_stmts = Vec::new();
-                let mut lowered_body = with_stmt
-                    .body
-                    .iter()
-                    .map(|s| self.lower_stmt(s))
-                    .collect::<Result<Vec<_>, _>>()?;
-
                 let with_id = stmt.range().start().to_u32();
-                for (item_index, item) in with_stmt.items.iter().enumerate() {
-                    let item_span = Span::from(item.context_expr.range());
-                    let temp_name =
-                        self.ident(&format!("__py2rust_with_{}_{}", with_id, item_index));
-                    let manager_name = if let Some(optional_vars) = &item.optional_vars {
-                        match &**optional_vars {
-                            ast::Expr::Name(name) => self.ident(name.id.as_str()),
-                            _ => {
-                                return Err(self.error(
-                                    optional_vars.range(),
-                                    "with target must be a simple name",
-                                ));
-                            }
-                        }
-                    } else {
-                        temp_name
-                    };
-
-                    block_stmts.push(Stmt {
-                        kind: StmtKind::Let {
-                            name: manager_name.clone(),
-                            ann: None,
-                            value: self.lower_expr(&item.context_expr)?,
-                        },
-                        span: item_span,
-                    });
-
-                    close_stmts.push(Stmt {
-                        kind: StmtKind::Expr(Expr {
-                            kind: ExprKind::Call {
-                                func: Box::new(Expr {
-                                    kind: ExprKind::Attr {
-                                        value: Box::new(Expr {
-                                            kind: ExprKind::Name(manager_name),
-                                            span: item_span,
-                                            ty: None,
-                                        }),
-                                        attr: "close".to_string(),
-                                    },
-                                    span: item_span,
-                                    ty: None,
-                                }),
-                                args: vec![],
-                                keywords: vec![],
-                            },
-                            span: item_span,
-                            ty: None,
-                        }),
-                        span: item_span,
-                    });
-                }
-                block_stmts.append(&mut lowered_body);
-                for close_stmt in close_stmts.into_iter().rev() {
-                    block_stmts.push(close_stmt);
-                }
+                let block_stmts =
+                    self.lower_with_items(&with_stmt.items, &with_stmt.body, with_id, 0)?;
                 StmtKind::Expr(Expr {
                     kind: ExprKind::Block { stmts: block_stmts },
                     span,
@@ -564,6 +490,198 @@ impl<'a> Lowerer<'a> {
             _ => return Err(self.error(stmt.range(), "Unsupported statement")),
         };
         Ok(Stmt { kind, span })
+    }
+
+    /// Lower a `with` item chain into explicit `__enter__/__exit__` calls.
+    ///
+    /// The lowering mirrors Python semantics for:
+    /// - enter order (left-to-right)
+    /// - exit order (right-to-left via nesting)
+    /// - suppression (`__exit__` returning truthy suppresses the exception)
+    fn lower_with_items(
+        &self,
+        items: &[ast::WithItem],
+        body: &[ast::Stmt],
+        with_id: u32,
+        depth: usize,
+    ) -> Result<Vec<Stmt>, CompileError> {
+        if items.is_empty() {
+            return body.iter().map(|stmt| self.lower_stmt(stmt)).collect();
+        }
+
+        let item = &items[0];
+        let item_span = Span::from(item.context_expr.range());
+        if self.is_open_call_expr(&item.context_expr) {
+            // Keep file `with open(...) as f:` lowering compatible with the existing
+            // synthetic file-object model (`close()` only).
+            let manager_name = if let Some(optional_vars) = &item.optional_vars {
+                match &**optional_vars {
+                    ast::Expr::Name(name) => self.ident(name.id.as_str()),
+                    _ => {
+                        return Err(
+                            self.error(optional_vars.range(), "with target must be a simple name")
+                        )
+                    }
+                }
+            } else {
+                self.ident(&format!("__py2rust_with_file_{}_{}", with_id, depth))
+            };
+            let mut block = vec![Stmt {
+                kind: StmtKind::Let {
+                    name: manager_name.clone(),
+                    ann: None,
+                    value: self.lower_expr(&item.context_expr)?,
+                },
+                span: item_span,
+            }];
+            let mut nested_body = self.lower_with_items(&items[1..], body, with_id, depth + 1)?;
+            block.append(&mut nested_body);
+            block.push(Stmt {
+                kind: StmtKind::Expr(self.make_named_method_call(
+                    &manager_name,
+                    "close",
+                    Vec::new(),
+                    item_span,
+                )),
+                span: item_span,
+            });
+            return Ok(block);
+        }
+
+        let manager_name = match &item.context_expr {
+            // Reuse named managers directly so state changes remain visible after `with`.
+            ast::Expr::Name(name) => self.ident(name.id.as_str()),
+            _ => self.ident(&format!("__py2rust_with_mgr_{}_{}", with_id, depth)),
+        };
+        let mut block = Vec::new();
+
+        if !matches!(&item.context_expr, ast::Expr::Name(_)) {
+            block.push(Stmt {
+                kind: StmtKind::Let {
+                    name: manager_name.clone(),
+                    ann: None,
+                    value: self.lower_expr(&item.context_expr)?,
+                },
+                span: item_span,
+            });
+        }
+
+        let enter_call =
+            self.make_named_method_call(&manager_name, "__enter__", Vec::new(), item_span);
+        if let Some(optional_vars) = &item.optional_vars {
+            let target_name = match &**optional_vars {
+                ast::Expr::Name(name) => self.ident(name.id.as_str()),
+                _ => {
+                    return Err(
+                        self.error(optional_vars.range(), "with target must be a simple name")
+                    )
+                }
+            };
+            block.push(Stmt {
+                kind: StmtKind::Let {
+                    name: target_name,
+                    ann: None,
+                    value: enter_call,
+                },
+                span: item_span,
+            });
+        } else {
+            block.push(Stmt {
+                kind: StmtKind::Expr(enter_call),
+                span: item_span,
+            });
+        }
+
+        let nested_body = self.lower_with_items(&items[1..], body, with_id, depth + 1)?;
+        let exit_on_success = self.make_named_method_call(
+            &manager_name,
+            "__exit__",
+            vec![
+                self.make_int_expr(0, item_span),
+                self.make_int_expr(0, item_span),
+                self.make_int_expr(0, item_span),
+            ],
+            item_span,
+        );
+        let exit_on_error = self.make_named_method_call(
+            &manager_name,
+            "__exit__",
+            vec![
+                self.make_int_expr(1, item_span),
+                self.make_int_expr(0, item_span),
+                self.make_int_expr(0, item_span),
+            ],
+            item_span,
+        );
+
+        let reraises_if_not_suppressed = Stmt {
+            kind: StmtKind::If {
+                test: Expr {
+                    kind: ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(exit_on_error),
+                    },
+                    span: item_span,
+                    ty: None,
+                },
+                body: vec![Stmt {
+                    kind: StmtKind::Raise {
+                        exc: Some(Expr {
+                            kind: ExprKind::Call {
+                                func: Box::new(Expr {
+                                    kind: ExprKind::Name("Exception".to_string()),
+                                    span: item_span,
+                                    ty: None,
+                                }),
+                                args: vec![Expr {
+                                    kind: ExprKind::Literal(Literal::Str(
+                                        "with statement exception".to_string(),
+                                    )),
+                                    span: item_span,
+                                    ty: None,
+                                }],
+                                keywords: vec![],
+                            },
+                            span: item_span,
+                            ty: None,
+                        }),
+                        cause: None,
+                    },
+                    span: item_span,
+                }],
+                orelse: Vec::new(),
+            },
+            span: item_span,
+        };
+
+        block.push(Stmt {
+            kind: StmtKind::Try {
+                body: nested_body,
+                handlers: vec![ExceptHandler {
+                    exc_type: None,
+                    name: None,
+                    body: vec![reraises_if_not_suppressed],
+                    span: item_span,
+                }],
+                orelse: vec![Stmt {
+                    kind: StmtKind::Expr(exit_on_success),
+                    span: item_span,
+                }],
+                finalbody: Vec::new(),
+            },
+            span: item_span,
+        });
+
+        Ok(block)
+    }
+
+    /// Return true for direct `open(...)` call expressions.
+    fn is_open_call_expr(&self, expr: &ast::Expr) -> bool {
+        matches!(
+            expr,
+            ast::Expr::Call(call)
+                if matches!(&*call.func, ast::Expr::Name(name) if name.id.as_str() == "open")
+        )
     }
 
     /// Lower a match case pattern.
@@ -922,6 +1040,36 @@ impl<'a> Lowerer<'a> {
                 op,
                 left: Box::new(left),
                 right: Box::new(right),
+            },
+            span,
+            ty: None,
+        }
+    }
+
+    /// Build a method call expression for a local variable by name.
+    fn make_named_method_call(
+        &self,
+        object_name: &str,
+        method: &str,
+        args: Vec<Expr>,
+        span: Span,
+    ) -> Expr {
+        Expr {
+            kind: ExprKind::Call {
+                func: Box::new(Expr {
+                    kind: ExprKind::Attr {
+                        value: Box::new(Expr {
+                            kind: ExprKind::Name(object_name.to_string()),
+                            span,
+                            ty: None,
+                        }),
+                        attr: method.to_string(),
+                    },
+                    span,
+                    ty: None,
+                }),
+                args,
+                keywords: vec![],
             },
             span,
             ty: None,

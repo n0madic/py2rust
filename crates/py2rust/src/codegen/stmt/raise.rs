@@ -10,16 +10,11 @@ impl<'a> Codegen<'a> {
         cause: Option<&Expr>,
         span: Span,
     ) -> Result<(), CompileError> {
-        // Check for unsupported exception chaining.
-        if cause.is_some() {
-            return Err(self.error(
-                span,
-                "Exception chaining (raise ... from ...) is not supported",
-            ));
-        }
+        // Exception chaining metadata is currently ignored in generated code.
+        let _ = cause;
 
         if let Some(exc_expr) = exc {
-            // Check if it's exception constructor call.
+            // Check if it's an exception constructor call.
             if let ExprKind::Call {
                 func,
                 args,
@@ -27,19 +22,24 @@ impl<'a> Codegen<'a> {
             } = &exc_expr.kind
             {
                 if let ExprKind::Name(exc_name) = &func.kind {
-                    let msg = if !keywords.is_empty() {
-                        return Err(self.error(
-                            span,
-                            "Keyword arguments are not supported in raise constructors",
-                        ));
-                    } else if !args.is_empty() {
-                        self.gen_expr(&args[0])?
-                    } else {
-                        "String::new()".to_string()
-                    };
+                    if let Some(py_error_variant) = self.resolve_exception_variant_name(exc_name) {
+                        let msg = if !keywords.is_empty() {
+                            return Err(self.error(
+                                span,
+                                "Keyword arguments are not supported in raise constructors",
+                            ));
+                        } else if !args.is_empty() {
+                            self.gen_expr(&args[0])?
+                        } else {
+                            "String::new()".to_string()
+                        };
 
-                    self.push_line(&format!("return Err(PyError::{}({}));", exc_name, msg));
-                    return Ok(());
+                        self.push_line(&format!(
+                            "return Err(PyError::{}({}));",
+                            py_error_variant, msg
+                        ));
+                        return Ok(());
+                    }
                 }
             }
 

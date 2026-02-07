@@ -113,7 +113,15 @@ impl<'a> TypeChecker<'a> {
 
                 // Collect method signatures and detect iterator protocol
                 for method in &class_def.methods {
-                    let params = self.resolve_params(&method.params)?;
+                    let mut params = self.resolve_params(&method.params)?;
+                    if method.name == "__exit__" {
+                        // Model default context-manager exception triplet as ints.
+                        for param_ty in params.iter_mut().skip(1) {
+                            if matches!(param_ty, Type::Unknown) {
+                                *param_ty = Type::Int;
+                            }
+                        }
+                    }
                     let ret = self.resolve_type_ref(&method.ret, method.span)?;
                     let defaults = method.params.iter().filter(|p| p.default.is_some()).count();
                     let sig = FunctionSig {
@@ -204,6 +212,29 @@ impl<'a> TypeChecker<'a> {
         Ok(())
     }
 
+    /// Build a synthetic `__init__` signature for built-in exception bases.
+    ///
+    /// Built-in exceptions accept an optional message argument. We model that as
+    /// `__init__(self, message: str = "")` so custom subclasses can be constructed
+    /// with zero or one positional argument.
+    fn builtin_exception_init_sig(class_name: &str, span: Span) -> FunctionSig {
+        FunctionSig {
+            param_names: vec!["self".to_string(), "message".to_string()],
+            param_kinds: vec![
+                ParamKind::PositionalOrKeyword,
+                ParamKind::PositionalOrKeyword,
+            ],
+            has_defaults: vec![false, true],
+            params: vec![Type::Custom(class_name.to_string()), Type::Str],
+            ret: Type::None,
+            span,
+            is_generator: false,
+            can_throw: false,
+            thrown_exceptions: Vec::new(),
+            defaults: 1,
+        }
+    }
+
     fn merge_class_inheritance(
         &mut self,
         name: &str,
@@ -213,10 +244,31 @@ impl<'a> TypeChecker<'a> {
         if merged.contains(name) {
             return Ok(());
         }
+        if class_defs.get(name).is_none() {
+            // Built-in exception roots are not user-defined classes, so they have no ClassDef.
+            if Self::is_builtin_exception_name(name) {
+                merged.insert(name.to_string());
+                return Ok(());
+            }
+            return Err(self.error(Span::new(0, 0), format!("Unknown class: {name}")));
+        }
         let class_def = class_defs
             .get(name)
-            .ok_or_else(|| self.error(Span::new(0, 0), format!("Unknown class: {name}")))?;
+            .expect("class_defs existence checked above");
         if let Some(base) = &class_def.base {
+            if Self::is_builtin_exception_name(base) {
+                let info = if let Some(info) = self.ctx.classes.get_mut(name) {
+                    info
+                } else {
+                    return Err(self.error(class_def.span, "Unknown class"));
+                };
+                // If subclass doesn't define __init__, inherit builtin exception constructor.
+                if info.init.is_none() {
+                    info.init = Some(Self::builtin_exception_init_sig(name, class_def.span));
+                }
+                merged.insert(name.to_string());
+                return Ok(());
+            }
             if !self.ctx.classes.contains_key(base) {
                 return Err(self.error(class_def.span, format!("Unknown base class: {base}")));
             }

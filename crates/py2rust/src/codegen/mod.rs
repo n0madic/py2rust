@@ -288,6 +288,51 @@ impl<'a> Codegen<'a> {
         self.local_vars.as_ref().and_then(|vars| vars.get(name))
     }
 
+    /// Return true when a name refers to a built-in Python exception variant.
+    pub(crate) fn is_builtin_exception_name(name: &str) -> bool {
+        matches!(
+            name,
+            "Exception"
+                | "ValueError"
+                | "TypeError"
+                | "RuntimeError"
+                | "KeyError"
+                | "IndexError"
+                | "AttributeError"
+                | "ZeroDivisionError"
+                | "NameError"
+                | "AssertionError"
+                | "StopIteration"
+                | "NotImplementedError"
+                | "IOError"
+                | "OverflowError"
+                | "GeneratorExit"
+                | "MemoryError"
+        )
+    }
+
+    /// Resolve a user exception class to the built-in PyError variant it maps to.
+    pub(crate) fn resolve_exception_variant_name(&self, name: &str) -> Option<String> {
+        if Self::is_builtin_exception_name(name) {
+            return Some(name.to_string());
+        }
+
+        let mut current = name;
+        let mut seen: HashSet<&str> = HashSet::new();
+        loop {
+            if !seen.insert(current) {
+                // Defensive cycle guard for malformed class inheritance.
+                return None;
+            }
+            let class_info = self.ctx.classes.get(current)?;
+            let base = class_info.base.as_deref()?;
+            if Self::is_builtin_exception_name(base) {
+                return Some(base.to_string());
+            }
+            current = base;
+        }
+    }
+
     /// Main entry point for code generation.
     ///
     /// Code generation happens in multiple phases:
