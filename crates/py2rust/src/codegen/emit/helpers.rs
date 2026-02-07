@@ -527,7 +527,7 @@ fn py_time_sleep(seconds: f64) {
 
 /// Static helper body for shared lightweight `time` tuple/date primitives.
 const HELPER_PY_TIME_CORE: &str = r#"
-type __py2rust_time_tuple = (i64, i64, i64, i64, i64, i64, i64, i64, i64);
+type __py_time_tuple = (i64, i64, i64, i64, i64, i64, i64, i64, i64);
 
 fn py_time_is_leap(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
@@ -587,7 +587,7 @@ fn py_time_days_from_civil(year: i64, month: i64, mday: i64) -> i64 {
     era * 146097 + doe - 719468
 }
 
-fn py_time_split_epoch(seconds: f64) -> __py2rust_time_tuple {
+fn py_time_split_epoch(seconds: f64) -> __py_time_tuple {
     let whole = seconds.floor() as i64;
     let day_seconds = whole.rem_euclid(86_400);
     let days = whole.div_euclid(86_400);
@@ -628,7 +628,7 @@ fn py_time_parse_fixed_digits(text: &[u8], idx: &mut usize, width: usize, field:
 
 /// Static helper body for `time.localtime([secs])`.
 const HELPER_PY_TIME_LOCALTIME: &str = r#"
-fn py_time_localtime(seconds: Option<f64>) -> __py2rust_time_tuple {
+fn py_time_localtime(seconds: Option<f64>) -> __py_time_tuple {
     // Lightweight behavior: localtime currently uses the same epoch split as gmtime.
     py_time_split_epoch(seconds.unwrap_or_else(py_time_now_seconds))
 }
@@ -636,14 +636,14 @@ fn py_time_localtime(seconds: Option<f64>) -> __py2rust_time_tuple {
 
 /// Static helper body for `time.gmtime([secs])`.
 const HELPER_PY_TIME_GMTIME: &str = r#"
-fn py_time_gmtime(seconds: Option<f64>) -> __py2rust_time_tuple {
+fn py_time_gmtime(seconds: Option<f64>) -> __py_time_tuple {
     py_time_split_epoch(seconds.unwrap_or_else(py_time_now_seconds))
 }
 "#;
 
 /// Static helper body for `time.strftime(format, tuple)`.
 const HELPER_PY_TIME_STRFTIME: &str = r#"
-fn py_time_strftime(format: &str, tm: &__py2rust_time_tuple) -> String {
+fn py_time_strftime(format: &str, tm: &__py_time_tuple) -> String {
     let (year, month, mday, hour, minute, second, wday, yday, _isdst) = *tm;
     let weekday_short = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     let weekday_long = [
@@ -751,7 +751,7 @@ fn py_time_strftime(format: &str, tm: &__py2rust_time_tuple) -> String {
 
 /// Static helper body for `time.strptime(string, format)`.
 const HELPER_PY_TIME_STRPTIME: &str = r#"
-fn py_time_strptime(text: &str, format: &str) -> __py2rust_time_tuple {
+fn py_time_strptime(text: &str, format: &str) -> __py_time_tuple {
     let fmt = format.as_bytes();
     let txt = text.as_bytes();
     let mut fi: usize = 0;
@@ -848,7 +848,7 @@ fn py_time_strptime(text: &str, format: &str) -> __py2rust_time_tuple {
 const HELPER_PY_RE_MATCH_STRUCT: &str = r#"
 #[allow(non_camel_case_types)]
 #[derive(Clone)]
-struct __py2rust_re_match {
+struct __py_re_match {
     groups: Vec<Option<String>>,
     start: i64,
     end: i64,
@@ -869,11 +869,11 @@ fn py_re_capture_group_strings(captures: &regex_lite::Captures<'_>) -> Vec<Optio
     groups
 }
 
-fn py_re_build_match(text: &str, captures: regex_lite::Captures<'_>) -> __py2rust_re_match {
+fn py_re_build_match(text: &str, captures: regex_lite::Captures<'_>) -> __py_re_match {
     let full = captures
         .get(0)
         .unwrap_or_else(|| panic!("regex-lite returned captures without group 0"));
-    __py2rust_re_match {
+    __py_re_match {
         groups: py_re_capture_group_strings(&captures),
         start: py_re_char_idx(text, full.start()),
         end: py_re_char_idx(text, full.end()),
@@ -883,7 +883,7 @@ fn py_re_build_match(text: &str, captures: regex_lite::Captures<'_>) -> __py2rus
 
 /// Static helper body for `re.search(pattern, string)`.
 const HELPER_PY_RE_SEARCH: &str = r#"
-fn py_re_search(pattern: &str, text: &str) -> __py2rust_re_match {
+fn py_re_search(pattern: &str, text: &str) -> __py_re_match {
     let regex = regex_lite::Regex::new(pattern)
         .unwrap_or_else(|err| panic!("re.search(): invalid pattern '{}': {}", pattern, err));
     let captures = regex
@@ -895,7 +895,7 @@ fn py_re_search(pattern: &str, text: &str) -> __py2rust_re_match {
 
 /// Static helper body for `re.match(pattern, string)`.
 const HELPER_PY_RE_MATCH_FN: &str = r#"
-fn py_re_match(pattern: &str, text: &str) -> __py2rust_re_match {
+fn py_re_match(pattern: &str, text: &str) -> __py_re_match {
     let regex = regex_lite::Regex::new(pattern)
         .unwrap_or_else(|err| panic!("re.match(): invalid pattern '{}': {}", pattern, err));
     let captures = regex
@@ -920,7 +920,7 @@ fn py_re_sub(pattern: &str, repl: &str, text: &str) -> String {
 
 /// Static helper body for `re.Match.group(index)`.
 const HELPER_PY_RE_GROUP: &str = r#"
-fn py_re_group(value: &__py2rust_re_match, index: i64) -> String {
+fn py_re_group(value: &__py_re_match, index: i64) -> String {
     if index < 0 {
         panic!("re.Match.group() does not support negative group indexes");
     }
@@ -936,7 +936,7 @@ fn py_re_group(value: &__py2rust_re_match, index: i64) -> String {
 
 /// Static helper body for `re.Match.span()`.
 const HELPER_PY_RE_SPAN: &str = r#"
-fn py_re_span(value: &__py2rust_re_match) -> (i64, i64) {
+fn py_re_span(value: &__py_re_match) -> (i64, i64) {
     (value.start, value.end)
 }
 "#;
@@ -945,90 +945,90 @@ fn py_re_span(value: &__py2rust_re_match) -> (i64, i64) {
 const HELPER_PY_JSON_CORE: &str = r#"
 #[allow(non_camel_case_types)]
 #[derive(Clone)]
-enum __py2rust_json_value {
+enum __py_json_value {
     Null,
     Bool(bool),
     Int(i64),
     Float(f64),
     Str(String),
-    Array(Vec<__py2rust_json_value>),
-    Object(std::collections::HashMap<String, __py2rust_json_value>),
+    Array(Vec<__py_json_value>),
+    Object(std::collections::HashMap<String, __py_json_value>),
 }
 
 trait PyToJsonValue {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError>;
+    fn to_json_value(&self) -> Result<__py_json_value, PyError>;
 }
 
-impl PyToJsonValue for __py2rust_json_value {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+impl PyToJsonValue for __py_json_value {
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
         Ok(self.clone())
     }
 }
 
 impl PyToJsonValue for () {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
-        Ok(__py2rust_json_value::Null)
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        Ok(__py_json_value::Null)
     }
 }
 
 impl PyToJsonValue for bool {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
-        Ok(__py2rust_json_value::Bool(*self))
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        Ok(__py_json_value::Bool(*self))
     }
 }
 
 impl PyToJsonValue for i64 {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
-        Ok(__py2rust_json_value::Int(*self))
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        Ok(__py_json_value::Int(*self))
     }
 }
 
 impl PyToJsonValue for f64 {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
-        Ok(__py2rust_json_value::Float(*self))
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        Ok(__py_json_value::Float(*self))
     }
 }
 
 impl PyToJsonValue for String {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
-        Ok(__py2rust_json_value::Str(self.clone()))
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        Ok(__py_json_value::Str(self.clone()))
     }
 }
 
 impl PyToJsonValue for &str {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
-        Ok(__py2rust_json_value::Str((*self).to_string()))
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        Ok(__py_json_value::Str((*self).to_string()))
     }
 }
 
 impl<T: PyToJsonValue> PyToJsonValue for Option<T> {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
         match self {
             Some(value) => value.to_json_value(),
-            None => Ok(__py2rust_json_value::Null),
+            None => Ok(__py_json_value::Null),
         }
     }
 }
 
 impl<T: PyToJsonValue> PyToJsonValue for Vec<T> {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
-        let mut items: Vec<__py2rust_json_value> = Vec::new();
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        let mut items: Vec<__py_json_value> = Vec::new();
         for item in self.iter() {
             items.push(item.to_json_value()?);
         }
-        Ok(__py2rust_json_value::Array(items))
+        Ok(__py_json_value::Array(items))
     }
 }
 
 impl<T: PyToJsonValue> PyToJsonValue for Arc<Mutex<Vec<T>>> {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
         let items = self.lock().expect("list mutex poisoned");
         items.to_json_value()
     }
 }
 
 impl<T: PyToJsonValue> PyToJsonValue for Rc<RefCell<Vec<T>>> {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
         self.borrow().to_json_value()
     }
 }
@@ -1038,13 +1038,13 @@ where
     K: ToString + Eq + std::hash::Hash,
     V: PyToJsonValue,
 {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
-        let mut object: std::collections::HashMap<String, __py2rust_json_value> =
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        let mut object: std::collections::HashMap<String, __py_json_value> =
             std::collections::HashMap::new();
         for (key, value) in self.iter() {
             object.insert(key.to_string(), value.to_json_value()?);
         }
-        Ok(__py2rust_json_value::Object(object))
+        Ok(__py_json_value::Object(object))
     }
 }
 
@@ -1053,7 +1053,7 @@ where
     K: ToString + Eq + std::hash::Hash,
     V: PyToJsonValue,
 {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
         let object = self.lock().expect("dict mutex poisoned");
         object.to_json_value()
     }
@@ -1064,7 +1064,7 @@ where
     K: ToString + Eq + std::hash::Hash,
     V: PyToJsonValue,
 {
-    fn to_json_value(&self) -> Result<__py2rust_json_value, PyError> {
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
         self.borrow().to_json_value()
     }
 }
@@ -1089,31 +1089,31 @@ fn py_json_escape_string(value: &str) -> String {
     out
 }
 
-fn py_json_render_value(value: &__py2rust_json_value) -> String {
+fn py_json_render_value(value: &__py_json_value) -> String {
     match value {
-        __py2rust_json_value::Null => "null".to_string(),
-        __py2rust_json_value::Bool(v) => {
+        __py_json_value::Null => "null".to_string(),
+        __py_json_value::Bool(v) => {
             if *v {
                 "true".to_string()
             } else {
                 "false".to_string()
             }
         }
-        __py2rust_json_value::Int(v) => v.to_string(),
-        __py2rust_json_value::Float(v) => {
+        __py_json_value::Int(v) => v.to_string(),
+        __py_json_value::Float(v) => {
             let mut out = v.to_string();
             if !out.contains('.') && !out.contains('e') && !out.contains('E') {
                 out.push_str(".0");
             }
             out
         }
-        __py2rust_json_value::Str(v) => py_json_escape_string(v),
-        __py2rust_json_value::Array(items) => {
+        __py_json_value::Str(v) => py_json_escape_string(v),
+        __py_json_value::Array(items) => {
             let rendered: Vec<String> = items.iter().map(py_json_render_value).collect();
             format!("[{}]", rendered.join(", "))
         }
-        __py2rust_json_value::Object(entries) => {
-            let mut pairs: Vec<(&String, &__py2rust_json_value)> = entries.iter().collect();
+        __py_json_value::Object(entries) => {
+            let mut pairs: Vec<(&String, &__py_json_value)> = entries.iter().collect();
             pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
             let rendered: Vec<String> = pairs
                 .iter()
@@ -1183,7 +1183,7 @@ fn py_json_parse_string(chars: &[char], idx: &mut usize) -> Result<String, PyErr
     Err(py_json_error("unterminated string"))
 }
 
-fn py_json_parse_number(chars: &[char], idx: &mut usize) -> Result<__py2rust_json_value, PyError> {
+fn py_json_parse_number(chars: &[char], idx: &mut usize) -> Result<__py_json_value, PyError> {
     let start = *idx;
     if chars[*idx] == '-' {
         *idx += 1;
@@ -1231,15 +1231,15 @@ fn py_json_parse_number(chars: &[char], idx: &mut usize) -> Result<__py2rust_jso
         let parsed = raw
             .parse::<f64>()
             .map_err(|_| py_json_error("invalid floating-point number"))?;
-        return Ok(__py2rust_json_value::Float(parsed));
+        return Ok(__py_json_value::Float(parsed));
     }
     let parsed = raw
         .parse::<i64>()
         .map_err(|_| py_json_error("invalid integer number"))?;
-    Ok(__py2rust_json_value::Int(parsed))
+    Ok(__py_json_value::Int(parsed))
 }
 
-fn py_json_parse_value(chars: &[char], idx: &mut usize) -> Result<__py2rust_json_value, PyError> {
+fn py_json_parse_value(chars: &[char], idx: &mut usize) -> Result<__py_json_value, PyError> {
     py_json_skip_ws(chars, idx);
     if *idx >= chars.len() {
         return Err(py_json_error("unexpected end of json input"));
@@ -1248,32 +1248,32 @@ fn py_json_parse_value(chars: &[char], idx: &mut usize) -> Result<__py2rust_json
         'n' => {
             if chars.get(*idx..(*idx + 4)) == Some(&['n', 'u', 'l', 'l']) {
                 *idx += 4;
-                return Ok(__py2rust_json_value::Null);
+                return Ok(__py_json_value::Null);
             }
             Err(py_json_error("invalid literal, expected null"))
         }
         't' => {
             if chars.get(*idx..(*idx + 4)) == Some(&['t', 'r', 'u', 'e']) {
                 *idx += 4;
-                return Ok(__py2rust_json_value::Bool(true));
+                return Ok(__py_json_value::Bool(true));
             }
             Err(py_json_error("invalid literal, expected true"))
         }
         'f' => {
             if chars.get(*idx..(*idx + 5)) == Some(&['f', 'a', 'l', 's', 'e']) {
                 *idx += 5;
-                return Ok(__py2rust_json_value::Bool(false));
+                return Ok(__py_json_value::Bool(false));
             }
             Err(py_json_error("invalid literal, expected false"))
         }
-        '"' => Ok(__py2rust_json_value::Str(py_json_parse_string(chars, idx)?)),
+        '"' => Ok(__py_json_value::Str(py_json_parse_string(chars, idx)?)),
         '[' => {
             *idx += 1;
             py_json_skip_ws(chars, idx);
-            let mut items: Vec<__py2rust_json_value> = Vec::new();
+            let mut items: Vec<__py_json_value> = Vec::new();
             if *idx < chars.len() && chars[*idx] == ']' {
                 *idx += 1;
-                return Ok(__py2rust_json_value::Array(items));
+                return Ok(__py_json_value::Array(items));
             }
             loop {
                 items.push(py_json_parse_value(chars, idx)?);
@@ -1292,16 +1292,16 @@ fn py_json_parse_value(chars: &[char], idx: &mut usize) -> Result<__py2rust_json
                 }
                 return Err(py_json_error("expected ',' or ']' in array"));
             }
-            Ok(__py2rust_json_value::Array(items))
+            Ok(__py_json_value::Array(items))
         }
         '{' => {
             *idx += 1;
             py_json_skip_ws(chars, idx);
-            let mut entries: std::collections::HashMap<String, __py2rust_json_value> =
+            let mut entries: std::collections::HashMap<String, __py_json_value> =
                 std::collections::HashMap::new();
             if *idx < chars.len() && chars[*idx] == '}' {
                 *idx += 1;
-                return Ok(__py2rust_json_value::Object(entries));
+                return Ok(__py_json_value::Object(entries));
             }
             loop {
                 py_json_skip_ws(chars, idx);
@@ -1328,7 +1328,7 @@ fn py_json_parse_value(chars: &[char], idx: &mut usize) -> Result<__py2rust_json
                 }
                 return Err(py_json_error("expected ',' or '}' in object"));
             }
-            Ok(__py2rust_json_value::Object(entries))
+            Ok(__py_json_value::Object(entries))
         }
         '-' | '0'..='9' => py_json_parse_number(chars, idx),
         _ => Err(py_json_error("unsupported json token")),
@@ -1346,7 +1346,7 @@ fn py_json_dumps<T: PyToJsonValue>(value: &T) -> Result<String, PyError> {
 
 /// Static helper body for `json.loads(text)`.
 const HELPER_PY_JSON_LOADS: &str = r#"
-fn py_json_loads(text: &str) -> Result<__py2rust_json_value, PyError> {
+fn py_json_loads(text: &str) -> Result<__py_json_value, PyError> {
     let chars: Vec<char> = text.chars().collect();
     let mut idx: usize = 0;
     let value = py_json_parse_value(&chars, &mut idx)?;
@@ -1370,7 +1370,7 @@ fn py_json_dump<T: PyToJsonValue>(value: &T, file: &mut std::fs::File) -> Result
 
 /// Static helper body for `json.load(file)`.
 const HELPER_PY_JSON_LOAD: &str = r#"
-fn py_json_load(file: &mut std::fs::File) -> Result<__py2rust_json_value, PyError> {
+fn py_json_load(file: &mut std::fs::File) -> Result<__py_json_value, PyError> {
     use std::io::Read;
     let mut text = String::new();
     file.read_to_string(&mut text)

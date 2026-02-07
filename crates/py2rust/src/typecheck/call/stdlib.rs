@@ -135,26 +135,14 @@ impl<'a> TypeChecker<'a> {
             StdlibMethodId::JsonDump => {
                 // json.dump accepts dynamic value shapes as the first argument.
                 let _ = self.check_expr(&mut args[0], None)?;
-                let file_ty = self.check_expr(
-                    &mut args[1],
-                    Some(&Type::Custom("__py2rust_file".to_string())),
-                )?;
-                self.ensure_assignable(
-                    &file_ty,
-                    &Type::Custom("__py2rust_file".to_string()),
-                    span,
-                )?;
+                let file_ty =
+                    self.check_expr(&mut args[1], Some(&Type::Custom("__py_file".to_string())))?;
+                self.ensure_assignable(&file_ty, &Type::Custom("__py_file".to_string()), span)?;
             }
             StdlibMethodId::JsonLoad => {
-                let file_ty = self.check_expr(
-                    &mut args[0],
-                    Some(&Type::Custom("__py2rust_file".to_string())),
-                )?;
-                self.ensure_assignable(
-                    &file_ty,
-                    &Type::Custom("__py2rust_file".to_string()),
-                    span,
-                )?;
+                let file_ty =
+                    self.check_expr(&mut args[0], Some(&Type::Custom("__py_file".to_string())))?;
+                self.ensure_assignable(&file_ty, &Type::Custom("__py_file".to_string()), span)?;
             }
             StdlibMethodId::MathSqrt
             | StdlibMethodId::MathSin
@@ -331,12 +319,12 @@ impl<'a> TypeChecker<'a> {
             StdlibMethodId::SysIntern => Type::Str,
             StdlibMethodId::SysExit => Type::None,
             StdlibMethodId::ReSearch | StdlibMethodId::ReMatch => {
-                Type::Custom("__py2rust_re_match".to_string())
+                Type::Custom("__py_re_match".to_string())
             }
             StdlibMethodId::ReSub => Type::Str,
             StdlibMethodId::JsonDumps => Type::Str,
             StdlibMethodId::JsonLoads | StdlibMethodId::JsonLoad => {
-                Type::Custom("__py2rust_json_value".to_string())
+                Type::Custom("__py_json_value".to_string())
             }
             StdlibMethodId::JsonDump => Type::None,
             StdlibMethodId::MathSqrt

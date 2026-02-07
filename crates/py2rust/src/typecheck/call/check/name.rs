@@ -93,7 +93,7 @@ impl<'a> TypeChecker<'a> {
                 let mode_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
                 self.ensure_assignable(&mode_ty, &Type::Str, span)?;
             }
-            return Ok(Type::Custom("__py2rust_file".to_string()));
+            return Ok(Type::Custom("__py_file".to_string()));
         }
         if name == "range" {
             if !args.is_empty() && args.len() <= 3 {

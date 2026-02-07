@@ -453,10 +453,10 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         self.push_line(&format!("fn __replay(&self) -> Vec<{}> {{", item_ty_str));
         self.indent += 1;
-        self.push_line("let __py2rust_resume_values = &self.__resume_values;");
-        self.push_line("let mut __py2rust_yield_index: usize = 0;");
+        self.push_line("let __py_resume_values = &self.__resume_values;");
+        self.push_line("let mut __py_yield_index: usize = 0;");
         self.push_line(&format!(
-            "let mut __py2rust_yields: Vec<{}> = Vec::new();",
+            "let mut __py_yields: Vec<{}> = Vec::new();",
             item_ty_str
         ));
         for (name, ty, _) in &param_types {
@@ -469,7 +469,7 @@ impl<'a> Codegen<'a> {
         for stmt in &func.body {
             self.emit_generator_replay_stmt(stmt)?;
         }
-        self.push_line("__py2rust_yields");
+        self.push_line("__py_yields");
         self.indent -= 1;
         self.push_line("}");
         self.push_line("");
@@ -521,12 +521,12 @@ impl<'a> Codegen<'a> {
         self.push_line("self.__resume_values.push(None);");
         self.indent -= 1;
         self.push_line("}");
-        self.push_line("let __py2rust_yields = self.__replay();");
-        self.push_line("if self.__emitted < __py2rust_yields.len() {");
+        self.push_line("let __py_yields = self.__replay();");
+        self.push_line("if self.__emitted < __py_yields.len() {");
         self.indent += 1;
-        self.push_line("let __py2rust_out = __py2rust_yields[self.__emitted].clone();");
+        self.push_line("let __py_out = __py_yields[self.__emitted].clone();");
         self.push_line("self.__emitted += 1;");
-        self.push_line("Some(__py2rust_out)");
+        self.push_line("Some(__py_out)");
         self.indent -= 1;
         self.push_line("} else {");
         self.indent += 1;
@@ -644,7 +644,7 @@ impl<'a> Codegen<'a> {
                 self.push_line("}");
             }
             StmtKind::Return { .. } => {
-                self.push_line("return __py2rust_yields;");
+                self.push_line("return __py_yields;");
             }
             StmtKind::Break => self.push_line("break;"),
             StmtKind::Continue => self.push_line("continue;"),
@@ -667,24 +667,19 @@ impl<'a> Codegen<'a> {
         } else {
             "()".to_string()
         };
-        self.push_line(&format!(
-            "__py2rust_yields.push(({}).clone());",
-            yielded_expr
-        ));
-        self.push_line("if __py2rust_yield_index >= __py2rust_resume_values.len() {");
+        self.push_line(&format!("__py_yields.push(({}).clone());", yielded_expr));
+        self.push_line("if __py_yield_index >= __py_resume_values.len() {");
         self.indent += 1;
-        self.push_line("return __py2rust_yields;");
+        self.push_line("return __py_yields;");
         self.indent -= 1;
         self.push_line("}");
-        self.push_line(
-            "let __py2rust_resume = __py2rust_resume_values[__py2rust_yield_index].clone();",
-        );
-        self.push_line("__py2rust_yield_index += 1;");
+        self.push_line("let __py_resume = __py_resume_values[__py_yield_index].clone();");
+        self.push_line("__py_yield_index += 1;");
 
         if let Some((name, declare)) = assign_to {
             let binding = if declare { "let mut " } else { "" };
             self.push_line(&format!(
-                "{}{} = match __py2rust_resume {{ Some(v) => v, None => panic!(\"generator send(None) is not supported for this yield site\") }};",
+                "{}{} = match __py_resume {{ Some(v) => v, None => panic!(\"generator send(None) is not supported for this yield site\") }};",
                 binding, name
             ));
         }

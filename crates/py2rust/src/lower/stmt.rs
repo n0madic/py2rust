@@ -239,7 +239,7 @@ impl<'a> Lowerer<'a> {
                         } else {
                             // Desugar complex tuple targets (including starred patterns).
                             let iter_item_name = self.ident(&format!(
-                                "__py2rust_for_item_{}",
+                                "__py_for_item_{}",
                                 def.target.range().start().to_u32()
                             ));
                             let unpack_target = self.lower_assign_target(&def.target)?;
@@ -262,10 +262,10 @@ impl<'a> Lowerer<'a> {
                         // Desugar complex targets:
                         //   for a, *rest in items: ...
                         // into:
-                        //   for __py2rust_for_item_N in items:
-                        //       a, *rest = __py2rust_for_item_N
+                        //   for __py_for_item_N in items:
+                        //       a, *rest = __py_for_item_N
                         let iter_item_name = self.ident(&format!(
-                            "__py2rust_for_item_{}",
+                            "__py_for_item_{}",
                             def.target.range().start().to_u32()
                         ));
                         let unpack_target = self.lower_assign_target(&def.target)?;
@@ -528,7 +528,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             } else {
-                self.ident(&format!("__py2rust_with_file_{}_{}", with_id, depth))
+                self.ident(&format!("__py_with_file_{}_{}", with_id, depth))
             };
             let mut block = vec![Stmt {
                 kind: StmtKind::Let {
@@ -555,7 +555,7 @@ impl<'a> Lowerer<'a> {
         let manager_name = match &item.context_expr {
             // Reuse named managers directly so state changes remain visible after `with`.
             ast::Expr::Name(name) => self.ident(name.id.as_str()),
-            _ => self.ident(&format!("__py2rust_with_mgr_{}_{}", with_id, depth)),
+            _ => self.ident(&format!("__py_with_mgr_{}_{}", with_id, depth)),
         };
         let mut block = Vec::new();
 
@@ -729,10 +729,7 @@ impl<'a> Lowerer<'a> {
     ) -> Result<StmtKind, CompileError> {
         let span = Span::from(range);
         let subject_span = Span::from(subject.range());
-        let subject_name = self.ident(&format!(
-            "__py2rust_match_subject_{}",
-            range.start().to_u32()
-        ));
+        let subject_name = self.ident(&format!("__py_match_subject_{}", range.start().to_u32()));
 
         let subject_expr = Expr {
             kind: ExprKind::Name(subject_name.clone()),

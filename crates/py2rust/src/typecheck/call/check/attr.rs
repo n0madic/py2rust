@@ -341,7 +341,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Type::Custom(class_name) = &obj_ty {
-            if class_name == "__py2rust_re_match" {
+            if class_name == "__py_re_match" {
                 if !keywords.is_empty() {
                     return Err(self.error(span, "Keyword arguments are not supported"));
                 }
@@ -360,7 +360,7 @@ impl<'a> TypeChecker<'a> {
                     return Ok(Type::Tuple(vec![Type::Int, Type::Int]));
                 }
             }
-            if class_name == "__py2rust_file" {
+            if class_name == "__py_file" {
                 if attr == "read" {
                     if args.len() > 1 {
                         return Err(self.error(span, "file.read() expects zero or one argument"));

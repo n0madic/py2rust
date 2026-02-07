@@ -86,7 +86,7 @@ impl<'a> Codegen<'a> {
             // Import bindings are compile-time only and are never emitted as values.
             Type::Module(_) | Type::StdlibFunction { .. } => "()".to_string(),
             Type::Custom(name) => {
-                if name == "__py2rust_file" {
+                if name == "__py_file" {
                     "std::fs::File".to_string()
                 } else {
                     name.clone()
@@ -236,7 +236,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             Type::Option(inner) => format!("Option<{}>", self.rust_type_for_global(inner)),
-            Type::Custom(name) if name == "__py2rust_file" => "std::fs::File".to_string(),
+            Type::Custom(name) if name == "__py_file" => "std::fs::File".to_string(),
             Type::Ref(inner) => {
                 if matches!(inner.as_ref(), Type::Str) {
                     "&str".to_string()

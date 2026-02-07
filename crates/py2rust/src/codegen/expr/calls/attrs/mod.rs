@@ -69,13 +69,13 @@ impl<'a> Codegen<'a> {
             return self.gen_str_attr_call(value, attr, args, keywords);
         }
 
-        if matches!(value.ty.as_ref(), Some(Type::Custom(name)) if name == "__py2rust_file")
+        if matches!(value.ty.as_ref(), Some(Type::Custom(name)) if name == "__py_file")
             && matches!(attr, "read" | "readline" | "readlines" | "write" | "close")
         {
             return self.gen_file_attr_call(value, attr, args, keywords);
         }
 
-        if matches!(value.ty.as_ref(), Some(Type::Custom(name)) if name == "__py2rust_re_match")
+        if matches!(value.ty.as_ref(), Some(Type::Custom(name)) if name == "__py_re_match")
             && matches!(attr, "group" | "span")
         {
             return self.gen_re_match_attr_call(value, attr, args, keywords);

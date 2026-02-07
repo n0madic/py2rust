@@ -280,7 +280,7 @@ impl<'a> Codegen<'a> {
         ))
     }
 
-    /// Lower file-like helper methods for `__py2rust_file` values.
+    /// Lower file-like helper methods for `__py_file` values.
     pub(super) fn gen_file_attr_call(
         &mut self,
         value: &Expr,
@@ -289,7 +289,7 @@ impl<'a> Codegen<'a> {
         keywords: &[KeywordArg],
     ) -> Result<String, CompileError> {
         if let Some(Type::Custom(class_name)) = value.ty.as_ref() {
-            if class_name == "__py2rust_file" {
+            if class_name == "__py_file" {
                 if !keywords.is_empty() {
                     return Err(self.error(value.span, "Keyword arguments are not supported"));
                 }
