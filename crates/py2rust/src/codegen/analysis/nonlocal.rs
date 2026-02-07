@@ -1,6 +1,7 @@
 // Nonlocal capture analysis for code generation.
 
 use super::super::*;
+use super::walk::{walk_assign_target_names, walk_stmt_tree};
 
 impl<'a> Codegen<'a> {
     /// Analyze nonlocal declarations in a scope and determine which locals
@@ -15,67 +16,19 @@ impl<'a> Codegen<'a> {
             nonlocals: &mut HashSet<String>,
             globals: &mut HashSet<String>,
         ) {
-            for stmt in stmts {
-                match &stmt.kind {
-                    StmtKind::Nonlocal { names } => {
-                        for name in names {
-                            nonlocals.insert(name.clone());
-                        }
-                    }
-                    StmtKind::Global { names } => {
-                        for name in names {
-                            globals.insert(name.clone());
-                        }
-                    }
-                    StmtKind::If { body, orelse, .. } => {
-                        collect_declares(body, nonlocals, globals);
-                        collect_declares(orelse, nonlocals, globals);
-                    }
-                    StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
-                        collect_declares(body, nonlocals, globals);
-                    }
-                    StmtKind::Match { cases, .. } => {
-                        for case in cases {
-                            collect_declares(&case.body, nonlocals, globals);
-                        }
-                    }
-                    StmtKind::Try {
-                        body,
-                        handlers,
-                        orelse,
-                        finalbody,
-                    } => {
-                        collect_declares(body, nonlocals, globals);
-                        for handler in handlers {
-                            collect_declares(&handler.body, nonlocals, globals);
-                        }
-                        collect_declares(orelse, nonlocals, globals);
-                        collect_declares(finalbody, nonlocals, globals);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        fn record_target(
-            target: &AssignTarget,
-            locals: &mut HashSet<String>,
-            skip: &HashSet<String>,
-        ) {
-            match target {
-                AssignTarget::Name(name) => {
-                    if !skip.contains(name) {
-                        locals.insert(name.clone());
+            walk_stmt_tree(stmts, &mut |stmt| match &stmt.kind {
+                StmtKind::Nonlocal { names } => {
+                    for name in names {
+                        nonlocals.insert(name.clone());
                     }
                 }
-                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
-                    for item in items {
-                        record_target(item, locals, skip);
+                StmtKind::Global { names } => {
+                    for name in names {
+                        globals.insert(name.clone());
                     }
                 }
-                AssignTarget::Starred(inner) => record_target(inner, locals, skip),
-                AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
-            }
+                _ => {}
+            });
         }
 
         fn collect_local_defs(
@@ -83,62 +36,46 @@ impl<'a> Codegen<'a> {
             locals: &mut HashSet<String>,
             skip: &HashSet<String>,
         ) {
-            for stmt in stmts {
-                match &stmt.kind {
-                    StmtKind::Let { name, .. } => {
-                        if !skip.contains(name) {
-                            locals.insert(name.clone());
-                        }
+            walk_stmt_tree(stmts, &mut |stmt| match &stmt.kind {
+                StmtKind::Let { name, .. } => {
+                    if !skip.contains(name) {
+                        locals.insert(name.clone());
                     }
-                    StmtKind::Assign { target, .. } => {
-                        record_target(target, locals, skip);
-                    }
-                    StmtKind::For { target, body, .. } => {
-                        for name in target.names() {
-                            if !skip.contains(name) {
-                                locals.insert(name.to_string());
-                            }
-                        }
-                        collect_local_defs(body, locals, skip);
-                    }
-                    StmtKind::If { body, orelse, .. } => {
-                        collect_local_defs(body, locals, skip);
-                        collect_local_defs(orelse, locals, skip);
-                    }
-                    StmtKind::While { body, .. } => {
-                        collect_local_defs(body, locals, skip);
-                    }
-                    StmtKind::Match { cases, .. } => {
-                        for case in cases {
-                            for binding in &case.bindings {
-                                if !skip.contains(binding) {
-                                    locals.insert(binding.clone());
-                                }
-                            }
-                            collect_local_defs(&case.body, locals, skip);
-                        }
-                    }
-                    StmtKind::Try {
-                        body,
-                        handlers,
-                        orelse,
-                        finalbody,
-                    } => {
-                        collect_local_defs(body, locals, skip);
-                        for handler in handlers {
-                            if let Some(name) = &handler.name {
-                                if !skip.contains(name) {
-                                    locals.insert(name.clone());
-                                }
-                            }
-                            collect_local_defs(&handler.body, locals, skip);
-                        }
-                        collect_local_defs(orelse, locals, skip);
-                        collect_local_defs(finalbody, locals, skip);
-                    }
-                    _ => {}
                 }
-            }
+                StmtKind::Assign { target, .. } => {
+                    walk_assign_target_names(target, &mut |name| {
+                        if !skip.contains(name) {
+                            locals.insert(name.to_string());
+                        }
+                    });
+                }
+                StmtKind::For { target, .. } => {
+                    for name in target.names() {
+                        if !skip.contains(name) {
+                            locals.insert(name.to_string());
+                        }
+                    }
+                }
+                StmtKind::Match { cases, .. } => {
+                    for case in cases {
+                        for binding in &case.bindings {
+                            if !skip.contains(binding) {
+                                locals.insert(binding.clone());
+                            }
+                        }
+                    }
+                }
+                StmtKind::Try { handlers, .. } => {
+                    for handler in handlers {
+                        if let Some(name) = &handler.name {
+                            if !skip.contains(name) {
+                                locals.insert(name.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            });
         }
 
         fn visit_expr_for_lambdas(

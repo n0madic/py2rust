@@ -1,6 +1,7 @@
 // Name-based call target type checking.
 
 use super::super::super::*;
+use crate::builtin::registry::resolve_builtin;
 use crate::stdlib::registry::{resolve_method, resolve_module};
 
 impl<'a> TypeChecker<'a> {
@@ -15,7 +16,8 @@ impl<'a> TypeChecker<'a> {
         let ExprKind::Name(name) = &mut func.kind else {
             return Err(self.error(span, "Internal error: expected name call target"));
         };
-        let builtin_accepts_keywords = matches!(name.as_str(), "print" | "sorted" | "max" | "min");
+        let builtin_accepts_keywords =
+            resolve_builtin(name.as_str()).is_some_and(|spec| spec.allow_keywords);
         let stdlib_function_accepts_keywords =
             matches!(self.lookup_var(name), Some(Type::StdlibFunction { .. }));
         if !keywords.is_empty()

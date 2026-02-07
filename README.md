@@ -20,7 +20,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Negative indexing and slicing for lists/tuples (including step)
 - List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`
 - Dict methods: `get`, `pop`, `update`, `clear`, `copy`
-- Set methods: `add`, `remove`, `discard`, `clear`, `copy`
+- Set methods: `add`, `remove`, `discard`, `clear`, `copy`, `extend`, `pop`
 - String operations: indexing/slicing, `upper`, `lower`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `find`, `replace`, `split`, `join`, `count`, `title`, `capitalize`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`, `islower`
 - Classes with fields, methods, and class attributes
 - Single inheritance with method overrides and `super().__init__` calls
@@ -96,6 +96,7 @@ The generated Rust injects tiny helper functions only when needed:
 - Supported stdlib members are currently limited to `os.remove` and `sys.exit`.
 - Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
 - Builtins are mostly positional-only; keyword arguments are supported for `print(sep=..., end=...)`, `sorted(key=..., reverse=...)`, and iterable-form `min/max(key=...)`.
+- `set.extend(iterable)` is supported as an update-style alias that adds all iterable items to the target set.
 - `print(x)` in single-argument form uses a direct fast-path (no intermediate `vec![...].join(...)` and no forced `format!` wrapping).
 - Generator expressions are lowered through comprehension+`iter(...)` codegen.
 - `generator.send(...)` expects a non-`None` value once the generator has started.

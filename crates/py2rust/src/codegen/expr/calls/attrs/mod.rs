@@ -98,7 +98,10 @@ impl<'a> Codegen<'a> {
         }
 
         if matches!(value.ty.as_ref(), Some(Type::Set(_)))
-            && matches!(attr, "add" | "remove" | "discard" | "clear" | "copy")
+            && matches!(
+                attr,
+                "add" | "remove" | "discard" | "clear" | "copy" | "extend" | "pop"
+            )
         {
             return self.gen_set_attr_call(value, attr, args, keywords);
         }

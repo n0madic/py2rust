@@ -1,6 +1,7 @@
 // Dict storage-strategy analysis for code generation.
 
 use super::super::*;
+use super::walk::walk_stmt_tree;
 
 impl<'a> Codegen<'a> {
     /// Compute dict storage strategy for a statement list.
@@ -21,82 +22,84 @@ impl<'a> Codegen<'a> {
         shared_globals: &HashSet<String>,
         storage: &mut HashMap<String, DictStorage>,
     ) {
-        for stmt in stmts {
-            match &stmt.kind {
-                StmtKind::Let { name, value, .. } => {
+        walk_stmt_tree(stmts, &mut |stmt| match &stmt.kind {
+            StmtKind::Let { name, value, .. } => {
+                self.note_dict_storage_assignment(name, value, shared_globals, storage);
+                // Alias assignment: let x = y
+                if let ExprKind::Name(src) = &value.kind {
+                    if matches!(value.ty.as_ref(), Some(Type::Dict(_, _))) {
+                        self.mark_dict_shared(src, storage);
+                        self.mark_dict_shared(name, storage);
+                    }
+                }
+                self.collect_dict_storage_in_expr(
+                    value,
+                    DictUseContext::Value,
+                    shared_globals,
+                    storage,
+                );
+            }
+            StmtKind::Assign { target, value } => {
+                if let AssignTarget::Name(name) = target {
                     self.note_dict_storage_assignment(name, value, shared_globals, storage);
-                    // Alias assignment: let x = y
                     if let ExprKind::Name(src) = &value.kind {
                         if matches!(value.ty.as_ref(), Some(Type::Dict(_, _))) {
                             self.mark_dict_shared(src, storage);
                             self.mark_dict_shared(name, storage);
                         }
                     }
-                    self.collect_dict_storage_in_expr(
-                        value,
-                        DictUseContext::Value,
-                        shared_globals,
-                        storage,
-                    );
                 }
-                StmtKind::Assign { target, value } => {
-                    if let AssignTarget::Name(name) = target {
-                        self.note_dict_storage_assignment(name, value, shared_globals, storage);
-                        if let ExprKind::Name(src) = &value.kind {
-                            if matches!(value.ty.as_ref(), Some(Type::Dict(_, _))) {
-                                self.mark_dict_shared(src, storage);
-                                self.mark_dict_shared(name, storage);
-                            }
-                        }
+                // Assigning a dict into a container is an escape.
+                let ctx = match target {
+                    AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {
+                        DictUseContext::Escape
                     }
-                    // Assigning a dict into a container is an escape.
-                    let ctx = match target {
-                        AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {
-                            DictUseContext::Escape
-                        }
-                        _ => DictUseContext::Value,
-                    };
-                    self.collect_dict_storage_in_expr(value, ctx, shared_globals, storage);
-                }
-                StmtKind::Return { value } => {
-                    if let Some(expr) = value {
-                        self.collect_dict_storage_in_expr(
-                            expr,
-                            DictUseContext::Escape,
-                            shared_globals,
-                            storage,
-                        );
-                    }
-                }
-                StmtKind::If { test, body, orelse } => {
+                    _ => DictUseContext::Value,
+                };
+                self.collect_dict_storage_in_expr(value, ctx, shared_globals, storage);
+            }
+            StmtKind::Return { value } => {
+                if let Some(expr) = value {
                     self.collect_dict_storage_in_expr(
-                        test,
-                        DictUseContext::Value,
+                        expr,
+                        DictUseContext::Escape,
                         shared_globals,
                         storage,
                     );
-                    self.collect_dict_storage_in_stmts(body, shared_globals, storage);
-                    self.collect_dict_storage_in_stmts(orelse, shared_globals, storage);
                 }
-                StmtKind::While { test, body } => {
-                    self.collect_dict_storage_in_expr(
-                        test,
-                        DictUseContext::Value,
-                        shared_globals,
-                        storage,
-                    );
-                    self.collect_dict_storage_in_stmts(body, shared_globals, storage);
-                }
-                StmtKind::For { iter, body, .. } => {
-                    self.collect_dict_storage_in_expr(
-                        iter,
-                        DictUseContext::Value,
-                        shared_globals,
-                        storage,
-                    );
-                    self.collect_dict_storage_in_stmts(body, shared_globals, storage);
-                }
-                StmtKind::Expr(expr) => {
+            }
+            StmtKind::If { test, .. } | StmtKind::While { test, .. } => {
+                self.collect_dict_storage_in_expr(
+                    test,
+                    DictUseContext::Value,
+                    shared_globals,
+                    storage,
+                );
+            }
+            StmtKind::For { iter, .. } => {
+                self.collect_dict_storage_in_expr(
+                    iter,
+                    DictUseContext::Value,
+                    shared_globals,
+                    storage,
+                );
+            }
+            StmtKind::Expr(expr) => {
+                self.collect_dict_storage_in_expr(
+                    expr,
+                    DictUseContext::Value,
+                    shared_globals,
+                    storage,
+                );
+            }
+            StmtKind::Assert { test, msg } => {
+                self.collect_dict_storage_in_expr(
+                    test,
+                    DictUseContext::Value,
+                    shared_globals,
+                    storage,
+                );
+                if let Some(expr) = msg {
                     self.collect_dict_storage_in_expr(
                         expr,
                         DictUseContext::Value,
@@ -104,72 +107,41 @@ impl<'a> Codegen<'a> {
                         storage,
                     );
                 }
-                StmtKind::Assert { test, msg } => {
-                    self.collect_dict_storage_in_expr(
-                        test,
-                        DictUseContext::Value,
-                        shared_globals,
-                        storage,
-                    );
-                    if let Some(expr) = msg {
-                        self.collect_dict_storage_in_expr(
-                            expr,
-                            DictUseContext::Value,
-                            shared_globals,
-                            storage,
-                        );
-                    }
-                }
-                StmtKind::Match { subject, cases } => {
-                    self.collect_dict_storage_in_expr(
-                        subject,
-                        DictUseContext::Value,
-                        shared_globals,
-                        storage,
-                    );
-                    for case in cases {
-                        self.collect_dict_storage_in_stmts(&case.body, shared_globals, storage);
-                    }
-                }
-                StmtKind::Try {
-                    body,
-                    handlers,
-                    orelse,
-                    finalbody,
-                } => {
-                    self.collect_dict_storage_in_stmts(body, shared_globals, storage);
-                    for handler in handlers {
-                        self.collect_dict_storage_in_stmts(&handler.body, shared_globals, storage);
-                    }
-                    self.collect_dict_storage_in_stmts(orelse, shared_globals, storage);
-                    self.collect_dict_storage_in_stmts(finalbody, shared_globals, storage);
-                }
-                StmtKind::Raise { exc, cause } => {
-                    if let Some(expr) = exc {
-                        self.collect_dict_storage_in_expr(
-                            expr,
-                            DictUseContext::Value,
-                            shared_globals,
-                            storage,
-                        );
-                    }
-                    if let Some(expr) = cause {
-                        self.collect_dict_storage_in_expr(
-                            expr,
-                            DictUseContext::Value,
-                            shared_globals,
-                            storage,
-                        );
-                    }
-                }
-                StmtKind::Import { .. }
-                | StmtKind::ImportFrom { .. }
-                | StmtKind::Global { .. }
-                | StmtKind::Nonlocal { .. }
-                | StmtKind::Break
-                | StmtKind::Continue => {}
             }
-        }
+            StmtKind::Match { subject, .. } => {
+                self.collect_dict_storage_in_expr(
+                    subject,
+                    DictUseContext::Value,
+                    shared_globals,
+                    storage,
+                );
+            }
+            StmtKind::Raise { exc, cause } => {
+                if let Some(expr) = exc {
+                    self.collect_dict_storage_in_expr(
+                        expr,
+                        DictUseContext::Value,
+                        shared_globals,
+                        storage,
+                    );
+                }
+                if let Some(expr) = cause {
+                    self.collect_dict_storage_in_expr(
+                        expr,
+                        DictUseContext::Value,
+                        shared_globals,
+                        storage,
+                    );
+                }
+            }
+            StmtKind::Try { .. }
+            | StmtKind::Import { .. }
+            | StmtKind::ImportFrom { .. }
+            | StmtKind::Global { .. }
+            | StmtKind::Nonlocal { .. }
+            | StmtKind::Break
+            | StmtKind::Continue => {}
+        });
     }
 
     /// Record a dict assignment and decide if it can stay local.

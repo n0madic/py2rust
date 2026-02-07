@@ -1,6 +1,7 @@
 // Builtin function call lowering.
 
 use super::super::*;
+use crate::builtin::registry::resolve_builtin;
 
 impl<'a> Codegen<'a> {
     /// Try to lower a builtin call; return Some(expr) if handled.
@@ -11,52 +12,9 @@ impl<'a> Codegen<'a> {
         args: &[Expr],
         keywords: &[KeywordArg],
     ) -> Result<Option<String>, CompileError> {
-        let is_builtin_name = matches!(
-            name,
-            "print"
-                | "len"
-                | "range"
-                | "round"
-                | "list"
-                | "tuple"
-                | "set"
-                | "dict"
-                | "bytes"
-                | "enumerate"
-                | "zip"
-                | "map"
-                | "filter"
-                | "all"
-                | "any"
-                | "reversed"
-                | "sorted"
-                | "max"
-                | "min"
-                | "abs"
-                | "pow"
-                | "sum"
-                | "int"
-                | "float"
-                | "bool"
-                | "chr"
-                | "ord"
-                | "hash"
-                | "id"
-                | "divmod"
-                | "next"
-                | "iter"
-                | "bin"
-                | "hex"
-                | "oct"
-                | "repr"
-                | "str"
-                | "ascii"
-                | "isinstance"
-                | "type"
-                | "open"
-                | "exit"
-        );
-        let builtin_accepts_keywords = matches!(name, "print" | "sorted" | "max" | "min");
+        let builtin_spec = resolve_builtin(name);
+        let is_builtin_name = builtin_spec.is_some();
+        let builtin_accepts_keywords = builtin_spec.is_some_and(|spec| spec.allow_keywords);
         if is_builtin_name && !builtin_accepts_keywords && !keywords.is_empty() {
             return Err(self.error(
                 expr.span,

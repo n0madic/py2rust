@@ -651,6 +651,35 @@ def test_dicts() -> None:
     assert copied["a"] == 10
     assert copied["b"] == 2
 
+
+# Set operations
+def test_sets() -> None:
+    values: set[int] = {1, 2, 3}
+    values.extend([3, 4, 5])
+    assert len(values) == 5
+    assert sum(values) == 15
+
+    # Extending by itself should be a no-op.
+    values.extend(values)
+    assert len(values) == 5
+    assert sum(values) == 15
+
+    popped: int = values.pop()
+    assert len(values) == 4
+    assert sum(values) + popped == 15
+
+    single: set[int] = {42}
+    assert single.pop() == 42
+    assert len(single) == 0
+
+    empty: set[int] = set()
+    got_key_error: bool = False
+    try:
+        empty.pop()
+    except KeyError:
+        got_key_error = True
+    assert got_key_error
+
 # For-loop tuple unpacking
 def test_for_tuple_unpacking() -> None:
     # Basic tuple unpacking in for loop
@@ -726,6 +755,7 @@ test_strings()
 test_tuples()
 test_printing()
 test_dicts()
+test_sets()
 test_for_tuple_unpacking()
 
 print("All collection tests passed!")

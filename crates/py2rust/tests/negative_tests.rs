@@ -126,6 +126,25 @@ def bad(lst: list[int]) -> list[int]:
 }
 
 #[test]
+fn supports_set_extend_method() {
+    let source = r#"
+values: set[int] = {1, 2, 3}
+values.extend([4, 5])
+"#;
+    expect_success(source);
+}
+
+#[test]
+fn supports_set_pop_method() {
+    let source = r#"
+values: set[int] = {1, 2, 3}
+popped: int = values.pop()
+assert popped > 0
+"#;
+    expect_success(source);
+}
+
+#[test]
 fn rejects_async_comprehensions() {
     let source = r#"
 async def bad() -> list[int]:

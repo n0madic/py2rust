@@ -2,6 +2,7 @@
 // Allow large Result types because our CompileError includes source text
 #![allow(clippy::result_large_err)]
 
+pub mod builtin;
 pub mod codegen;
 pub mod diagnostic;
 pub mod hir;

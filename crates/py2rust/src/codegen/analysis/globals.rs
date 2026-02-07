@@ -1,6 +1,7 @@
 // Global-sharing analysis for code generation.
 
 use super::super::*;
+use super::walk::{walk_assign_target_names, walk_stmt_tree};
 
 impl<'a> Codegen<'a> {
     pub(crate) fn collect_shared_globals(&self, program: &Program) -> HashSet<String> {
@@ -60,94 +61,50 @@ impl<'a> Codegen<'a> {
 
     /// Walk a statement and record any names bound at module scope.
     fn collect_module_vars_from_stmt(&self, stmt: &Stmt, vars: &mut HashSet<String>) {
-        fn record_target(target: &AssignTarget, vars: &mut HashSet<String>) {
-            match target {
-                AssignTarget::Name(name) => {
+        walk_stmt_tree(
+            std::slice::from_ref(stmt),
+            &mut |current| match &current.kind {
+                StmtKind::Let { name, .. } => {
                     vars.insert(name.clone());
                 }
-                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
-                    for item in items {
-                        record_target(item, vars);
+                StmtKind::Assign { target, .. } => {
+                    walk_assign_target_names(target, &mut |name| {
+                        vars.insert(name.to_string());
+                    });
+                }
+                StmtKind::For { target, .. } => {
+                    for name in target.names() {
+                        vars.insert(name.to_string());
                     }
                 }
-                AssignTarget::Starred(inner) => record_target(inner, vars),
-                AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
-            }
-        }
-
-        match &stmt.kind {
-            StmtKind::Let { name, .. } => {
-                vars.insert(name.clone());
-            }
-            StmtKind::Assign { target, .. } => {
-                record_target(target, vars);
-            }
-            StmtKind::For { target, body, .. } => {
-                for name in target.names() {
-                    vars.insert(name.to_string());
-                }
-                for stmt in body {
-                    self.collect_module_vars_from_stmt(stmt, vars);
-                }
-            }
-            StmtKind::If { body, orelse, .. } => {
-                for stmt in body {
-                    self.collect_module_vars_from_stmt(stmt, vars);
-                }
-                for stmt in orelse {
-                    self.collect_module_vars_from_stmt(stmt, vars);
-                }
-            }
-            StmtKind::While { body, .. } => {
-                for stmt in body {
-                    self.collect_module_vars_from_stmt(stmt, vars);
-                }
-            }
-            StmtKind::Match { cases, .. } => {
-                for case in cases {
-                    for binding in &case.bindings {
-                        vars.insert(binding.clone());
-                    }
-                    for stmt in &case.body {
-                        self.collect_module_vars_from_stmt(stmt, vars);
+                StmtKind::Match { cases, .. } => {
+                    for case in cases {
+                        for binding in &case.bindings {
+                            vars.insert(binding.clone());
+                        }
                     }
                 }
-            }
-            StmtKind::Try {
-                body,
-                handlers,
-                orelse,
-                finalbody,
-            } => {
-                for stmt in body {
-                    self.collect_module_vars_from_stmt(stmt, vars);
-                }
-                for handler in handlers {
-                    if let Some(name) = &handler.name {
-                        vars.insert(name.clone());
-                    }
-                    for stmt in &handler.body {
-                        self.collect_module_vars_from_stmt(stmt, vars);
+                StmtKind::Try { handlers, .. } => {
+                    for handler in handlers {
+                        if let Some(name) = &handler.name {
+                            vars.insert(name.clone());
+                        }
                     }
                 }
-                for stmt in orelse {
-                    self.collect_module_vars_from_stmt(stmt, vars);
-                }
-                for stmt in finalbody {
-                    self.collect_module_vars_from_stmt(stmt, vars);
-                }
-            }
-            StmtKind::Return { .. }
-            | StmtKind::Import { .. }
-            | StmtKind::ImportFrom { .. }
-            | StmtKind::Global { .. }
-            | StmtKind::Nonlocal { .. }
-            | StmtKind::Break
-            | StmtKind::Continue
-            | StmtKind::Expr(_)
-            | StmtKind::Assert { .. }
-            | StmtKind::Raise { .. } => {}
-        }
+                StmtKind::If { .. }
+                | StmtKind::While { .. }
+                | StmtKind::Return { .. }
+                | StmtKind::Expr(_)
+                | StmtKind::Assert { .. }
+                | StmtKind::Raise { .. }
+                | StmtKind::Import { .. }
+                | StmtKind::ImportFrom { .. }
+                | StmtKind::Global { .. }
+                | StmtKind::Nonlocal { .. }
+                | StmtKind::Break
+                | StmtKind::Continue => {}
+            },
+        );
     }
 
     /// Collect local/global declarations for a statement list within a scope.
@@ -157,103 +114,68 @@ impl<'a> Codegen<'a> {
         locals: &mut HashSet<String>,
         globals: &mut HashSet<String>,
     ) {
-        fn record_target(
-            target: &AssignTarget,
-            locals: &mut HashSet<String>,
-            globals: &HashSet<String>,
-        ) {
-            match target {
-                AssignTarget::Name(name) => {
-                    if !globals.contains(name) {
-                        locals.insert(name.clone());
-                    }
+        walk_stmt_tree(stmts, &mut |stmt| match &stmt.kind {
+            StmtKind::Let { name, .. } => {
+                if !globals.contains(name) {
+                    locals.insert(name.clone());
                 }
-                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
-                    for item in items {
-                        record_target(item, locals, globals);
-                    }
-                }
-                AssignTarget::Starred(inner) => record_target(inner, locals, globals),
-                AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
             }
-        }
-
-        for stmt in stmts {
-            match &stmt.kind {
-                StmtKind::Let { name, .. } => {
+            StmtKind::Assign { target, .. } => {
+                walk_assign_target_names(target, &mut |name| {
                     if !globals.contains(name) {
-                        locals.insert(name.clone());
+                        locals.insert(name.to_string());
+                    }
+                });
+            }
+            StmtKind::For { target, .. } => {
+                for name in target.names() {
+                    if !globals.contains(name) {
+                        locals.insert(name.to_string());
                     }
                 }
-                StmtKind::Assign { target, .. } => {
-                    record_target(target, locals, globals);
+            }
+            StmtKind::Match { cases, .. } => {
+                for case in cases {
+                    for binding in &case.bindings {
+                        if !globals.contains(binding) {
+                            locals.insert(binding.clone());
+                        }
+                    }
                 }
-                StmtKind::For { target, body, .. } => {
-                    for name in target.names() {
+            }
+            StmtKind::Try { handlers, .. } => {
+                for handler in handlers {
+                    if let Some(name) = &handler.name {
                         if !globals.contains(name) {
-                            locals.insert(name.to_string());
+                            locals.insert(name.clone());
                         }
                     }
-                    self.collect_scope_locals(body, locals, globals);
                 }
-                StmtKind::If { body, orelse, .. } => {
-                    self.collect_scope_locals(body, locals, globals);
-                    self.collect_scope_locals(orelse, locals, globals);
-                }
-                StmtKind::While { body, .. } => {
-                    self.collect_scope_locals(body, locals, globals);
-                }
-                StmtKind::Match { cases, .. } => {
-                    for case in cases {
-                        for binding in &case.bindings {
-                            if !globals.contains(binding) {
-                                locals.insert(binding.clone());
-                            }
-                        }
-                        self.collect_scope_locals(&case.body, locals, globals);
-                    }
-                }
-                StmtKind::Try {
-                    body,
-                    handlers,
-                    orelse,
-                    finalbody,
-                } => {
-                    self.collect_scope_locals(body, locals, globals);
-                    for handler in handlers {
-                        if let Some(name) = &handler.name {
-                            if !globals.contains(name) {
-                                locals.insert(name.clone());
-                            }
-                        }
-                        self.collect_scope_locals(&handler.body, locals, globals);
-                    }
-                    self.collect_scope_locals(orelse, locals, globals);
-                    self.collect_scope_locals(finalbody, locals, globals);
-                }
-                StmtKind::Global { names } => {
-                    for name in names {
-                        globals.insert(name.clone());
-                        // Global declarations override any prior local binding.
-                        locals.remove(name);
-                    }
-                }
-                StmtKind::Nonlocal { names } => {
-                    for name in names {
-                        // Nonlocal declarations remove the local binding in this scope.
-                        locals.remove(name);
-                    }
-                }
-                StmtKind::Return { .. }
-                | StmtKind::Import { .. }
-                | StmtKind::ImportFrom { .. }
-                | StmtKind::Break
-                | StmtKind::Continue
-                | StmtKind::Expr(_)
-                | StmtKind::Assert { .. }
-                | StmtKind::Raise { .. } => {}
             }
-        }
+            StmtKind::Global { names } => {
+                for name in names {
+                    globals.insert(name.clone());
+                    // Global declarations override any prior local binding.
+                    locals.remove(name);
+                }
+            }
+            StmtKind::Nonlocal { names } => {
+                for name in names {
+                    // Nonlocal declarations remove the local binding in this scope.
+                    locals.remove(name);
+                }
+            }
+            StmtKind::If { .. }
+            | StmtKind::While { .. }
+            | StmtKind::Return { .. }
+            | StmtKind::Expr(_)
+            | StmtKind::Assert { .. }
+            | StmtKind::Raise { .. }
+            | StmtKind::Import { .. }
+            | StmtKind::ImportFrom { .. }
+            | StmtKind::Break
+            | StmtKind::Continue => {}
+        });
     }
 
     /// Find module globals referenced from a function or method body.

@@ -1,4 +1,5 @@
 use super::*;
+use crate::builtin::registry::{resolve_builtin, BuiltinId};
 
 /// This module scans the HIR to determine which helper functions and imports are needed.
 ///
@@ -440,24 +441,20 @@ impl<'a> Codegen<'a> {
                 keywords,
             } => {
                 if let ExprKind::Name(name) = &func.kind {
-                    if name == "print" {
-                        self.uses.print = true;
-                    }
-                    if name == "len" {
-                        self.uses.len = true;
-                    }
-                    if name == "range" {
-                        if args.len() == 1 {
-                            self.uses.range = true;
-                        } else {
-                            self.uses.range2 = true;
+                    if let Some(spec) = resolve_builtin(name) {
+                        match spec.id {
+                            BuiltinId::Print => self.uses.print = true,
+                            BuiltinId::Len => self.uses.len = true,
+                            BuiltinId::Range => match args.len() {
+                                1 => self.uses.range = true,
+                                2 => self.uses.range2 = true,
+                                3 => self.uses.range3 = true,
+                                _ => self.uses.range2 = true,
+                            },
+                            BuiltinId::Round => self.uses.round = true,
+                            BuiltinId::Type => self.uses.type_name = true,
+                            _ => {}
                         }
-                    }
-                    if name == "round" {
-                        self.uses.round = true;
-                    }
-                    if name == "type" {
-                        self.uses.type_name = true;
                     }
                 }
                 for arg in args {
