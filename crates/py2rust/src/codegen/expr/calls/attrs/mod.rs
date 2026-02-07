@@ -7,6 +7,7 @@ mod set;
 mod string_file;
 
 use super::super::*;
+use crate::container::registry::{resolve_container_method, ContainerId};
 use crate::stdlib::registry::{resolve_method, resolve_module};
 
 impl<'a> Codegen<'a> {
@@ -74,34 +75,19 @@ impl<'a> Codegen<'a> {
         }
 
         if matches!(value.ty.as_ref(), Some(Type::List(_)))
-            && matches!(
-                attr,
-                "append"
-                    | "extend"
-                    | "pop"
-                    | "insert"
-                    | "clear"
-                    | "copy"
-                    | "reverse"
-                    | "index"
-                    | "sort"
-                    | "count"
-            )
+            && resolve_container_method(ContainerId::List, attr).is_some()
         {
             return self.gen_list_attr_call(value, attr, args, keywords);
         }
 
         if matches!(value.ty.as_ref(), Some(Type::Dict(_, _)))
-            && matches!(attr, "get" | "pop" | "clear" | "copy" | "update")
+            && resolve_container_method(ContainerId::Dict, attr).is_some()
         {
             return self.gen_dict_attr_call(value, attr, args, keywords);
         }
 
         if matches!(value.ty.as_ref(), Some(Type::Set(_)))
-            && matches!(
-                attr,
-                "add" | "remove" | "discard" | "clear" | "copy" | "extend" | "pop"
-            )
+            && resolve_container_method(ContainerId::Set, attr).is_some()
         {
             return self.gen_set_attr_call(value, attr, args, keywords);
         }
@@ -161,4 +147,43 @@ impl<'a> Codegen<'a> {
             self.gen_args(args)?
         ))
     }
+
+    /// Resolve an attribute-call receiver into a reusable target category.
+    pub(super) fn resolve_attr_value_target(
+        &mut self,
+        value: &Expr,
+    ) -> Result<AttrValueTarget, CompileError> {
+        if let ExprKind::Name(name) = &value.kind {
+            if self.is_global(name) {
+                return Ok(AttrValueTarget::GlobalName(name.clone()));
+            }
+            return Ok(AttrValueTarget::Name(name.clone()));
+        }
+        Ok(AttrValueTarget::Expr(self.gen_expr(value)?))
+    }
+
+    /// Resolve a receiver for direct mutable container operations.
+    ///
+    /// Global names map to the global lock expression, while local names and
+    /// non-name expressions remain direct values.
+    pub(super) fn resolve_mut_attr_target_expr(
+        &mut self,
+        value: &Expr,
+    ) -> Result<String, CompileError> {
+        let target = self.resolve_attr_value_target(value)?;
+        Ok(match target {
+            AttrValueTarget::GlobalName(name) => self.global_lock_expr(&name),
+            AttrValueTarget::Name(name) | AttrValueTarget::Expr(name) => name,
+        })
+    }
+}
+
+/// Categorized receiver target used by attribute-method lowering helpers.
+pub(super) enum AttrValueTarget {
+    /// A name bound in global scope.
+    GlobalName(String),
+    /// A non-global local name.
+    Name(String),
+    /// A non-name expression lowered once.
+    Expr(String),
 }

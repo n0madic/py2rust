@@ -1,6 +1,8 @@
 // Set attribute call lowering.
 
 use super::super::super::*;
+use super::AttrValueTarget;
+use crate::container::registry::{resolve_container_method, ContainerId};
 
 impl<'a> Codegen<'a> {
     /// Lower set method calls.
@@ -11,113 +13,65 @@ impl<'a> Codegen<'a> {
         args: &[Expr],
         _keywords: &[KeywordArg],
     ) -> Result<String, CompileError> {
-        if attr == "add" {
-            if let Some(Type::Set(_)) = value.ty.as_ref() {
-                self.uses.hash_set = true;
-                let target = if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        self.global_lock_expr(name)
-                    } else {
-                        self.gen_expr(value)?
-                    }
-                } else {
-                    self.gen_expr(value)?
-                };
-                return Ok(format!("{}.insert({})", target, self.gen_args(args)?));
-            }
+        let Some(Type::Set(inner)) = value.ty.as_ref() else {
+            return Err(self.error(
+                value.span,
+                "Internal error: set handler used for non-set receiver",
+            ));
+        };
+        let spec = resolve_container_method(ContainerId::Set, attr).ok_or_else(|| {
+            self.error(
+                value.span,
+                format!("Internal error: unsupported set method `{attr}`"),
+            )
+        })?;
+        if !spec.accepts_arity(args.len()) {
+            return Err(self.error(value.span, spec.arity_error()));
         }
-        if attr == "remove" {
-            if let Some(Type::Set(_)) = value.ty.as_ref() {
-                self.uses.hash_set = true;
-                let target = if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        self.global_lock_expr(name)
-                    } else {
-                        self.gen_expr(value)?
-                    }
-                } else {
-                    self.gen_expr(value)?
-                };
-                return Ok(format!("{}.remove(&{})", target, self.gen_args(args)?));
+        self.uses.hash_set = true;
+
+        match attr {
+            "add" => {
+                let target = self.resolve_mut_attr_target_expr(value)?;
+                Ok(format!("{}.insert({})", target, self.gen_args(args)?))
             }
-        }
-        if attr == "discard" {
-            if let Some(Type::Set(_)) = value.ty.as_ref() {
-                self.uses.hash_set = true;
-                let target = if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        self.global_lock_expr(name)
-                    } else {
-                        self.gen_expr(value)?
-                    }
-                } else {
-                    self.gen_expr(value)?
-                };
-                return Ok(format!(
+            "remove" => {
+                let target = self.resolve_mut_attr_target_expr(value)?;
+                Ok(format!("{}.remove(&{})", target, self.gen_args(args)?))
+            }
+            "discard" => {
+                let target = self.resolve_mut_attr_target_expr(value)?;
+                Ok(format!(
                     "{{ {}.remove(&{}); }}",
                     target,
                     self.gen_args(args)?
-                ));
+                ))
             }
-        }
-        if attr == "clear" {
-            if let Some(Type::Set(_)) = value.ty.as_ref() {
-                self.uses.hash_set = true;
-                if !args.is_empty() {
-                    return Err(self.error(value.span, "set.clear() expects no arguments"));
+            "clear" => match self.resolve_attr_value_target(value)? {
+                AttrValueTarget::GlobalName(name) => {
+                    let guard = self.new_tmp();
+                    Ok(format!(
+                        "{{ let mut {guard} = {lock}; {guard}.clear(); }}",
+                        guard = guard,
+                        lock = self.global_lock_expr(&name)
+                    ))
                 }
-                if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        let guard = self.new_tmp();
-                        return Ok(format!(
-                            "{{ let mut {guard} = {lock}; {guard}.clear(); }}",
-                            guard = guard,
-                            lock = self.global_lock_expr(name)
-                        ));
-                    }
-                }
-                let target_expr = self.gen_expr(value)?;
-                if !matches!(value.kind, ExprKind::Name(_)) {
+                AttrValueTarget::Name(name) => Ok(format!("{name}.clear()")),
+                AttrValueTarget::Expr(target) => {
                     let tmp = self.new_tmp();
-                    return Ok(format!(
+                    Ok(format!(
                         "{{ let mut {tmp} = {target}; {tmp}.clear(); }}",
                         tmp = tmp,
-                        target = target_expr
-                    ));
+                        target = target
+                    ))
                 }
-                return Ok(format!("{}.clear()", target_expr));
+            },
+            "copy" => {
+                let target = self.resolve_mut_attr_target_expr(value)?;
+                Ok(format!("{target}.clone()"))
             }
-        }
-        if attr == "copy" {
-            if let Some(Type::Set(_)) = value.ty.as_ref() {
-                self.uses.hash_set = true;
-                if !args.is_empty() {
-                    return Err(self.error(value.span, "set.copy() expects no arguments"));
-                }
-                if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        return Ok(format!("{}.clone()", self.global_lock_expr(name)));
-                    }
-                }
-                let target_expr = self.gen_expr(value)?;
-                return Ok(format!("{}.clone()", target_expr));
-            }
-        }
-        if attr == "extend" {
-            if let Some(Type::Set(_)) = value.ty.as_ref() {
-                self.uses.hash_set = true;
-                if args.len() != 1 {
-                    return Err(self.error(value.span, "set.extend() expects one argument"));
-                }
-                let target = if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
-                        self.global_lock_expr(name)
-                    } else {
-                        self.gen_expr(value)?
-                    }
-                } else {
-                    self.gen_expr(value)?
-                };
+            "extend" => {
+                let target = self.resolve_mut_attr_target_expr(value)?;
                 let iter_src = self.gen_iter_source(&args[0])?;
                 let items_tmp = self.new_tmp();
                 let body = format!(
@@ -126,15 +80,9 @@ impl<'a> Codegen<'a> {
                     iter = iter_src.expr,
                     target = target
                 );
-                return Ok(iter_src.wrap(body));
+                Ok(iter_src.wrap(body))
             }
-        }
-        if attr == "pop" {
-            if let Some(Type::Set(inner)) = value.ty.as_ref() {
-                self.uses.hash_set = true;
-                if !args.is_empty() {
-                    return Err(self.error(value.span, "set.pop() expects no arguments"));
-                }
+            "pop" => {
                 let item_is_copy = self.is_copy_type(inner);
                 let pop_result_expr = |target: &str| {
                     let first_expr = if item_is_copy {
@@ -148,34 +96,37 @@ impl<'a> Codegen<'a> {
                         target = target
                     )
                 };
-                if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
+                match self.resolve_attr_value_target(value)? {
+                    AttrValueTarget::GlobalName(name) => {
                         let guard = self.new_tmp();
                         let pop_expr = pop_result_expr(&guard);
-                        return Ok(self.wrap_result(format!(
+                        Ok(self.wrap_result(format!(
                             "{{ let mut {guard} = {lock}; {pop_expr} }}",
                             guard = guard,
-                            lock = self.global_lock_expr(name),
+                            lock = self.global_lock_expr(&name),
                             pop_expr = pop_expr
-                        )));
+                        )))
                     }
-                    let pop_expr = pop_result_expr(name);
-                    return Ok(self.wrap_result(pop_expr));
+                    AttrValueTarget::Name(name) => {
+                        let pop_expr = pop_result_expr(&name);
+                        Ok(self.wrap_result(pop_expr))
+                    }
+                    AttrValueTarget::Expr(target) => {
+                        let tmp = self.new_tmp();
+                        let pop_expr = pop_result_expr(&tmp);
+                        Ok(self.wrap_result(format!(
+                            "{{ let mut {tmp} = {target}; {pop_expr} }}",
+                            tmp = tmp,
+                            target = target,
+                            pop_expr = pop_expr
+                        )))
+                    }
                 }
-                let target_expr = self.gen_expr(value)?;
-                let tmp = self.new_tmp();
-                let pop_expr = pop_result_expr(&tmp);
-                return Ok(self.wrap_result(format!(
-                    "{{ let mut {tmp} = {target}; {pop_expr} }}",
-                    tmp = tmp,
-                    target = target_expr,
-                    pop_expr = pop_expr
-                )));
             }
+            _ => Err(self.error(
+                value.span,
+                format!("Internal error: unsupported set method `{attr}`"),
+            )),
         }
-        Err(self.error(
-            value.span,
-            format!("Internal error: unsupported set method `{attr}`"),
-        ))
     }
 }

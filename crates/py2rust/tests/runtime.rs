@@ -5,6 +5,24 @@
 
 mod common;
 
+/// Generate a standard runtime integration test body around `run_py`.
+macro_rules! runtime_case {
+    ($test_name:ident, $suite_name:literal, $source_file:literal) => {
+        #[test]
+        fn $test_name() {
+            crate::common::run_py($suite_name, include_str!($source_file), None);
+        }
+    };
+    ($test_name:ident, $suite_name:literal, $source_file:literal, $expected:expr) => {
+        #[test]
+        fn $test_name() {
+            crate::common::run_py($suite_name, include_str!($source_file), Some($expected));
+        }
+    };
+}
+
+pub(crate) use runtime_case;
+
 #[path = "runtime/assert.rs"]
 mod assert_tests;
 #[path = "runtime/builtins.rs"]

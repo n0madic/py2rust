@@ -1,6 +1,7 @@
 // List attribute call lowering.
 
 use super::super::super::*;
+use super::AttrValueTarget;
 
 impl<'a> Codegen<'a> {
     /// Lower list method calls.
@@ -302,33 +303,32 @@ impl<'a> Codegen<'a> {
                         return Ok(format!("{{ {}.clear(); }}", name));
                     }
                 }
-                if let ExprKind::Name(name) = &value.kind {
-                    if self.is_global(name) {
+                return match self.resolve_attr_value_target(value)? {
+                    AttrValueTarget::GlobalName(name) => {
                         let outer = self.new_tmp();
                         let guard = self.new_tmp();
-                        return Ok(format!(
+                        Ok(format!(
                             "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"list mutex poisoned\"); {guard}.clear(); }}",
                             outer = outer,
                             guard = guard,
-                            lock = self.global_lock_expr(name)
-                        ));
+                            lock = self.global_lock_expr(&name)
+                        ))
                     }
-                }
-                let target_expr = self.gen_expr(value)?;
-                if !matches!(value.kind, ExprKind::Name(_)) {
-                    let tmp = self.new_tmp();
-                    let guard = self.new_tmp();
-                    return Ok(format!(
-                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); {guard}.clear(); }}",
-                        tmp = tmp,
-                        guard = guard,
-                        target = target_expr
-                    ));
-                }
-                return Ok(format!(
-                    "{{ let mut guard = {}.lock().expect(\"list mutex poisoned\"); guard.clear(); }}",
-                    target_expr
-                ));
+                    AttrValueTarget::Name(name) => Ok(format!(
+                        "{{ let mut guard = {target}.lock().expect(\"list mutex poisoned\"); guard.clear(); }}",
+                        target = name
+                    )),
+                    AttrValueTarget::Expr(target) => {
+                        let tmp = self.new_tmp();
+                        let guard = self.new_tmp();
+                        Ok(format!(
+                            "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); {guard}.clear(); }}",
+                            tmp = tmp,
+                            guard = guard,
+                            target = target
+                        ))
+                    }
+                };
             }
         }
         if attr == "copy" {
@@ -347,11 +347,20 @@ impl<'a> Codegen<'a> {
                         return Ok(format!("Arc::new(Mutex::new({}.clone()))", name));
                     }
                 }
-                let target_expr = self.gen_expr(value)?;
-                return Ok(format!(
-                    "Arc::new(Mutex::new({}.lock().expect(\"list mutex poisoned\").clone()))",
-                    target_expr
-                ));
+                return match self.resolve_attr_value_target(value)? {
+                    AttrValueTarget::GlobalName(name) => Ok(format!(
+                        "Arc::new(Mutex::new({}.lock().expect(\"list mutex poisoned\").clone()))",
+                        self.global_lock_expr(&name)
+                    )),
+                    AttrValueTarget::Name(name) => Ok(format!(
+                        "Arc::new(Mutex::new({}.lock().expect(\"list mutex poisoned\").clone()))",
+                        name
+                    )),
+                    AttrValueTarget::Expr(target) => Ok(format!(
+                        "Arc::new(Mutex::new({}.lock().expect(\"list mutex poisoned\").clone()))",
+                        target
+                    )),
+                };
             }
         }
         if attr == "reverse" {

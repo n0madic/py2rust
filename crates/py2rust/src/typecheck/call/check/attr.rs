@@ -1,6 +1,7 @@
 // Attribute-based call target type checking.
 
 use super::super::super::*;
+use crate::container::registry::{resolve_container_method, ContainerId};
 use crate::stdlib::registry::{resolve_method, resolve_module};
 
 impl<'a> TypeChecker<'a> {
@@ -269,10 +270,12 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Type::Set(inner) = &obj_ty {
-            if attr == "add" {
-                if args.len() != 1 {
-                    return Err(self.error(span, "set.add() expects one argument"));
+            if let Some(spec) = resolve_container_method(ContainerId::Set, attr.as_str()) {
+                if !spec.accepts_arity(args.len()) {
+                    return Err(self.error(span, spec.arity_error()));
                 }
+            }
+            if attr == "add" {
                 let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
                 if !matches!(arg_ty, Type::Unknown) && !matches!(inner.as_ref(), Type::Unknown) {
                     self.ensure_assignable(&arg_ty, inner, span)?;
@@ -285,9 +288,6 @@ impl<'a> TypeChecker<'a> {
                 return Ok(Type::None);
             }
             if attr == "remove" {
-                if args.len() != 1 {
-                    return Err(self.error(span, "set.remove() expects one argument"));
-                }
                 let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
                 if !matches!(arg_ty, Type::Unknown) && !matches!(inner.as_ref(), Type::Unknown) {
                     self.ensure_assignable(&arg_ty, inner, span)?;
@@ -295,9 +295,6 @@ impl<'a> TypeChecker<'a> {
                 return Ok(Type::None);
             }
             if attr == "discard" {
-                if args.len() != 1 {
-                    return Err(self.error(span, "set.discard() expects one argument"));
-                }
                 let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
                 if !matches!(arg_ty, Type::Unknown) && !matches!(inner.as_ref(), Type::Unknown) {
                     self.ensure_assignable(&arg_ty, inner, span)?;
@@ -305,21 +302,12 @@ impl<'a> TypeChecker<'a> {
                 return Ok(Type::None);
             }
             if attr == "clear" {
-                if !args.is_empty() {
-                    return Err(self.error(span, "set.clear() expects no arguments"));
-                }
                 return Ok(Type::None);
             }
             if attr == "copy" {
-                if !args.is_empty() {
-                    return Err(self.error(span, "set.copy() expects no arguments"));
-                }
                 return Ok(Type::Set(Box::new((*inner.as_ref()).clone())));
             }
             if attr == "extend" {
-                if args.len() != 1 {
-                    return Err(self.error(span, "set.extend() expects one argument"));
-                }
                 let iter_ty = self.check_expr(&mut args[0], None)?;
                 let item_ty = self.iter_item_type(&iter_ty, span)?;
                 if !matches!(item_ty, Type::Unknown) && !matches!(inner.as_ref(), Type::Unknown) {
@@ -333,9 +321,6 @@ impl<'a> TypeChecker<'a> {
                 return Ok(Type::None);
             }
             if attr == "pop" {
-                if !args.is_empty() {
-                    return Err(self.error(span, "set.pop() expects no arguments"));
-                }
                 return Ok((*inner.as_ref()).clone());
             }
         }

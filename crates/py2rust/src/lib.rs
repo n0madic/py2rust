@@ -4,6 +4,7 @@
 
 pub mod builtin;
 pub mod codegen;
+pub mod container;
 pub mod diagnostic;
 pub mod hir;
 pub mod lower;

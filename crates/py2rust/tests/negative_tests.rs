@@ -145,6 +145,34 @@ assert popped > 0
 }
 
 #[test]
+fn rejects_set_extend_wrong_arity() {
+    let source = r#"
+values: set[int] = {1, 2, 3}
+values.extend()
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("set.extend() expects one argument"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_set_pop_with_argument() {
+    let source = r#"
+values: set[int] = {1, 2, 3}
+values.pop(0)
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("set.pop() expects no arguments"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
 fn rejects_async_comprehensions() {
     let source = r#"
 async def bad() -> list[int]:
