@@ -32,8 +32,12 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Nested functions with closure capture and `nonlocal` writes
 - `global` declarations with CPython-compatible shadowing rules (local assignment shadows module names unless explicitly declared `global`)
 - Builtins: `abs`, `all`, `any`, `ascii`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `iter`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `type`, `zip`
-- Stdlib modules (registry-backed): `os.remove(path)` and `sys.exit([code])`
-- Stdlib imports: `import os`, `import os as o`, `from os import remove`, `from os import remove as rm`, `import sys`, `from sys import exit`
+- Stdlib modules (registry-backed):
+  - `os`: `remove`, `getcwd`, `chdir`, `mkdir`, `listdir`, `rmdir`, `rename`, `replace`, `makedirs`, `getenv`, and attributes `environ`, `name`, `path`
+  - `os.path`: `join`, `exists`, `basename`, `dirname`, `split`, `isdir`, `isfile`, `abspath`
+  - `sys`: `exit`, `argv`, `intern`
+  - lightweight `re` (via `regex-lite`): `search`, `match`, `sub`, `Match.group(index)`, `Match.span()`
+- Stdlib imports: `import os`, `import os as o`, `import os.path`, `import sys`, `import re`, `from os import remove`, `from os.path import join`, `from sys import exit`, `from sys import intern`, `from re import search`
 - User imports from local files/packages: `import mymod`, `from mymod import f`, and relative package imports (`from .x import y`, `from .. import z`)
 
 ## Usage
@@ -77,7 +81,7 @@ The generated Rust injects tiny helper functions only when needed:
 - `py_len`
 - `py_range`
 - `py_round`
-- `py_os_remove` etc.
+- `py_os_*`, `py_sys_*`, `py_re_*`
 
 ## Notes and Limitations
 - `self` can be unannotated in methods; other parameters require annotations.
@@ -87,10 +91,12 @@ The generated Rust injects tiny helper functions only when needed:
 - `bool` follows Python numeric compatibility in arithmetic/comparison contexts (subtype of `int`) while remaining `bool` in boolean-only flows.
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
 - `typing.List/Dict/Set/Tuple` annotations are aliases of `list/dict/set/tuple` annotations.
-- Imports are unified through one resolver: `typing`/`os`/`sys` stay virtual, while local user modules/packages are loaded from files and merged before type checking/codegen.
-- For registry-backed stdlib calls, module import is required (`os.remove(...)` / `sys.exit(...)` without import is a compile error).
+- Imports are unified through one resolver: `typing`/`os`/`sys`/`re` stay virtual, while local user modules/packages are loaded from files and merged before type checking/codegen.
+- For registry-backed stdlib calls, module import is required (`os.remove(...)`, `sys.exit(...)`, `re.search(...)` without import is a compile error).
 - `from ... import *` is not supported for stdlib modules.
-- Supported stdlib members are currently limited to `os.remove` and `sys.exit`.
+- Supported stdlib surface is registry-driven and intentionally explicit; unsupported module members produce compile-time errors.
+- `re` support is intentionally lightweight and backed by `regex-lite` helpers (`search`, `match`, `sub`, `Match.group`, `Match.span`).
+- When generated code uses `re`, py2rust compile/run flows auto-link `regex-lite`; direct manual `rustc` invocation must provide equivalent external crate flags.
 - Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
 - Builtins are mostly positional-only; keyword arguments are supported for `print(sep=..., end=...)`, `sorted(key=..., reverse=...)`, and iterable-form `min/max(key=...)`.
 - `set.extend(iterable)` is supported as an update-style alias that adds all iterable items to the target set.

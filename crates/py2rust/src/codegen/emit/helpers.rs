@@ -246,6 +246,103 @@ fn py_sys_intern(value: &str) -> String {
 }
 "#;
 
+/// Static helper body for lightweight `re.Match` storage.
+const HELPER_PY_RE_MATCH_STRUCT: &str = r#"
+#[allow(non_camel_case_types)]
+#[derive(Clone)]
+struct __py2rust_re_match {
+    groups: Vec<Option<String>>,
+    start: i64,
+    end: i64,
+}
+"#;
+
+/// Static helper body for shared lightweight `re` matching primitives.
+const HELPER_PY_RE_CORE: &str = r#"
+fn py_re_char_idx(text: &str, byte_idx: usize) -> i64 {
+    text[..byte_idx].chars().count() as i64
+}
+
+fn py_re_capture_group_strings(captures: &regex_lite::Captures<'_>) -> Vec<Option<String>> {
+    let mut groups: Vec<Option<String>> = Vec::new();
+    for idx in 0..captures.len() {
+        groups.push(captures.get(idx).map(|m| m.as_str().to_string()));
+    }
+    groups
+}
+
+fn py_re_build_match(text: &str, captures: regex_lite::Captures<'_>) -> __py2rust_re_match {
+    let full = captures
+        .get(0)
+        .unwrap_or_else(|| panic!("regex-lite returned captures without group 0"));
+    __py2rust_re_match {
+        groups: py_re_capture_group_strings(&captures),
+        start: py_re_char_idx(text, full.start()),
+        end: py_re_char_idx(text, full.end()),
+    }
+}
+"#;
+
+/// Static helper body for `re.search(pattern, string)`.
+const HELPER_PY_RE_SEARCH: &str = r#"
+fn py_re_search(pattern: &str, text: &str) -> __py2rust_re_match {
+    let regex = regex_lite::Regex::new(pattern)
+        .unwrap_or_else(|err| panic!("re.search(): invalid pattern '{}': {}", pattern, err));
+    let captures = regex
+        .captures(text)
+        .unwrap_or_else(|| panic!("re.search(): pattern did not match"));
+    py_re_build_match(text, captures)
+}
+"#;
+
+/// Static helper body for `re.match(pattern, string)`.
+const HELPER_PY_RE_MATCH_FN: &str = r#"
+fn py_re_match(pattern: &str, text: &str) -> __py2rust_re_match {
+    let regex = regex_lite::Regex::new(pattern)
+        .unwrap_or_else(|err| panic!("re.match(): invalid pattern '{}': {}", pattern, err));
+    let captures = regex
+        .captures(text)
+        .and_then(|caps| match caps.get(0) {
+            Some(m0) if m0.start() == 0 => Some(caps),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("re.match(): pattern did not match"));
+    py_re_build_match(text, captures)
+}
+"#;
+
+/// Static helper body for `re.sub(pattern, repl, string)`.
+const HELPER_PY_RE_SUB: &str = r#"
+fn py_re_sub(pattern: &str, repl: &str, text: &str) -> String {
+    let regex = regex_lite::Regex::new(pattern)
+        .unwrap_or_else(|err| panic!("re.sub(): invalid pattern '{}': {}", pattern, err));
+    regex.replace_all(text, repl).to_string()
+}
+"#;
+
+/// Static helper body for `re.Match.group(index)`.
+const HELPER_PY_RE_GROUP: &str = r#"
+fn py_re_group(value: &__py2rust_re_match, index: i64) -> String {
+    if index < 0 {
+        panic!("re.Match.group() does not support negative group indexes");
+    }
+    let idx = usize::try_from(index)
+        .unwrap_or_else(|_| panic!("re.Match.group(): invalid group index"));
+    value
+        .groups
+        .get(idx)
+        .and_then(|group| group.clone())
+        .unwrap_or_else(|| panic!("re.Match.group(): missing capture group {}", index))
+}
+"#;
+
+/// Static helper body for `re.Match.span()`.
+const HELPER_PY_RE_SPAN: &str = r#"
+fn py_re_span(value: &__py2rust_re_match) -> (i64, i64) {
+    (value.start, value.end)
+}
+"#;
+
 /// Static helper body for clonable iterator wrapper.
 const HELPER_PY_ITER: &str = r#"
 #[derive(Clone)]
@@ -942,6 +1039,14 @@ impl<'a> Codegen<'a> {
             self.uses.py_float_str = true;
             self.uses.py_str_repr = true;
         }
+        // `re.Match` storage is shared by all lightweight `re` entrypoints.
+        let uses_re_match_struct = self.uses.py_re_search
+            || self.uses.py_re_match
+            || self.uses.py_re_sub
+            || self.uses.py_re_group
+            || self.uses.py_re_span;
+        // Shared span-finding utilities are required for search/match only.
+        let uses_re_core = self.uses.py_re_search || self.uses.py_re_match;
 
         // PyError enum is needed for exception handling.
         if self.needs_py_error() {
@@ -1295,6 +1400,27 @@ impl<'a> Codegen<'a> {
         if self.uses.py_sys_intern {
             self.push_block(HELPER_PY_SYS_INTERN);
         }
+        if uses_re_match_struct {
+            self.push_block(HELPER_PY_RE_MATCH_STRUCT);
+        }
+        if uses_re_core {
+            self.push_block(HELPER_PY_RE_CORE);
+        }
+        if self.uses.py_re_search {
+            self.push_block(HELPER_PY_RE_SEARCH);
+        }
+        if self.uses.py_re_match {
+            self.push_block(HELPER_PY_RE_MATCH_FN);
+        }
+        if self.uses.py_re_sub {
+            self.push_block(HELPER_PY_RE_SUB);
+        }
+        if self.uses.py_re_group {
+            self.push_block(HELPER_PY_RE_GROUP);
+        }
+        if self.uses.py_re_span {
+            self.push_block(HELPER_PY_RE_SPAN);
+        }
         if self.uses.print
             || self.uses.len
             || self.uses.range
@@ -1341,6 +1467,11 @@ impl<'a> Codegen<'a> {
             || self.uses.py_os_path_abspath
             || self.uses.py_sys_argv
             || self.uses.py_sys_intern
+            || self.uses.py_re_search
+            || self.uses.py_re_match
+            || self.uses.py_re_sub
+            || self.uses.py_re_group
+            || self.uses.py_re_span
         {
             self.push_line("");
         }

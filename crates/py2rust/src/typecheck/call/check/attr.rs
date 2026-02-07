@@ -341,6 +341,25 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Type::Custom(class_name) = &obj_ty {
+            if class_name == "__py2rust_re_match" {
+                if !keywords.is_empty() {
+                    return Err(self.error(span, "Keyword arguments are not supported"));
+                }
+                if attr == "group" {
+                    if args.len() != 1 {
+                        return Err(self.error(span, "re.Match.group() expects one argument"));
+                    }
+                    let index_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                    self.ensure_assignable(&index_ty, &Type::Int, span)?;
+                    return Ok(Type::Str);
+                }
+                if attr == "span" {
+                    if !args.is_empty() {
+                        return Err(self.error(span, "re.Match.span() expects no arguments"));
+                    }
+                    return Ok(Type::Tuple(vec![Type::Int, Type::Int]));
+                }
+            }
             if class_name == "__py2rust_file" {
                 if attr == "read" {
                     if args.len() > 1 {

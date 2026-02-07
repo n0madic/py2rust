@@ -3,6 +3,7 @@
 mod class_union;
 mod dict;
 mod list;
+mod regex_match;
 mod set;
 mod string_file;
 
@@ -72,6 +73,12 @@ impl<'a> Codegen<'a> {
             && matches!(attr, "read" | "readline" | "readlines" | "write" | "close")
         {
             return self.gen_file_attr_call(value, attr, args, keywords);
+        }
+
+        if matches!(value.ty.as_ref(), Some(Type::Custom(name)) if name == "__py2rust_re_match")
+            && matches!(attr, "group" | "span")
+        {
+            return self.gen_re_match_attr_call(value, attr, args, keywords);
         }
 
         if matches!(value.ty.as_ref(), Some(Type::List(_))) {

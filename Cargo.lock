@@ -556,6 +556,7 @@ dependencies = [
  "clap",
  "indexmap",
  "miette",
+ "regex-lite",
  "rustpython-parser",
  "thiserror",
 ]
@@ -598,6 +599,12 @@ checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom",
 ]
+
+[[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
 
 [[package]]
 name = "rustc-demangle"

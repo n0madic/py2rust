@@ -113,6 +113,20 @@ impl<'a> TypeChecker<'a> {
                 let value_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
                 self.ensure_assignable(&value_ty, &Type::Str, span)?;
             }
+            StdlibMethodId::ReSearch | StdlibMethodId::ReMatch => {
+                let pattern_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&pattern_ty, &Type::Str, span)?;
+                let value_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
+                self.ensure_assignable(&value_ty, &Type::Str, span)?;
+            }
+            StdlibMethodId::ReSub => {
+                let pattern_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&pattern_ty, &Type::Str, span)?;
+                let repl_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
+                self.ensure_assignable(&repl_ty, &Type::Str, span)?;
+                let value_ty = self.check_expr(&mut args[2], Some(&Type::Str))?;
+                self.ensure_assignable(&value_ty, &Type::Str, span)?;
+            }
         }
 
         Ok(Self::stdlib_method_return_type(spec.method_id))
@@ -141,6 +155,10 @@ impl<'a> TypeChecker<'a> {
             StdlibMethodId::OsPathSplit => Type::Tuple(vec![Type::Str, Type::Str]),
             StdlibMethodId::SysIntern => Type::Str,
             StdlibMethodId::SysExit => Type::None,
+            StdlibMethodId::ReSearch | StdlibMethodId::ReMatch => {
+                Type::Custom("__py2rust_re_match".to_string())
+            }
+            StdlibMethodId::ReSub => Type::Str,
         }
     }
 }

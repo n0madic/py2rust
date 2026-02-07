@@ -23,6 +23,8 @@ pub enum StdlibModuleId {
     OsPath,
     /// Python `sys` module.
     Sys,
+    /// Python `re` module.
+    Re,
 }
 
 /// Identifier for a supported stdlib callable.
@@ -68,6 +70,12 @@ pub enum StdlibMethodId {
     SysIntern,
     /// `sys.exit([code])`
     SysExit,
+    /// `re.search(pattern, string)`
+    ReSearch,
+    /// `re.match(pattern, string)`
+    ReMatch,
+    /// `re.sub(pattern, repl, string)`
+    ReSub,
 }
 
 /// Function pointer used to emit method-specific Rust calls in codegen.
@@ -366,12 +374,46 @@ const SYS_INTERN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
     codegen_handler: codegen_sys_intern,
 };
 
+const RE_SEARCH_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::ReSearch,
+    module_name: "re",
+    method_name: "search",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_re_search,
+};
+
+const RE_MATCH_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::ReMatch,
+    module_name: "re",
+    method_name: "match",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_re_match,
+};
+
+const RE_SUB_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::ReSub,
+    module_name: "re",
+    method_name: "sub",
+    shape: CallShape {
+        arity: AritySpec::Exact(3),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_re_sub,
+};
+
 /// Resolve a module name to a known stdlib module id.
 pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
     match name {
         "os" => Some(StdlibModuleId::Os),
         "os.path" => Some(StdlibModuleId::OsPath),
         "sys" => Some(StdlibModuleId::Sys),
+        "re" => Some(StdlibModuleId::Re),
         _ => None,
     }
 }
@@ -402,6 +444,9 @@ pub fn find_stdlib_method(
         (StdlibModuleId::OsPath, "abspath") => Some(&OS_PATH_ABSPATH_SPEC),
         (StdlibModuleId::Sys, "intern") => Some(&SYS_INTERN_SPEC),
         (StdlibModuleId::Sys, "exit") => Some(&SYS_EXIT_SPEC),
+        (StdlibModuleId::Re, "search") => Some(&RE_SEARCH_SPEC),
+        (StdlibModuleId::Re, "match") => Some(&RE_MATCH_SPEC),
+        (StdlibModuleId::Re, "sub") => Some(&RE_SUB_SPEC),
         _ => None,
     }
 }
@@ -448,6 +493,9 @@ pub fn method_spec(method_id: StdlibMethodId) -> &'static StdlibMethodSpec {
         StdlibMethodId::OsPathAbspath => &OS_PATH_ABSPATH_SPEC,
         StdlibMethodId::SysIntern => &SYS_INTERN_SPEC,
         StdlibMethodId::SysExit => &SYS_EXIT_SPEC,
+        StdlibMethodId::ReSearch => &RE_SEARCH_SPEC,
+        StdlibMethodId::ReMatch => &RE_MATCH_SPEC,
+        StdlibMethodId::ReSub => &RE_SUB_SPEC,
     }
 }
 
@@ -763,4 +811,50 @@ fn codegen_sys_intern(
     codegen.uses.py_sys_intern = true;
     let value_expr = codegen.gen_expr(&args[0])?;
     Ok(format!("py_sys_intern(&({}))", value_expr))
+}
+
+/// Emit code for `re.search(pattern, string)`.
+fn codegen_re_search(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_re_search = true;
+    let pattern_expr = codegen.gen_expr(&args[0])?;
+    let value_expr = codegen.gen_expr(&args[1])?;
+    Ok(format!(
+        "py_re_search(&({}), &({}))",
+        pattern_expr, value_expr
+    ))
+}
+
+/// Emit code for `re.match(pattern, string)`.
+fn codegen_re_match(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_re_match = true;
+    let pattern_expr = codegen.gen_expr(&args[0])?;
+    let value_expr = codegen.gen_expr(&args[1])?;
+    Ok(format!(
+        "py_re_match(&({}), &({}))",
+        pattern_expr, value_expr
+    ))
+}
+
+/// Emit code for `re.sub(pattern, repl, string)`.
+fn codegen_re_sub(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_re_sub = true;
+    let pattern_expr = codegen.gen_expr(&args[0])?;
+    let repl_expr = codegen.gen_expr(&args[1])?;
+    let value_expr = codegen.gen_expr(&args[2])?;
+    Ok(format!(
+        "py_re_sub(&({}), &({}), &({}))",
+        pattern_expr, repl_expr, value_expr
+    ))
 }
