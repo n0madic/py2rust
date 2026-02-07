@@ -63,6 +63,9 @@ def get_doubled_value() -> int:
         r#"
 def double(value: int) -> int:
     return value * 2
+
+def add_ten(value: int) -> int:
+    return value + 10
 "#,
     );
 
@@ -75,6 +78,9 @@ PI: float = 3.1415926535
 
 def get_parent_greeting() -> str:
     return greet
+
+def square(value: int) -> int:
+    return value * value
 "#,
     );
 
@@ -92,6 +98,12 @@ def get_doubled(value: int) -> int:
 
 def get_pi() -> float:
     return PI
+
+def add(a: int, b: int) -> int:
+    return a + b
+
+def multiply(a: int, b: int) -> int:
+    return a * b
 "#,
     );
 
@@ -236,6 +248,53 @@ assert pi_from_func > 3.14, "pi_from_func should be greater than 3.14"
 assert pi_from_func < 3.15, "pi_from_func should be less than 3.15"
 print(pi_from_func)
 
+# ============================================================
+# SECTION 7: Additional package import patterns
+# ============================================================
+
+# Test 2: From package import
+from mypackage import helper, greet
+
+result2: int = helper()
+assert result2 == 42, "result2 should equal 42"
+print(result2)
+
+assert greet == "Hello from mypackage", "greet should equal \"Hello from mypackage\""
+print(greet)
+
+# Test 3: From submodule import
+from mypackage.utils import double, add_ten
+
+result3: int = double(5)
+assert result3 == 10, "result3 should equal 10"
+print(result3)
+
+result4: int = add_ten(5)
+assert result4 == 15, "result4 should equal 15"
+print(result4)
+
+# Test 4: From nested subpackage import
+from mypackage.math import PI, square
+
+assert PI > 3.14, "PI should be greater than 3.14"
+assert PI < 3.15, "PI should be less than 3.15"
+print(PI)
+
+result5: int = square(4)
+assert result5 == 16, "result5 should equal 16"
+print(result5)
+
+# Test 5: From deeply nested submodule import
+from mypackage.math.ops import add, multiply
+
+result6: int = add(2, 3)
+assert result6 == 5, "result6 should equal 5"
+print(result6)
+
+result7: int = multiply(4, 5)
+assert result7 == 20, "result7 should equal 20"
+print(result7)
+
 print("All import tests passed!")
 "#,
     );
@@ -292,6 +351,14 @@ Hello from mypackage
 10
 3.1415926535
 3.1415926535
+42
+Hello from mypackage
+10
+15
+3.1415926535
+16
+5
+20
 All import tests passed!";
     assert_eq!(
         stdout.trim(),
