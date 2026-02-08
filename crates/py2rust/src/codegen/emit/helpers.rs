@@ -337,6 +337,438 @@ fn py_subprocess_run(
 }
 "#;
 
+/// Static helper body for lightweight `urllib.parse.ParseResult` storage.
+const HELPER_PY_URLLIB_PARSE_RESULT_STRUCT: &str = r#"
+#[allow(non_camel_case_types)]
+#[derive(Clone)]
+struct __py_urllib_parse_result {
+    scheme: String,
+    netloc: String,
+    path: String,
+    query: String,
+    fragment: String,
+}
+"#;
+
+/// Static helper body for lightweight `urllib.request` response storage.
+const HELPER_PY_URLLIB_RESPONSE_STRUCT: &str = r#"
+#[allow(non_camel_case_types)]
+#[derive(Clone)]
+struct __py_urllib_response {
+    status: i64,
+    url: String,
+    headers: Arc<Mutex<indexmap::IndexMap<String, String>>>,
+    body: String,
+}
+"#;
+
+/// Static helper body for `urllib.parse.unquote(text)`.
+const HELPER_PY_URLLIB_UNQUOTE: &str = r#"
+fn py_urllib_hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn py_urllib_unquote(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        let byte = bytes[idx];
+        if byte == b'%' && idx + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                py_urllib_hex_value(bytes[idx + 1]),
+                py_urllib_hex_value(bytes[idx + 2]),
+            ) {
+                out.push((hi << 4) | lo);
+                idx += 3;
+                continue;
+            }
+        }
+        if byte == b'+' {
+            out.push(b' ');
+        } else {
+            out.push(byte);
+        }
+        idx += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+"#;
+
+/// Static helper body for `urllib.parse.quote(text, safe)`.
+const HELPER_PY_URLLIB_QUOTE: &str = r#"
+fn py_urllib_quote(text: &str, safe: &str) -> String {
+    let safe_bytes = safe.as_bytes();
+    let mut out = String::new();
+    for byte in text.as_bytes() {
+        let b = *byte;
+        let is_unreserved = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~');
+        if is_unreserved || safe_bytes.contains(&b) {
+            out.push(char::from(b));
+            continue;
+        }
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        out.push('%');
+        out.push(char::from(HEX[(b >> 4) as usize]));
+        out.push(char::from(HEX[(b & 0x0F) as usize]));
+    }
+    out
+}
+"#;
+
+/// Static helper body for `urllib.parse.urlencode(params)`.
+const HELPER_PY_URLLIB_URLENCODE: &str = r#"
+fn py_urllib_urlencode(params: &Arc<Mutex<indexmap::IndexMap<String, String>>>) -> String {
+    let guard = params.lock().expect("urllib urlencode dict mutex poisoned");
+    let mut pairs: Vec<String> = Vec::new();
+    for (key, value) in guard.iter() {
+        pairs.push(format!(
+            "{}={}",
+            py_urllib_quote(key, ""),
+            py_urllib_quote(value, "")
+        ));
+    }
+    pairs.join("&")
+}
+"#;
+
+/// Static helper body for `urllib.parse.parse_qs(query)`.
+const HELPER_PY_URLLIB_PARSE_QS: &str = r#"
+fn py_urllib_parse_qs(
+    query: &str,
+) -> Arc<Mutex<indexmap::IndexMap<String, Arc<Mutex<Vec<String>>>>>> {
+    let mut out: indexmap::IndexMap<String, Arc<Mutex<Vec<String>>>> = indexmap::IndexMap::new();
+    let raw = if let Some(rest) = query.strip_prefix('?') {
+        rest
+    } else {
+        query
+    };
+    if raw.is_empty() {
+        return Arc::new(Mutex::new(out));
+    }
+    for pair in raw.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let mut split = pair.splitn(2, '=');
+        let key = py_urllib_unquote(split.next().unwrap_or_default());
+        let value = py_urllib_unquote(split.next().unwrap_or_default());
+        if let Some(values) = out.get(&key) {
+            values
+                .lock()
+                .expect("urllib parse_qs value list mutex poisoned")
+                .push(value);
+            continue;
+        }
+        out.insert(key, Arc::new(Mutex::new(vec![value])));
+    }
+    Arc::new(Mutex::new(out))
+}
+"#;
+
+/// Static helper body for `urllib.parse.urlparse(url)`.
+const HELPER_PY_URLLIB_URLPARSE: &str = r#"
+fn py_urllib_urlparse(url: &str) -> __py_urllib_parse_result {
+    let mut rest = url;
+    let mut scheme = String::new();
+    if let Some(idx) = rest.find("://") {
+        scheme = rest[..idx].to_string();
+        rest = &rest[(idx + 3)..];
+    }
+
+    let mut fragment = String::new();
+    if let Some(idx) = rest.find('#') {
+        fragment = rest[(idx + 1)..].to_string();
+        rest = &rest[..idx];
+    }
+
+    let mut query = String::new();
+    if let Some(idx) = rest.find('?') {
+        query = rest[(idx + 1)..].to_string();
+        rest = &rest[..idx];
+    }
+
+    let (netloc, path) = if !scheme.is_empty() {
+        if let Some(idx) = rest.find('/') {
+            (rest[..idx].to_string(), rest[idx..].to_string())
+        } else {
+            (rest.to_string(), String::new())
+        }
+    } else if let Some(no_slashes) = rest.strip_prefix("//") {
+        if let Some(idx) = no_slashes.find('/') {
+            (no_slashes[..idx].to_string(), no_slashes[idx..].to_string())
+        } else {
+            (no_slashes.to_string(), String::new())
+        }
+    } else {
+        (String::new(), rest.to_string())
+    };
+
+    __py_urllib_parse_result {
+        scheme,
+        netloc,
+        path,
+        query,
+        fragment,
+    }
+}
+"#;
+
+/// Static helper body for `urllib.parse.ParseResult.geturl()`.
+const HELPER_PY_URLLIB_PARSE_GETURL: &str = r#"
+fn py_urllib_parse_geturl(value: &__py_urllib_parse_result) -> String {
+    let mut out = String::new();
+    if !value.scheme.is_empty() {
+        out.push_str(&value.scheme);
+        out.push_str("://");
+    } else if !value.netloc.is_empty() {
+        out.push_str("//");
+    }
+    out.push_str(&value.netloc);
+    out.push_str(&value.path);
+    if !value.query.is_empty() {
+        out.push('?');
+        out.push_str(&value.query);
+    }
+    if !value.fragment.is_empty() {
+        out.push('#');
+        out.push_str(&value.fragment);
+    }
+    out
+}
+"#;
+
+/// Static helper body for `urllib.parse.urljoin(base, url)`.
+const HELPER_PY_URLLIB_URLJOIN: &str = r#"
+fn py_urllib_normalize_path(path: &str) -> String {
+    let leading_slash = path.starts_with('/');
+    let trailing_slash = path.ends_with('/') && path.len() > 1;
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            if !parts.is_empty() {
+                let _ = parts.pop();
+            }
+            continue;
+        }
+        parts.push(part);
+    }
+    let mut out = String::new();
+    if leading_slash {
+        out.push('/');
+    }
+    out.push_str(&parts.join("/"));
+    if trailing_slash && !out.ends_with('/') {
+        out.push('/');
+    }
+    if out.is_empty() && leading_slash {
+        out.push('/');
+    }
+    out
+}
+
+fn py_urllib_urljoin(base: &str, url: &str) -> String {
+    if url.contains("://") {
+        return url.to_string();
+    }
+    if url.starts_with("//") {
+        let parsed = py_urllib_urlparse(base);
+        if parsed.scheme.is_empty() {
+            return format!("//{}", &url[2..]);
+        }
+        return format!("{}:{}", parsed.scheme, url);
+    }
+
+    let mut base_parsed = py_urllib_urlparse(base);
+    if url.is_empty() {
+        return py_urllib_parse_geturl(&base_parsed);
+    }
+    if let Some(fragment) = url.strip_prefix('#') {
+        base_parsed.fragment = fragment.to_string();
+        return py_urllib_parse_geturl(&base_parsed);
+    }
+    if let Some(query) = url.strip_prefix('?') {
+        base_parsed.query = query.to_string();
+        base_parsed.fragment.clear();
+        return py_urllib_parse_geturl(&base_parsed);
+    }
+    if url.starts_with('/') {
+        base_parsed.path = py_urllib_normalize_path(url);
+        base_parsed.query.clear();
+        base_parsed.fragment.clear();
+        return py_urllib_parse_geturl(&base_parsed);
+    }
+
+    let mut base_dir = base_parsed.path.clone();
+    if let Some(idx) = base_dir.rfind('/') {
+        base_dir.truncate(idx + 1);
+    } else {
+        base_dir.clear();
+        if !base_parsed.netloc.is_empty() {
+            base_dir.push('/');
+        }
+    }
+    let joined = format!("{}{}", base_dir, url);
+    base_parsed.path = py_urllib_normalize_path(&joined);
+    base_parsed.query.clear();
+    base_parsed.fragment.clear();
+    py_urllib_parse_geturl(&base_parsed)
+}
+"#;
+
+/// Static helper body for `urllib.request.urlopen`.
+const HELPER_PY_URLLIB_URLOPEN: &str = r#"
+fn py_urllib_urlopen(
+    url: &str,
+    data: Option<Vec<i64>>,
+    timeout: Option<f64>,
+) -> Result<__py_urllib_response, PyError> {
+    if let Some(value) = timeout {
+        if !value.is_finite() || value < 0.0 {
+            return Err(PyError::ValueError(
+                "urllib.request.urlopen() timeout must be a non-negative finite float".into(),
+            ));
+        }
+    }
+
+    if let Some(path) = url.strip_prefix("file://") {
+        if data.is_some() {
+            return Err(PyError::ValueError(
+                "urllib.request.urlopen() data is not supported for file:// urls".into(),
+            ));
+        }
+        let decoded_path = py_urllib_unquote(path);
+        let body = std::fs::read_to_string(&decoded_path)
+            .map_err(|e| PyError::IOError(e.to_string().into()))?;
+        let mut headers = indexmap::IndexMap::new();
+        headers.insert("content-type".to_string(), "text/plain".to_string());
+        headers.insert("content-length".to_string(), body.len().to_string());
+        return Ok(__py_urllib_response {
+            status: 200,
+            url: url.to_string(),
+            headers: Arc::new(Mutex::new(headers)),
+            body,
+        });
+    }
+
+    if let Some(payload) = url.strip_prefix("data:text/plain,") {
+        if data.is_some() {
+            return Err(PyError::ValueError(
+                "urllib.request.urlopen() data argument is not supported for data: urls".into(),
+            ));
+        }
+        let body = py_urllib_unquote(payload);
+        let mut headers = indexmap::IndexMap::new();
+        headers.insert("content-type".to_string(), "text/plain".to_string());
+        headers.insert("content-length".to_string(), body.len().to_string());
+        return Ok(__py_urllib_response {
+            status: 200,
+            url: url.to_string(),
+            headers: Arc::new(Mutex::new(headers)),
+            body,
+        });
+    }
+
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(PyError::ValueError(
+            "urllib.request.urlopen() currently supports file://, data:text/plain,, http://, and https:// urls"
+                .into(),
+        ));
+    }
+
+    // Python bytes map to Vec<i64>; normalize to u8 for HTTP body sending.
+    let request_body = if let Some(values) = data {
+        let mut bytes = Vec::with_capacity(values.len());
+        for value in values {
+            let byte = u8::try_from(value).map_err(|_| {
+                PyError::ValueError(
+                    "urllib.request.urlopen() data bytes must be in range(0, 256)".into(),
+                )
+            })?;
+            bytes.push(byte);
+        }
+        Some(bytes)
+    } else {
+        None
+    };
+
+    // ureq gives us a lightweight blocking client without requiring an async runtime.
+    let mut builder = ureq::AgentBuilder::new();
+    if let Some(value) = timeout {
+        builder = builder.timeout(std::time::Duration::from_secs_f64(value));
+    }
+    let agent = builder.build();
+
+    // Match urllib behavior: data present => POST, otherwise GET.
+    let response_result = if let Some(body) = request_body {
+        agent.post(url).send_bytes(&body)
+    } else {
+        agent.get(url).call()
+    };
+
+    let response = match response_result {
+        Ok(response) => response,
+        // Keep HTTP status responses as normal response objects for lightweight
+        // compatibility with current py2rust runtime expectations.
+        Err(ureq::Error::Status(_status, response)) => response,
+        Err(ureq::Error::Transport(err)) => {
+            return Err(PyError::IOError(
+                format!("urllib.request.urlopen() transport error: {err}").into(),
+            ));
+        }
+    };
+
+    let status = i64::from(response.status());
+    let response_url = response.get_url().to_string();
+    let mut headers = indexmap::IndexMap::new();
+    for name in response.headers_names() {
+        if let Some(value) = response.header(&name) {
+            // Python-style header lookup is case-insensitive; store lowercase keys.
+            headers.insert(name.to_ascii_lowercase(), value.to_string());
+        }
+    }
+    let body = response.into_string().map_err(|err| {
+        PyError::IOError(format!("urllib.request.urlopen() failed to read body: {err}").into())
+    })?;
+
+    Ok(__py_urllib_response {
+        status,
+        url: response_url,
+        headers: Arc::new(Mutex::new(headers)),
+        body,
+    })
+}
+"#;
+
+/// Static helper body for `urllib.request response.read()`.
+const HELPER_PY_URLLIB_RESPONSE_READ: &str = r#"
+fn py_urllib_response_read(value: &__py_urllib_response) -> String {
+    value.body.clone()
+}
+"#;
+
+/// Static helper body for `urllib.request response.getcode()`.
+const HELPER_PY_URLLIB_RESPONSE_GETCODE: &str = r#"
+fn py_urllib_response_getcode(value: &__py_urllib_response) -> i64 {
+    value.status
+}
+"#;
+
+/// Static helper body for `urllib.request response.geturl()`.
+const HELPER_PY_URLLIB_RESPONSE_GETURL: &str = r#"
+fn py_urllib_response_geturl(value: &__py_urllib_response) -> String {
+    value.url.clone()
+}
+"#;
+
 /// Static helper body for `math.factorial(n)`.
 const HELPER_PY_MATH_FACTORIAL: &str = r#"
 fn py_math_factorial(value: i64) -> Result<i64, PyError> {
@@ -2163,6 +2595,15 @@ impl<'a> Codegen<'a> {
             || self.uses.py_time_gmtime
             || self.uses.py_time_strftime
             || self.uses.py_time_strptime;
+        // urllib.parse result objects are shared by urlparse/urljoin/geturl.
+        let uses_urllib_parse_result_struct = self.uses.py_urllib_urlparse
+            || self.uses.py_urllib_parse_geturl
+            || self.uses.py_urllib_urljoin;
+        // urllib.request responses are shared by urlopen and response accessors.
+        let uses_urllib_response_struct = self.uses.py_urllib_urlopen
+            || self.uses.py_urllib_response_read
+            || self.uses.py_urllib_response_getcode
+            || self.uses.py_urllib_response_geturl;
 
         // PyError enum is needed for exception handling.
         if self.needs_py_error() {
@@ -2520,6 +2961,45 @@ impl<'a> Codegen<'a> {
             self.push_block(HELPER_PY_SUBPROCESS_COMPLETED_PROCESS);
             self.push_block(HELPER_PY_SUBPROCESS_RUN);
         }
+        if uses_urllib_parse_result_struct {
+            self.push_block(HELPER_PY_URLLIB_PARSE_RESULT_STRUCT);
+        }
+        if uses_urllib_response_struct {
+            self.push_block(HELPER_PY_URLLIB_RESPONSE_STRUCT);
+        }
+        if self.uses.py_urllib_unquote {
+            self.push_block(HELPER_PY_URLLIB_UNQUOTE);
+        }
+        if self.uses.py_urllib_quote {
+            self.push_block(HELPER_PY_URLLIB_QUOTE);
+        }
+        if self.uses.py_urllib_urlparse {
+            self.push_block(HELPER_PY_URLLIB_URLPARSE);
+        }
+        if self.uses.py_urllib_parse_geturl {
+            self.push_block(HELPER_PY_URLLIB_PARSE_GETURL);
+        }
+        if self.uses.py_urllib_urljoin {
+            self.push_block(HELPER_PY_URLLIB_URLJOIN);
+        }
+        if self.uses.py_urllib_urlencode {
+            self.push_block(HELPER_PY_URLLIB_URLENCODE);
+        }
+        if self.uses.py_urllib_parse_qs {
+            self.push_block(HELPER_PY_URLLIB_PARSE_QS);
+        }
+        if self.uses.py_urllib_urlopen {
+            self.push_block(HELPER_PY_URLLIB_URLOPEN);
+        }
+        if self.uses.py_urllib_response_read {
+            self.push_block(HELPER_PY_URLLIB_RESPONSE_READ);
+        }
+        if self.uses.py_urllib_response_getcode {
+            self.push_block(HELPER_PY_URLLIB_RESPONSE_GETCODE);
+        }
+        if self.uses.py_urllib_response_geturl {
+            self.push_block(HELPER_PY_URLLIB_RESPONSE_GETURL);
+        }
         if self.uses.py_math_factorial {
             self.push_block(HELPER_PY_MATH_FACTORIAL);
         }
@@ -2654,6 +3134,17 @@ impl<'a> Codegen<'a> {
             || self.uses.py_sys_argv
             || self.uses.py_sys_intern
             || self.uses.py_subprocess_run
+            || self.uses.py_urllib_urlparse
+            || self.uses.py_urllib_quote
+            || self.uses.py_urllib_unquote
+            || self.uses.py_urllib_urljoin
+            || self.uses.py_urllib_urlencode
+            || self.uses.py_urllib_parse_qs
+            || self.uses.py_urllib_parse_geturl
+            || self.uses.py_urllib_urlopen
+            || self.uses.py_urllib_response_read
+            || self.uses.py_urllib_response_getcode
+            || self.uses.py_urllib_response_geturl
             || self.uses.py_math_factorial
             || self.uses.py_math_gcd
             || self.uses.py_math_lcm
@@ -2714,6 +3205,7 @@ impl<'a> Codegen<'a> {
             || self.uses.py_os_makedirs
             || self.uses.py_os_path_abspath
             || self.uses.py_subprocess_run
+            || self.uses.py_urllib_urlopen
             || self.uses.py_json_dumps
             || self.uses.py_json_loads
             || self.uses.py_json_dump

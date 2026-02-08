@@ -2,6 +2,40 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// Descriptor for an external crate that may appear in generated Rust.
+struct ExternalDependency {
+    /// Rust crate name used in `--extern` and `lib<crate>-*.rlib` lookup.
+    crate_name: &'static str,
+    /// Token used to detect whether generated code references this crate.
+    marker: &'static str,
+    /// Human-friendly crate label for diagnostics.
+    display_name: &'static str,
+}
+
+/// Registry of external dependencies that can be auto-linked for generated code.
+const EXTERNAL_DEPENDENCIES: &[ExternalDependency] = &[
+    ExternalDependency {
+        crate_name: "regex_lite",
+        marker: "regex_lite::",
+        display_name: "regex-lite",
+    },
+    ExternalDependency {
+        crate_name: "indexmap",
+        marker: "indexmap::",
+        display_name: "indexmap",
+    },
+    ExternalDependency {
+        crate_name: "chrono",
+        marker: "chrono::",
+        display_name: "chrono",
+    },
+    ExternalDependency {
+        crate_name: "ureq",
+        marker: "ureq::",
+        display_name: "ureq",
+    },
+];
+
 /// Options for rustc compilation.
 ///
 /// We use rustc directly rather than cargo because:
@@ -10,8 +44,8 @@ use std::process::{Command, Output};
 /// 3. It simplifies the CLI (no Cargo.toml needed)
 ///
 /// Note: generated Rust may reference external helper crates (for example
-/// `regex-lite`, `indexmap`, or `chrono`) that must be linked explicitly when
-/// invoking rustc.
+/// `regex-lite`, `indexmap`, `chrono`, or `ureq`) that must be linked
+/// explicitly when invoking rustc.
 #[derive(Debug, Clone)]
 pub struct RustcOptions {
     /// Rust edition to use (2021 is the latest stable as of writing)
@@ -41,14 +75,13 @@ pub fn compile_rustc(
     bin_path: &Path,
     opts: &RustcOptions,
 ) -> std::io::Result<Output> {
+    let source = fs::read_to_string(rs_path)?;
     let mut cmd = Command::new("rustc");
     cmd.arg(rs_path)
         .arg(format!("--edition={}", opts.edition))
         .arg("-o")
         .arg(bin_path);
-    maybe_link_regex_lite(&mut cmd, rs_path)?;
-    maybe_link_indexmap(&mut cmd, rs_path)?;
-    maybe_link_chrono(&mut cmd, rs_path)?;
+    link_external_dependencies(&mut cmd, &source)?;
     if opts.strip_symbols {
         // -C strip=symbols removes debug info, reducing binary size significantly
         cmd.arg("-C").arg("strip=symbols");
@@ -56,16 +89,30 @@ pub fn compile_rustc(
     cmd.output()
 }
 
-/// Link `regex-lite` when generated code references it.
-fn maybe_link_regex_lite(cmd: &mut Command, rs_path: &Path) -> std::io::Result<()> {
-    let source = fs::read_to_string(rs_path)?;
-    if !source.contains("regex_lite::") {
+/// Link all known external crates referenced by generated Rust.
+fn link_external_dependencies(cmd: &mut Command, source: &str) -> std::io::Result<()> {
+    for dependency in EXTERNAL_DEPENDENCIES {
+        maybe_link_dependency(cmd, source, dependency)?;
+    }
+    Ok(())
+}
+
+/// Link one external crate when generated code references it.
+fn maybe_link_dependency(
+    cmd: &mut Command,
+    source: &str,
+    dependency: &ExternalDependency,
+) -> std::io::Result<()> {
+    if !source.contains(dependency.marker) {
         return Ok(());
     }
-    let lib_path = find_regex_lite_rlib().ok_or_else(|| {
+    let lib_path = find_dependency_rlib(dependency.crate_name).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "generated code requires regex-lite, but libregex_lite*.rlib was not found",
+            format!(
+                "generated code requires {}, but lib{}*.rlib was not found",
+                dependency.display_name, dependency.crate_name
+            ),
         )
     })?;
     if let Some(parent) = lib_path.parent() {
@@ -73,65 +120,8 @@ fn maybe_link_regex_lite(cmd: &mut Command, rs_path: &Path) -> std::io::Result<(
             .arg(format!("dependency={}", parent.display()));
     }
     cmd.arg("--extern")
-        .arg(format!("regex_lite={}", lib_path.display()));
+        .arg(format!("{}={}", dependency.crate_name, lib_path.display()));
     Ok(())
-}
-
-/// Link `indexmap` when generated code references it.
-fn maybe_link_indexmap(cmd: &mut Command, rs_path: &Path) -> std::io::Result<()> {
-    let source = fs::read_to_string(rs_path)?;
-    if !source.contains("indexmap::") {
-        return Ok(());
-    }
-    let lib_path = find_indexmap_rlib().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "generated code requires indexmap, but libindexmap*.rlib was not found",
-        )
-    })?;
-    if let Some(parent) = lib_path.parent() {
-        cmd.arg("-L")
-            .arg(format!("dependency={}", parent.display()));
-    }
-    cmd.arg("--extern")
-        .arg(format!("indexmap={}", lib_path.display()));
-    Ok(())
-}
-
-/// Link `chrono` when generated code references it.
-fn maybe_link_chrono(cmd: &mut Command, rs_path: &Path) -> std::io::Result<()> {
-    let source = fs::read_to_string(rs_path)?;
-    if !source.contains("chrono::") {
-        return Ok(());
-    }
-    let lib_path = find_chrono_rlib().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "generated code requires chrono, but libchrono*.rlib was not found",
-        )
-    })?;
-    if let Some(parent) = lib_path.parent() {
-        cmd.arg("-L")
-            .arg(format!("dependency={}", parent.display()));
-    }
-    cmd.arg("--extern")
-        .arg(format!("chrono={}", lib_path.display()));
-    Ok(())
-}
-
-/// Resolve the built `regex-lite` rlib path from common Cargo target locations.
-fn find_regex_lite_rlib() -> Option<PathBuf> {
-    find_dependency_rlib("regex_lite")
-}
-
-/// Resolve the built `indexmap` rlib path from common Cargo target locations.
-fn find_indexmap_rlib() -> Option<PathBuf> {
-    find_dependency_rlib("indexmap")
-}
-
-/// Resolve the built `chrono` rlib path from common Cargo target locations.
-fn find_chrono_rlib() -> Option<PathBuf> {
-    find_dependency_rlib("chrono")
 }
 
 /// Resolve a dependency rlib path from common Cargo target locations.

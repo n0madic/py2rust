@@ -474,6 +474,60 @@ subprocess.run(["echo", "hello"], True, capture_output=False)
 }
 
 #[test]
+fn rejects_urllib_parse_call_without_import() {
+    let source = r#"
+urllib.parse.quote("x")
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("module 'urllib' used without import"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_from_urllib_parse_import_unknown_member() {
+    let source = r#"
+from urllib.parse import unknown
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("urllib.parse has no supported member 'unknown'"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_wrong_arity_for_urllib_parse_quote() {
+    let source = r#"
+from urllib.parse import quote
+quote()
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("urllib.parse.quote() expects"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_urllib_request_urlopen_duplicate_timeout() {
+    let source = r#"
+from urllib.request import urlopen
+urlopen("data:text/plain,ok", None, 1.0, timeout=2.0)
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("Multiple values for keyword argument `timeout`"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
 fn rejects_implicit_str_coercion_for_user_functions() {
     let source = r#"
 def takes_text(x: str) -> str:

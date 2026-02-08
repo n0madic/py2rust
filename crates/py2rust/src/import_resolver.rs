@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 /// Resolve user-module imports and merge imported module HIR into one program.
 ///
-/// This pass keeps stdlib modules (`typing`, `os`, `sys`) as virtual imports,
+/// This pass keeps `typing` and registry-backed stdlib modules as virtual imports,
 /// while loading user modules/packages from files and rewriting symbol usage to
 /// namespace-safe names.
 pub fn resolve_program_imports(

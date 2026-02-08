@@ -13,11 +13,25 @@ impl<'a> TypeChecker<'a> {
         keywords: &mut [KeywordArg],
         span: Span,
     ) -> Result<Type, CompileError> {
-        if let ExprKind::Name(module_name) = &value.kind {
-            if resolve_module(module_name.as_str()).is_some()
-                && self.lookup_var(module_name).is_none()
-            {
-                return Err(self.error(span, format!("module '{module_name}' used without import")));
+        // Catch unresolved stdlib module roots in chained calls such as
+        // `urllib.parse.quote(...)` before generic attribute diagnostics.
+        let mut root = &value.kind;
+        loop {
+            match root {
+                ExprKind::Name(module_name) => {
+                    if resolve_module(module_name.as_str()).is_some()
+                        && self.lookup_var(module_name).is_none()
+                    {
+                        return Err(
+                            self.error(span, format!("module '{module_name}' used without import"))
+                        );
+                    }
+                    break;
+                }
+                ExprKind::Attr { value, .. } => {
+                    root = &value.kind;
+                }
+                _ => break,
             }
         }
         let obj_ty = self.check_expr(value, None)?;
@@ -358,6 +372,57 @@ impl<'a> TypeChecker<'a> {
                         return Err(self.error(span, "re.Match.span() expects no arguments"));
                     }
                     return Ok(Type::Tuple(vec![Type::Int, Type::Int]));
+                }
+            }
+            if class_name == "__py_urllib_parse_result" {
+                if !keywords.is_empty() {
+                    return Err(self.error(
+                        span,
+                        "Keyword arguments are not supported for urllib.parse.ParseResult methods",
+                    ));
+                }
+                if attr == "geturl" {
+                    if !args.is_empty() {
+                        return Err(self.error(
+                            span,
+                            "urllib.parse.ParseResult.geturl() expects no arguments",
+                        ));
+                    }
+                    return Ok(Type::Str);
+                }
+            }
+            if class_name == "__py_urllib_response" {
+                if !keywords.is_empty() {
+                    return Err(self.error(
+                        span,
+                        "Keyword arguments are not supported for urllib.request response methods",
+                    ));
+                }
+                if attr == "read" {
+                    if !args.is_empty() {
+                        return Err(
+                            self.error(span, "urllib.request response read() expects no arguments")
+                        );
+                    }
+                    return Ok(Type::Str);
+                }
+                if attr == "getcode" {
+                    if !args.is_empty() {
+                        return Err(self.error(
+                            span,
+                            "urllib.request response getcode() expects no arguments",
+                        ));
+                    }
+                    return Ok(Type::Int);
+                }
+                if attr == "geturl" {
+                    if !args.is_empty() {
+                        return Err(self.error(
+                            span,
+                            "urllib.request response geturl() expects no arguments",
+                        ));
+                    }
+                    return Ok(Type::Str);
                 }
             }
             if class_name == "__py_file" {

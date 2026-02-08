@@ -6,6 +6,7 @@ mod list;
 mod regex_match;
 mod set;
 mod string_file;
+mod urllib;
 
 use super::super::*;
 use crate::container::registry::{find_container_method, ContainerId};
@@ -79,6 +80,18 @@ impl<'a> Codegen<'a> {
             && matches!(attr, "group" | "span")
         {
             return self.gen_re_match_attr_call(value, attr, args, keywords);
+        }
+
+        if matches!(value.ty.as_ref(), Some(Type::Custom(name)) if name == "__py_urllib_parse_result")
+            && matches!(attr, "geturl")
+        {
+            return self.gen_urllib_parse_result_attr_call(value, attr, args, keywords);
+        }
+
+        if matches!(value.ty.as_ref(), Some(Type::Custom(name)) if name == "__py_urllib_response")
+            && matches!(attr, "read" | "getcode" | "geturl")
+        {
+            return self.gen_urllib_response_attr_call(value, attr, args, keywords);
         }
 
         if matches!(value.ty.as_ref(), Some(Type::List(_))) {

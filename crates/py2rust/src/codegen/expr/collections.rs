@@ -185,6 +185,7 @@ impl<'a> Codegen<'a> {
         index: &Expr,
     ) -> Result<String, CompileError> {
         let base = self.gen_expr(value)?;
+        let is_local_name = matches!(&value.kind, ExprKind::Name(name) if !self.is_global(name));
         if let Some(Type::Option(inner)) = value.ty.as_ref() {
             // Optional container indexing follows Python behavior:
             // runtime unwrap is required and may fail if value is None.
@@ -211,6 +212,13 @@ impl<'a> Codegen<'a> {
                     }
                     if adj >= 0 && adj < len_i {
                         let tmp = self.new_tmp();
+                        if is_local_name {
+                            return Ok(format!(
+                                "({base}.as_ref().expect(\"optional value is None\")).{adj}",
+                                base = base,
+                                adj = adj
+                            ));
+                        }
                         return Ok(format!(
                             "{{ let {tmp} = {base}; ({tmp}.as_ref().expect(\"optional value is None\")).{adj} }}",
                             tmp = tmp,
@@ -227,6 +235,13 @@ impl<'a> Codegen<'a> {
                 self.uses.index_map = true;
                 let tmp = self.new_tmp();
                 if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                    if is_local_name {
+                        return Ok(self.wrap_result(format!(
+                            "{{ let dict_ref = {base}.as_ref().expect(\"optional value is None\"); py_dict_get(dict_ref, &{idx}) }}",
+                            base = base,
+                            idx = idx
+                        )));
+                    }
                     return Ok(self.wrap_result(format!(
                         "{{ let {tmp} = {base}; let dict_ref = {tmp}.as_ref().expect(\"optional value is None\"); py_dict_get(dict_ref, &{idx}) }}",
                         tmp = tmp,
@@ -235,6 +250,14 @@ impl<'a> Codegen<'a> {
                     )));
                 }
                 let guard = self.new_tmp();
+                if is_local_name {
+                    return Ok(self.wrap_result(format!(
+                        "{{ let dict_ref = {base}.as_ref().expect(\"optional value is None\"); let {guard} = dict_ref.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                        base = base,
+                        guard = guard,
+                        idx = idx
+                    )));
+                }
                 return Ok(self.wrap_result(format!(
                     "{{ let {tmp} = {base}; let dict_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {guard} = dict_ref.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
                     tmp = tmp,
@@ -249,6 +272,13 @@ impl<'a> Codegen<'a> {
                 let tmp = self.new_tmp();
                 if matches!(inner.as_ref(), Type::List(_)) {
                     if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
+                        if is_local_name {
+                            return Ok(self.wrap_result(format!(
+                                "{{ let list_ref = {base}.as_ref().expect(\"optional value is None\"); py_list_get(list_ref, {idx}) }}",
+                                base = base,
+                                idx = idx_expr
+                            )));
+                        }
                         return Ok(self.wrap_result(format!(
                             "{{ let {tmp} = {base}; let list_ref = {tmp}.as_ref().expect(\"optional value is None\"); py_list_get(list_ref, {idx}) }}",
                             tmp = tmp,
@@ -257,11 +287,26 @@ impl<'a> Codegen<'a> {
                         )));
                     }
                     let guard = self.new_tmp();
+                    if is_local_name {
+                        return Ok(self.wrap_result(format!(
+                            "{{ let list_ref = {base}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.lock().expect(\"list mutex poisoned\"); py_list_get(&{guard}, {idx}) }}",
+                            base = base,
+                            guard = guard,
+                            idx = idx_expr
+                        )));
+                    }
                     return Ok(self.wrap_result(format!(
                         "{{ let {tmp} = {base}; let list_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.lock().expect(\"list mutex poisoned\"); py_list_get(&{guard}, {idx}) }}",
                         tmp = tmp,
                         base = base,
                         guard = guard,
+                        idx = idx_expr
+                    )));
+                }
+                if is_local_name {
+                    return Ok(self.wrap_result(format!(
+                        "{{ let bytes_ref = {base}.as_ref().expect(\"optional value is None\"); py_list_get(bytes_ref, {idx}) }}",
+                        base = base,
                         idx = idx_expr
                     )));
                 }
@@ -276,6 +321,13 @@ impl<'a> Codegen<'a> {
                 let idx_expr = self.gen_expr(index)?;
                 self.uses.py_str_get = true;
                 let tmp = self.new_tmp();
+                if is_local_name {
+                    return Ok(self.wrap_result(format!(
+                        "{{ let str_ref = {base}.as_ref().expect(\"optional value is None\"); py_str_get(str_ref, {idx}) }}",
+                        base = base,
+                        idx = idx_expr
+                    )));
+                }
                 return Ok(self.wrap_result(format!(
                     "{{ let {tmp} = {base}; let str_ref = {tmp}.as_ref().expect(\"optional value is None\"); py_str_get(str_ref, {idx}) }}",
                     tmp = tmp,
@@ -320,6 +372,14 @@ impl<'a> Codegen<'a> {
             }
             let guard = self.new_tmp();
             let dict_tmp = self.new_tmp();
+            if is_local_name {
+                return Ok(self.wrap_result(format!(
+                    "{{ let {guard} = {base}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                    guard = guard,
+                    base = base,
+                    idx = idx
+                )));
+            }
             return Ok(self.wrap_result(format!(
                 "{{ let {dict_tmp} = {base}; let {guard} = {dict_tmp}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
                 dict_tmp = dict_tmp,

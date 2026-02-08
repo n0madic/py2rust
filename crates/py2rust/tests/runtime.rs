@@ -113,6 +113,11 @@ runtime_cases!(
         "stdlib_subprocess",
         "stdlib_subprocess.py"
     ),
+    (
+        runtime_stdlib_urllib_comprehensive,
+        "stdlib_urllib",
+        "stdlib_urllib.py"
+    ),
     (runtime_iteration_comprehensive, "iteration", "iteration.py"),
     (
         runtime_match_comprehensive,

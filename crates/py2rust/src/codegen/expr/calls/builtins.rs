@@ -1369,6 +1369,11 @@ impl<'a> Codegen<'a> {
                     "bool" => matches!(args[0].ty.as_ref(), Some(Type::Bool)),
                     "str" => matches!(args[0].ty.as_ref(), Some(Type::Str)),
                     "bytes" => matches!(args[0].ty.as_ref(), Some(Type::Bytes)),
+                    "list" => matches!(args[0].ty.as_ref(), Some(Type::List(_))),
+                    "tuple" => matches!(args[0].ty.as_ref(), Some(Type::Tuple(_))),
+                    "dict" => matches!(args[0].ty.as_ref(), Some(Type::Dict(_, _))),
+                    "set" => matches!(args[0].ty.as_ref(), Some(Type::Set(_))),
+                    "NoneType" => matches!(args[0].ty.as_ref(), Some(Type::None)),
                     _ => {
                         if self.ctx.classes.contains_key(type_name) {
                             if let Some(Type::Custom(class_name)) = args[0].ty.as_ref() {

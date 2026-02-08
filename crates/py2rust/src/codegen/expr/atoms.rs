@@ -1,7 +1,9 @@
 // Small, self-contained expression forms (literals, names, attrs, ifs).
 
 use super::super::*;
-use crate::stdlib::registry::{find_stdlib_attribute, resolve_module};
+use crate::stdlib::registry::{
+    find_stdlib_attribute, find_stdlib_runtime_attribute, is_stdlib_runtime_type, resolve_module,
+};
 
 impl<'a> Codegen<'a> {
     /// Lower a literal to its Rust expression form.
@@ -199,6 +201,15 @@ impl<'a> Codegen<'a> {
             }
         }
         if let Some(Type::Custom(class_name)) = value.ty.as_ref() {
+            if find_stdlib_runtime_attribute(class_name.as_str(), attr).is_some() {
+                return Ok(format!("{}.{}.clone()", self.gen_expr(value)?, attr));
+            }
+            if is_stdlib_runtime_type(class_name.as_str()) {
+                return Err(self.error(
+                    value.span,
+                    format!("{class_name} has no supported member '{attr}'"),
+                ));
+            }
             let getter = self.class_property(class_name, attr).and_then(|prop| {
                 if prop.getter.is_empty() {
                     None

@@ -41,7 +41,11 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
   - `math`: attributes `pi`, `e`, `tau`, `inf`, `nan`; functions `sqrt`, `sin`, `cos`, `tan`, `ceil`, `floor`, `factorial`, `log`, `log2`, `log10`, `exp`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `fabs`, `degrees`, `radians`, `trunc`, `isnan`, `isinf`, `isfinite`, `atan2`, `fmod`, `copysign`, `hypot`, `pow`, `gcd`, `lcm`, `comb`, `perm`
   - `time`: `time`, `time_ns`, `monotonic`, `monotonic_ns`, `perf_counter`, `perf_counter_ns`, `process_time`, `process_time_ns`, `sleep`, `localtime`, `gmtime`, `strftime`, `strptime`
   - lightweight `subprocess`: `run` with `CompletedProcess` fields `args`, `returncode`, `stdout`, `stderr`
-- Stdlib imports: `import os`, `import os as o`, `import os.path`, `import sys`, `import re`, `import json`, `import math`, `import time`, `import subprocess`, `from os import remove`, `from os.path import join`, `from sys import exit`, `from sys import intern`, `from re import search`, `from json import dumps`, `from json import loads`, `from math import pi`, `from math import sqrt`, `from time import sleep`, `from time import localtime`, `from time import gmtime`, `from time import strftime`, `from time import strptime`, `from subprocess import run`
+  - `urllib`:
+    - `urllib.parse`: `urlparse`, `quote`, `unquote`, `urljoin`, `urlencode`, `parse_qs`
+    - `urllib.request`: `urlopen` with `file://`, `data:text/plain,`, `http://`, and `https://` support (HTTP powered by `ureq`)
+    - `ParseResult` fields `scheme`, `netloc`, `path`, `query`, `fragment` and method `geturl()`
+    - `urlopen` response fields `status`, `url`, `headers` and methods `read()`, `getcode()`, `geturl()`
 - User imports from local files/packages: `import mymod`, `from mymod import f`, and relative package imports (`from .x import y`, `from .. import z`)
 
 ## Usage
@@ -85,7 +89,7 @@ The generated Rust injects tiny helper functions only when needed:
 - `py_len`
 - `py_range`
 - `py_round`
-- `py_os_*`, `py_sys_*`, `py_re_*`, `py_json_*`, `py_math_*`, `py_time_*`, `py_subprocess_*`
+- `py_os_*`, `py_sys_*`, `py_re_*`, `py_json_*`, `py_math_*`, `py_time_*`, `py_subprocess_*`, `py_urllib_*`
 
 ## Notes and Limitations
 - `self` can be unannotated in methods; other parameters require annotations.
@@ -95,8 +99,8 @@ The generated Rust injects tiny helper functions only when needed:
 - `bool` follows Python numeric compatibility in arithmetic/comparison contexts (subtype of `int`) while remaining `bool` in boolean-only flows.
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
 - `typing.List/Dict/Set/Tuple` annotations are aliases of `list/dict/set/tuple` annotations.
-- Imports are unified through one resolver: `typing`/`os`/`sys`/`re`/`json`/`math`/`time`/`subprocess` stay virtual, while local user modules/packages are loaded from files and merged before type checking/codegen.
-- For registry-backed stdlib calls, module import is required (`os.remove(...)`, `sys.exit(...)`, `re.search(...)`, `json.dumps(...)`, `math.sqrt(...)`, `time.time(...)`, `subprocess.run(...)` without import is a compile error).
+- Imports are unified through one resolver: `typing` and registry-backed stdlib modules (`os`, `sys`, `re`, `json`, `math`, `time`, `subprocess`, `urllib`, `urllib.parse`, `urllib.request`) stay virtual, while local user modules/packages are loaded from files and merged before type checking/codegen.
+- For registry-backed stdlib calls, module import is required (`os.remove(...)`, `sys.exit(...)`, `re.search(...)`, `json.dumps(...)`, `math.sqrt(...)`, `time.time(...)`, `subprocess.run(...)`, `urllib.parse.quote(...)`, `urllib.request.urlopen(...)` without import is a compile error).
 - `from ... import *` is not supported for stdlib modules.
 - Supported stdlib surface is registry-driven and intentionally explicit; unsupported module members produce compile-time errors.
 - `re` support is intentionally lightweight and backed by `regex-lite` helpers (`search`, `match`, `sub`, `Match.group`, `Match.span`).
@@ -105,7 +109,9 @@ The generated Rust injects tiny helper functions only when needed:
 - `time` support currently targets the registry-backed surface covered by runtime integration tests (`time`, `time_ns`, `monotonic`, `monotonic_ns`, `perf_counter`, `perf_counter_ns`, `process_time`, `process_time_ns`, `sleep`, `localtime`, `gmtime`, `strftime`, `strptime`).
 - Lightweight `time.localtime` currently shares the same UTC epoch split behavior as `time.gmtime` (timezone and DST databases are not modeled yet).
 - `subprocess` support is intentionally lightweight and currently targets `subprocess.run(args, capture_output=False, check=False)` with `CompletedProcess` field access (`args`, `returncode`, `stdout`, `stderr`).
+- `urllib` support targets registry-backed `urllib.parse` helpers (`urlparse`, `quote`, `unquote`, `urljoin`, `urlencode`, `parse_qs`) plus `urllib.request.urlopen(...)` for `file://`, `data:text/plain,`, `http://`, and `https://` URLs (HTTP powered by `ureq`).
 - When generated code uses `re`, py2rust compile/run flows auto-link `regex-lite`; direct manual `rustc` invocation must provide equivalent external crate flags.
+- When generated code uses `urllib.request.urlopen(...)` for HTTP(S), py2rust compile/run flows auto-link `ureq`; direct manual `rustc` invocation must provide equivalent external crate flags.
 - Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
 - Builtins are mostly positional-only; keyword arguments are supported for `print(sep=..., end=...)`, `sorted(key=..., reverse=...)`, and iterable-form `min/max(key=...)`.
 - `set.extend(iterable)` is supported as an update-style alias that adds all iterable items to the target set.

@@ -290,6 +290,97 @@ impl<'a> TypeChecker<'a> {
                     self.ensure_assignable(&check_ty, &Type::Bool, span)?;
                 }
             }
+            StdlibMethodId::UrllibParseUrlparse | StdlibMethodId::UrllibParseUnquote => {
+                let text_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&text_ty, &Type::Str, span)?;
+            }
+            StdlibMethodId::UrllibParseQuote => {
+                let text_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&text_ty, &Type::Str, span)?;
+                if args.len() == 2 {
+                    let safe_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
+                    self.ensure_assignable(&safe_ty, &Type::Str, span)?;
+                }
+            }
+            StdlibMethodId::UrllibParseUrljoin => {
+                let base_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&base_ty, &Type::Str, span)?;
+                let url_ty = self.check_expr(&mut args[1], Some(&Type::Str))?;
+                self.ensure_assignable(&url_ty, &Type::Str, span)?;
+            }
+            StdlibMethodId::UrllibParseUrlencode => {
+                let params_ty = self.check_expr(
+                    &mut args[0],
+                    Some(&Type::Dict(Box::new(Type::Str), Box::new(Type::Str))),
+                )?;
+                self.ensure_assignable(
+                    &params_ty,
+                    &Type::Dict(Box::new(Type::Str), Box::new(Type::Str)),
+                    span,
+                )?;
+            }
+            StdlibMethodId::UrllibParseParseQs => {
+                let query_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&query_ty, &Type::Str, span)?;
+            }
+            StdlibMethodId::UrllibRequestUrlopen => {
+                let url_ty = self.check_expr(&mut args[0], Some(&Type::Str))?;
+                self.ensure_assignable(&url_ty, &Type::Str, span)?;
+
+                let data_idx = keywords
+                    .iter()
+                    .position(|kw| kw.name.as_deref() == Some("data"));
+                if args.len() >= 2 && data_idx.is_some() {
+                    return Err(self.error(span, "Multiple values for keyword argument `data`"));
+                }
+                if args.len() >= 2 {
+                    let data_ty = self.check_expr(&mut args[1], None)?;
+                    if !matches!(data_ty, Type::Bytes | Type::None | Type::Unknown) {
+                        return Err(
+                            self.error(span, "urllib.request.urlopen() data must be bytes or None")
+                        );
+                    }
+                }
+                if let Some(idx) = data_idx {
+                    let data_ty = self.check_expr(&mut keywords[idx].value, None)?;
+                    if !matches!(data_ty, Type::Bytes | Type::None | Type::Unknown) {
+                        return Err(
+                            self.error(span, "urllib.request.urlopen() data must be bytes or None")
+                        );
+                    }
+                }
+
+                let timeout_idx = keywords
+                    .iter()
+                    .position(|kw| kw.name.as_deref() == Some("timeout"));
+                if args.len() >= 3 && timeout_idx.is_some() {
+                    return Err(self.error(span, "Multiple values for keyword argument `timeout`"));
+                }
+                if args.len() >= 3 {
+                    let timeout_ty = self.check_expr(&mut args[2], None)?;
+                    if !matches!(
+                        timeout_ty,
+                        Type::Float | Type::Int | Type::None | Type::Unknown
+                    ) {
+                        return Err(self.error(
+                            span,
+                            "urllib.request.urlopen() timeout must be int, float, or None",
+                        ));
+                    }
+                }
+                if let Some(idx) = timeout_idx {
+                    let timeout_ty = self.check_expr(&mut keywords[idx].value, None)?;
+                    if !matches!(
+                        timeout_ty,
+                        Type::Float | Type::Int | Type::None | Type::Unknown
+                    ) {
+                        return Err(self.error(
+                            span,
+                            "urllib.request.urlopen() timeout must be int, float, or None",
+                        ));
+                    }
+                }
+            }
         }
 
         Ok(Self::stdlib_method_return_type(spec.method_id))
@@ -385,6 +476,20 @@ impl<'a> TypeChecker<'a> {
             StdlibMethodId::TimeStrftime => Type::Str,
             StdlibMethodId::SubprocessRun => {
                 Type::Custom("__stdlib_subprocess_completed_process".to_string())
+            }
+            StdlibMethodId::UrllibParseUrlparse => {
+                Type::Custom("__py_urllib_parse_result".to_string())
+            }
+            StdlibMethodId::UrllibParseQuote
+            | StdlibMethodId::UrllibParseUnquote
+            | StdlibMethodId::UrllibParseUrljoin
+            | StdlibMethodId::UrllibParseUrlencode => Type::Str,
+            StdlibMethodId::UrllibParseParseQs => Type::Dict(
+                Box::new(Type::Str),
+                Box::new(Type::List(Box::new(Type::Str))),
+            ),
+            StdlibMethodId::UrllibRequestUrlopen => {
+                Type::Custom("__py_urllib_response".to_string())
             }
         }
     }

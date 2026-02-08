@@ -33,6 +33,12 @@ pub enum StdlibModuleId {
     Time,
     /// Python `subprocess` module.
     Subprocess,
+    /// Python `urllib` module.
+    Urllib,
+    /// Python `urllib.parse` module.
+    UrllibParse,
+    /// Python `urllib.request` module.
+    UrllibRequest,
 }
 
 /// Identifier for a supported stdlib callable.
@@ -186,6 +192,20 @@ pub enum StdlibMethodId {
     TimeStrptime,
     /// `subprocess.run(args, capture_output=False, check=False)`
     SubprocessRun,
+    /// `urllib.parse.urlparse(url)`
+    UrllibParseUrlparse,
+    /// `urllib.parse.quote(text, [safe])`
+    UrllibParseQuote,
+    /// `urllib.parse.unquote(text)`
+    UrllibParseUnquote,
+    /// `urllib.parse.urljoin(base, url)`
+    UrllibParseUrljoin,
+    /// `urllib.parse.urlencode(params)`
+    UrllibParseUrlencode,
+    /// `urllib.parse.parse_qs(query)`
+    UrllibParseParseQs,
+    /// `urllib.request.urlopen(url, [data], [timeout])`
+    UrllibRequestUrlopen,
 }
 
 /// Function pointer used to emit method-specific Rust calls in codegen.
@@ -471,6 +491,20 @@ const SYS_ARGV_ATTR_SPEC: StdlibAttributeSpec = StdlibAttributeSpec {
     attribute_name: "argv",
     type_resolver: type_sys_argv_attr,
     codegen_handler: codegen_sys_argv_attr,
+};
+
+const URLLIB_PARSE_ATTR_SPEC: StdlibAttributeSpec = StdlibAttributeSpec {
+    module_name: "urllib",
+    attribute_name: "parse",
+    type_resolver: type_urllib_parse_attr,
+    codegen_handler: codegen_urllib_parse_attr,
+};
+
+const URLLIB_REQUEST_ATTR_SPEC: StdlibAttributeSpec = StdlibAttributeSpec {
+    module_name: "urllib",
+    attribute_name: "request",
+    type_resolver: type_urllib_request_attr,
+    codegen_handler: codegen_urllib_request_attr,
 };
 
 const SYS_EXIT_SPEC: StdlibMethodSpec = StdlibMethodSpec {
@@ -1125,6 +1159,84 @@ const SUBPROCESS_RUN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
     codegen_handler: codegen_subprocess_run,
 };
 
+const URLLIB_PARSE_URLPARSE_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::UrllibParseUrlparse,
+    module_name: "urllib.parse",
+    method_name: "urlparse",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_urllib_parse_urlparse,
+};
+
+const URLLIB_PARSE_QUOTE_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::UrllibParseQuote,
+    module_name: "urllib.parse",
+    method_name: "quote",
+    shape: CallShape {
+        arity: AritySpec::Range { min: 1, max: 2 },
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_urllib_parse_quote,
+};
+
+const URLLIB_PARSE_UNQUOTE_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::UrllibParseUnquote,
+    module_name: "urllib.parse",
+    method_name: "unquote",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_urllib_parse_unquote,
+};
+
+const URLLIB_PARSE_URLJOIN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::UrllibParseUrljoin,
+    module_name: "urllib.parse",
+    method_name: "urljoin",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_urllib_parse_urljoin,
+};
+
+const URLLIB_PARSE_URLENCODE_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::UrllibParseUrlencode,
+    module_name: "urllib.parse",
+    method_name: "urlencode",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_urllib_parse_urlencode,
+};
+
+const URLLIB_PARSE_PARSE_QS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::UrllibParseParseQs,
+    module_name: "urllib.parse",
+    method_name: "parse_qs",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_urllib_parse_parse_qs,
+};
+
+const URLLIB_REQUEST_URLOPEN_KEYWORDS: &[&str] = &["data", "timeout"];
+const URLLIB_REQUEST_URLOPEN_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::UrllibRequestUrlopen,
+    module_name: "urllib.request",
+    method_name: "urlopen",
+    shape: CallShape {
+        arity: AritySpec::Range { min: 1, max: 3 },
+        keywords: KeywordPolicy::Named(URLLIB_REQUEST_URLOPEN_KEYWORDS),
+    },
+    codegen_handler: codegen_urllib_request_urlopen,
+};
+
 const SUBPROCESS_COMPLETED_PROCESS_ARGS_ATTR_SPEC: StdlibRuntimeAttributeSpec =
     StdlibRuntimeAttributeSpec {
         type_name: "__stdlib_subprocess_completed_process",
@@ -1153,6 +1265,58 @@ const SUBPROCESS_COMPLETED_PROCESS_STDERR_ATTR_SPEC: StdlibRuntimeAttributeSpec 
         type_resolver: type_subprocess_completed_process_stream_attr,
     };
 
+const URLLIB_PARSE_RESULT_SCHEME_ATTR_SPEC: StdlibRuntimeAttributeSpec =
+    StdlibRuntimeAttributeSpec {
+        type_name: "__py_urllib_parse_result",
+        attribute_name: "scheme",
+        type_resolver: type_urllib_parse_result_text_attr,
+    };
+
+const URLLIB_PARSE_RESULT_NETLOC_ATTR_SPEC: StdlibRuntimeAttributeSpec =
+    StdlibRuntimeAttributeSpec {
+        type_name: "__py_urllib_parse_result",
+        attribute_name: "netloc",
+        type_resolver: type_urllib_parse_result_text_attr,
+    };
+
+const URLLIB_PARSE_RESULT_PATH_ATTR_SPEC: StdlibRuntimeAttributeSpec = StdlibRuntimeAttributeSpec {
+    type_name: "__py_urllib_parse_result",
+    attribute_name: "path",
+    type_resolver: type_urllib_parse_result_text_attr,
+};
+
+const URLLIB_PARSE_RESULT_QUERY_ATTR_SPEC: StdlibRuntimeAttributeSpec =
+    StdlibRuntimeAttributeSpec {
+        type_name: "__py_urllib_parse_result",
+        attribute_name: "query",
+        type_resolver: type_urllib_parse_result_text_attr,
+    };
+
+const URLLIB_PARSE_RESULT_FRAGMENT_ATTR_SPEC: StdlibRuntimeAttributeSpec =
+    StdlibRuntimeAttributeSpec {
+        type_name: "__py_urllib_parse_result",
+        attribute_name: "fragment",
+        type_resolver: type_urllib_parse_result_text_attr,
+    };
+
+const URLLIB_RESPONSE_STATUS_ATTR_SPEC: StdlibRuntimeAttributeSpec = StdlibRuntimeAttributeSpec {
+    type_name: "__py_urllib_response",
+    attribute_name: "status",
+    type_resolver: type_urllib_response_status_attr,
+};
+
+const URLLIB_RESPONSE_URL_ATTR_SPEC: StdlibRuntimeAttributeSpec = StdlibRuntimeAttributeSpec {
+    type_name: "__py_urllib_response",
+    attribute_name: "url",
+    type_resolver: type_urllib_response_url_attr,
+};
+
+const URLLIB_RESPONSE_HEADERS_ATTR_SPEC: StdlibRuntimeAttributeSpec = StdlibRuntimeAttributeSpec {
+    type_name: "__py_urllib_response",
+    attribute_name: "headers",
+    type_resolver: type_urllib_response_headers_attr,
+};
+
 /// Resolve a module name to a known stdlib module id.
 pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
     match name {
@@ -1164,6 +1328,9 @@ pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
         "math" => Some(StdlibModuleId::Math),
         "time" => Some(StdlibModuleId::Time),
         "subprocess" => Some(StdlibModuleId::Subprocess),
+        "urllib" => Some(StdlibModuleId::Urllib),
+        "urllib.parse" => Some(StdlibModuleId::UrllibParse),
+        "urllib.request" => Some(StdlibModuleId::UrllibRequest),
         _ => None,
     }
 }
@@ -1248,6 +1415,13 @@ pub fn find_stdlib_method(
         (StdlibModuleId::Time, "strftime") => Some(&TIME_STRFTIME_SPEC),
         (StdlibModuleId::Time, "strptime") => Some(&TIME_STRPTIME_SPEC),
         (StdlibModuleId::Subprocess, "run") => Some(&SUBPROCESS_RUN_SPEC),
+        (StdlibModuleId::UrllibParse, "urlparse") => Some(&URLLIB_PARSE_URLPARSE_SPEC),
+        (StdlibModuleId::UrllibParse, "quote") => Some(&URLLIB_PARSE_QUOTE_SPEC),
+        (StdlibModuleId::UrllibParse, "unquote") => Some(&URLLIB_PARSE_UNQUOTE_SPEC),
+        (StdlibModuleId::UrllibParse, "urljoin") => Some(&URLLIB_PARSE_URLJOIN_SPEC),
+        (StdlibModuleId::UrllibParse, "urlencode") => Some(&URLLIB_PARSE_URLENCODE_SPEC),
+        (StdlibModuleId::UrllibParse, "parse_qs") => Some(&URLLIB_PARSE_PARSE_QS_SPEC),
+        (StdlibModuleId::UrllibRequest, "urlopen") => Some(&URLLIB_REQUEST_URLOPEN_SPEC),
         _ => None,
     }
 }
@@ -1262,6 +1436,8 @@ pub fn find_stdlib_attribute(
         (StdlibModuleId::Os, "environ") => Some(&OS_ENVIRON_ATTR_SPEC),
         (StdlibModuleId::Os, "name") => Some(&OS_NAME_ATTR_SPEC),
         (StdlibModuleId::Sys, "argv") => Some(&SYS_ARGV_ATTR_SPEC),
+        (StdlibModuleId::Urllib, "parse") => Some(&URLLIB_PARSE_ATTR_SPEC),
+        (StdlibModuleId::Urllib, "request") => Some(&URLLIB_REQUEST_ATTR_SPEC),
         (StdlibModuleId::Math, "pi") => Some(&MATH_PI_ATTR_SPEC),
         (StdlibModuleId::Math, "e") => Some(&MATH_E_ATTR_SPEC),
         (StdlibModuleId::Math, "tau") => Some(&MATH_TAU_ATTR_SPEC),
@@ -1289,13 +1465,26 @@ pub fn find_stdlib_runtime_attribute(
         ("__stdlib_subprocess_completed_process", "stderr") => {
             Some(&SUBPROCESS_COMPLETED_PROCESS_STDERR_ATTR_SPEC)
         }
+        ("__py_urllib_parse_result", "scheme") => Some(&URLLIB_PARSE_RESULT_SCHEME_ATTR_SPEC),
+        ("__py_urllib_parse_result", "netloc") => Some(&URLLIB_PARSE_RESULT_NETLOC_ATTR_SPEC),
+        ("__py_urllib_parse_result", "path") => Some(&URLLIB_PARSE_RESULT_PATH_ATTR_SPEC),
+        ("__py_urllib_parse_result", "query") => Some(&URLLIB_PARSE_RESULT_QUERY_ATTR_SPEC),
+        ("__py_urllib_parse_result", "fragment") => Some(&URLLIB_PARSE_RESULT_FRAGMENT_ATTR_SPEC),
+        ("__py_urllib_response", "status") => Some(&URLLIB_RESPONSE_STATUS_ATTR_SPEC),
+        ("__py_urllib_response", "url") => Some(&URLLIB_RESPONSE_URL_ATTR_SPEC),
+        ("__py_urllib_response", "headers") => Some(&URLLIB_RESPONSE_HEADERS_ATTR_SPEC),
         _ => None,
     }
 }
 
 /// Return true when `type_name` belongs to a registered stdlib runtime object.
 pub fn is_stdlib_runtime_type(type_name: &str) -> bool {
-    matches!(type_name, "__stdlib_subprocess_completed_process")
+    matches!(
+        type_name,
+        "__stdlib_subprocess_completed_process"
+            | "__py_urllib_parse_result"
+            | "__py_urllib_response"
+    )
 }
 
 /// Resolve an importable module member to a stable method id.
@@ -1380,6 +1569,13 @@ pub fn method_spec(method_id: StdlibMethodId) -> &'static StdlibMethodSpec {
         StdlibMethodId::TimeStrftime => &TIME_STRFTIME_SPEC,
         StdlibMethodId::TimeStrptime => &TIME_STRPTIME_SPEC,
         StdlibMethodId::SubprocessRun => &SUBPROCESS_RUN_SPEC,
+        StdlibMethodId::UrllibParseUrlparse => &URLLIB_PARSE_URLPARSE_SPEC,
+        StdlibMethodId::UrllibParseQuote => &URLLIB_PARSE_QUOTE_SPEC,
+        StdlibMethodId::UrllibParseUnquote => &URLLIB_PARSE_UNQUOTE_SPEC,
+        StdlibMethodId::UrllibParseUrljoin => &URLLIB_PARSE_URLJOIN_SPEC,
+        StdlibMethodId::UrllibParseUrlencode => &URLLIB_PARSE_URLENCODE_SPEC,
+        StdlibMethodId::UrllibParseParseQs => &URLLIB_PARSE_PARSE_QS_SPEC,
+        StdlibMethodId::UrllibRequestUrlopen => &URLLIB_REQUEST_URLOPEN_SPEC,
     }
 }
 
@@ -1409,6 +1605,16 @@ fn type_os_name_attr() -> Type {
 /// Resolve the static type for `sys.argv`.
 fn type_sys_argv_attr() -> Type {
     Type::List(Box::new(Type::Str))
+}
+
+/// Resolve the static type for `urllib.parse`.
+fn type_urllib_parse_attr() -> Type {
+    Type::Module("urllib.parse".to_string())
+}
+
+/// Resolve the static type for `urllib.request`.
+fn type_urllib_request_attr() -> Type {
+    Type::Module("urllib.request".to_string())
 }
 
 /// Resolve the static type for `math.pi`.
@@ -1451,6 +1657,26 @@ fn type_subprocess_completed_process_stream_attr() -> Type {
     Type::Option(Box::new(Type::Str))
 }
 
+/// Resolve the static type for `urllib.parse.ParseResult` text fields.
+fn type_urllib_parse_result_text_attr() -> Type {
+    Type::Str
+}
+
+/// Resolve the static type for `urllib.request.Response.status`.
+fn type_urllib_response_status_attr() -> Type {
+    Type::Int
+}
+
+/// Resolve the static type for `urllib.request.Response.url`.
+fn type_urllib_response_url_attr() -> Type {
+    Type::Str
+}
+
+/// Resolve the static type for `urllib.request.Response.headers`.
+fn type_urllib_response_headers_attr() -> Type {
+    Type::Dict(Box::new(Type::Str), Box::new(Type::Str))
+}
+
 /// Emit `os.path` attribute expression (module namespace marker only).
 fn codegen_os_path_attr(codegen: &mut Codegen<'_>, span: Span) -> Result<String, CompileError> {
     Err(codegen.error(
@@ -1475,6 +1701,28 @@ fn codegen_os_name_attr(codegen: &mut Codegen<'_>, _span: Span) -> Result<String
 fn codegen_sys_argv_attr(codegen: &mut Codegen<'_>, _span: Span) -> Result<String, CompileError> {
     codegen.uses.py_sys_argv = true;
     Ok("py_sys_argv()".to_string())
+}
+
+/// Emit `urllib.parse` attribute expression (module namespace marker only).
+fn codegen_urllib_parse_attr(
+    codegen: &mut Codegen<'_>,
+    span: Span,
+) -> Result<String, CompileError> {
+    Err(codegen.error(
+        span,
+        "module 'urllib.parse' is not a runtime value; use urllib.parse.<member>(...)",
+    ))
+}
+
+/// Emit `urllib.request` attribute expression (module namespace marker only).
+fn codegen_urllib_request_attr(
+    codegen: &mut Codegen<'_>,
+    span: Span,
+) -> Result<String, CompileError> {
+    Err(codegen.error(
+        span,
+        "module 'urllib.request' is not a runtime value; use urllib.request.<member>(...)",
+    ))
 }
 
 /// Emit `math.pi` attribute expression.
@@ -2412,5 +2660,154 @@ fn codegen_subprocess_run(
     Ok(codegen.wrap_result(format!(
         "py_subprocess_run(&({}), {}, {})",
         args_expr, capture_output_expr, check_expr
+    )))
+}
+
+/// Emit code for `urllib.parse.urlparse(url)`.
+fn codegen_urllib_parse_urlparse(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_urllib_urlparse = true;
+    let url_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Str))?;
+    Ok(format!("py_urllib_urlparse(&({}))", url_expr))
+}
+
+/// Emit code for `urllib.parse.quote(text, [safe])`.
+fn codegen_urllib_parse_quote(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_urllib_quote = true;
+    let text_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Str))?;
+    let safe_expr = if args.len() == 2 {
+        codegen.gen_expr_with_expected(&args[1], Some(&Type::Str))?
+    } else {
+        "\"/\".to_string()".to_string()
+    };
+    Ok(format!(
+        "py_urllib_quote(&({}), &({}))",
+        text_expr, safe_expr
+    ))
+}
+
+/// Emit code for `urllib.parse.unquote(text)`.
+fn codegen_urllib_parse_unquote(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_urllib_unquote = true;
+    let text_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Str))?;
+    Ok(format!("py_urllib_unquote(&({}))", text_expr))
+}
+
+/// Emit code for `urllib.parse.urljoin(base, url)`.
+fn codegen_urllib_parse_urljoin(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_urllib_urljoin = true;
+    // urljoin reuses parse/geturl helpers for RFC-like assembly semantics.
+    codegen.uses.py_urllib_urlparse = true;
+    codegen.uses.py_urllib_parse_geturl = true;
+    let base_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Str))?;
+    let url_expr = codegen.gen_expr_with_expected(&args[1], Some(&Type::Str))?;
+    Ok(format!(
+        "py_urllib_urljoin(&({}), &({}))",
+        base_expr, url_expr
+    ))
+}
+
+/// Emit code for `urllib.parse.urlencode(params)`.
+fn codegen_urllib_parse_urlencode(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_urllib_urlencode = true;
+    // urlencode uses quote() internally to keep escaping logic centralized.
+    codegen.uses.py_urllib_quote = true;
+    let params_expr = codegen.gen_expr_with_expected(
+        &args[0],
+        Some(&Type::Dict(Box::new(Type::Str), Box::new(Type::Str))),
+    )?;
+    Ok(format!("py_urllib_urlencode(&({}))", params_expr))
+}
+
+/// Emit code for `urllib.parse.parse_qs(query)`.
+fn codegen_urllib_parse_parse_qs(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_urllib_parse_qs = true;
+    // parse_qs uses unquote() internally to keep decoding behavior centralized.
+    codegen.uses.py_urllib_unquote = true;
+    let query_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Str))?;
+    Ok(format!("py_urllib_parse_qs(&({}))", query_expr))
+}
+
+/// Emit code for `urllib.request.urlopen(url, [data], [timeout])`.
+fn codegen_urllib_request_urlopen(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_urllib_urlopen = true;
+    // urlopen decodes percent-encoded file/data payload segments.
+    codegen.uses.py_urllib_unquote = true;
+    let url_expr = codegen.gen_expr_with_expected(&args[0], Some(&Type::Str))?;
+
+    let data_kw = keyword_value(keywords, "data");
+    if args.len() >= 2 && data_kw.is_some() {
+        return Err(codegen.error(args[1].span, "Multiple values for keyword argument `data`"));
+    }
+    let render_optional_data =
+        |codegen: &mut Codegen<'_>, expr: &Expr| -> Result<String, CompileError> {
+            if matches!(expr.ty.as_ref(), Some(Type::None)) {
+                return Ok("None".to_string());
+            }
+            Ok(format!("Some({})", codegen.gen_expr(expr)?))
+        };
+    let data_expr = if let Some(expr) = data_kw {
+        render_optional_data(codegen, expr)?
+    } else if args.len() >= 2 {
+        render_optional_data(codegen, &args[1])?
+    } else {
+        "None".to_string()
+    };
+
+    let timeout_kw = keyword_value(keywords, "timeout");
+    if args.len() >= 3 && timeout_kw.is_some() {
+        return Err(codegen.error(
+            args[2].span,
+            "Multiple values for keyword argument `timeout`",
+        ));
+    }
+    let render_optional_timeout =
+        |codegen: &mut Codegen<'_>, expr: &Expr| -> Result<String, CompileError> {
+            if matches!(expr.ty.as_ref(), Some(Type::None)) {
+                return Ok("None".to_string());
+            }
+            Ok(format!(
+                "Some({})",
+                codegen.gen_expr_with_expected(expr, Some(&Type::Float))?
+            ))
+        };
+    let timeout_expr = if let Some(expr) = timeout_kw {
+        render_optional_timeout(codegen, expr)?
+    } else if args.len() >= 3 {
+        render_optional_timeout(codegen, &args[2])?
+    } else {
+        "None".to_string()
+    };
+
+    Ok(codegen.wrap_result(format!(
+        "py_urllib_urlopen(&({}), {}, {})",
+        url_expr, data_expr, timeout_expr
     )))
 }
