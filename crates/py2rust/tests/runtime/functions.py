@@ -677,6 +677,33 @@ def prepare_data(prefix: str, *values: int) -> str:
 
 assert prepare_data("Count: ", 1, 2, 3) == "Count: 3"
 
+# Test 10: Nested *args/**kwargs function.
+def nested_variadics_total(seed: int) -> int:
+    def inner(*args: int, **kwargs: int) -> int:
+        total: int = seed
+        for value in args:
+            total = total + value
+        total = total + kwargs["bonus"]
+        return total
+
+    return inner(1, 2, bonus=3)
+
+assert nested_variadics_total(4) == 10, "nested *args/**kwargs should accumulate"
+
+# Test 11: Nested variadic wrapper forwarding to another local function.
+def nested_variadic_forward() -> int:
+    def add_pair(x: int, y: int) -> int:
+        return x + y
+
+    def wrapper(*args: int, **kwargs: int) -> int:
+        left: int = args[0]
+        right: int = kwargs["right"]
+        return add_pair(left, right)
+
+    return wrapper(5, right=6)
+
+assert nested_variadic_forward() == 11, "nested wrapper should handle *args/**kwargs"
+
 # ===== SECTION: Keyword-Only Parameter Defaults =====
 
 # Test 1: Keyword-only with default after *args

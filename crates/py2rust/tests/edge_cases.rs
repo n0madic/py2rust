@@ -136,17 +136,22 @@ def set_last(lst: list[int], val: int) -> None:
 }
 
 #[test]
-fn dict_literal_uses_from() {
+fn dict_literal_uses_builder_ops() {
     let source = r#"
 def make_dict() -> dict[str, int]:
     return {"a": 1, "b": 2}
 "#;
     let out =
         compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
-    // Should use IndexMap::from([...]) instead of repeated .insert()
+    // Dict literals are emitted through a builder (`new` + `insert/extend`)
+    // so source order and unpack override semantics are preserved.
     assert!(
-        out.rust.contains("IndexMap::from(["),
-        "Should use IndexMap::from"
+        out.rust.contains("IndexMap::new()") && out.rust.contains(".insert("),
+        "Should build dict literals with IndexMap::new() + insert()"
+    );
+    assert!(
+        !out.rust.contains("IndexMap::from(["),
+        "Should not use IndexMap::from for dict literal codegen"
     );
 }
 

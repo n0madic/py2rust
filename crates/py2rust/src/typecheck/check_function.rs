@@ -229,9 +229,14 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     ExprKind::Dict(items) => {
-                        for (k, v) in items {
-                            collect_names(k, out);
-                            collect_names(v, out);
+                        for item in items {
+                            match item {
+                                DictEntry::Item { key, value } => {
+                                    collect_names(key, out);
+                                    collect_names(value, out);
+                                }
+                                DictEntry::Unpack { value } => collect_names(value, out),
+                            }
                         }
                     }
                     ExprKind::Index { value, index } => {
@@ -342,9 +347,14 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     ExprKind::Dict(items) => {
-                        for (k, v) in items {
-                            visit_expr(k, out);
-                            visit_expr(v, out);
+                        for item in items {
+                            match item {
+                                DictEntry::Item { key, value } => {
+                                    visit_expr(key, out);
+                                    visit_expr(value, out);
+                                }
+                                DictEntry::Unpack { value } => visit_expr(value, out),
+                            }
                         }
                     }
                     ExprKind::Index { value, index } => {
@@ -487,6 +497,16 @@ impl<'a> TypeChecker<'a> {
                     | StmtKind::ImportFrom { .. }
                     | StmtKind::Global { .. }
                     | StmtKind::Nonlocal { .. } => {}
+                    StmtKind::Class { def } => {
+                        for attr in &def.class_attrs {
+                            collect_names(&attr.value, out);
+                        }
+                        for method in &def.methods {
+                            for stmt in &method.body {
+                                collect_names_in_stmt(stmt, out);
+                            }
+                        }
+                    }
                     StmtKind::Break | StmtKind::Continue => {}
                 }
             }
@@ -586,6 +606,16 @@ impl<'a> TypeChecker<'a> {
                     | StmtKind::ImportFrom { .. }
                     | StmtKind::Global { .. }
                     | StmtKind::Nonlocal { .. } => {}
+                    StmtKind::Class { def } => {
+                        for attr in &def.class_attrs {
+                            visit_expr(&attr.value, out);
+                        }
+                        for method in &def.methods {
+                            for stmt in &method.body {
+                                visit_stmt(stmt, out);
+                            }
+                        }
+                    }
                     StmtKind::Break | StmtKind::Continue => {}
                 }
             }

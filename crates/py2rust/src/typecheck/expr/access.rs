@@ -43,7 +43,10 @@ impl<'a> TypeChecker<'a> {
         if let Some(sig) = self.ctx.functions.get(name) {
             // Function reference used as a value.
             return Ok(Type::Lambda {
+                param_names: sig.param_names.clone(),
                 params: sig.params.clone(),
+                param_kinds: sig.param_kinds.clone(),
+                has_defaults: sig.has_defaults.clone(),
                 ret: Box::new(sig.ret.clone()),
             });
         }
@@ -51,15 +54,24 @@ impl<'a> TypeChecker<'a> {
         // Built-in type constructors are handled as lambda values.
         let builtin_ctor = match name.as_str() {
             "str" => Some(Type::Lambda {
+                param_names: vec!["value".to_string()],
                 params: vec![Type::Unknown],
+                param_kinds: vec![ParamKind::PositionalOrKeyword],
+                has_defaults: vec![false],
                 ret: Box::new(Type::Str),
             }),
             "int" => Some(Type::Lambda {
+                param_names: vec!["value".to_string()],
                 params: vec![Type::Unknown],
+                param_kinds: vec![ParamKind::PositionalOrKeyword],
+                has_defaults: vec![false],
                 ret: Box::new(Type::Int),
             }),
             "float" => Some(Type::Lambda {
+                param_names: vec!["value".to_string()],
                 params: vec![Type::Unknown],
+                param_kinds: vec![ParamKind::PositionalOrKeyword],
+                has_defaults: vec![false],
                 ret: Box::new(Type::Float),
             }),
             _ => None,
@@ -68,7 +80,7 @@ impl<'a> TypeChecker<'a> {
             return Ok(ty);
         }
 
-        if self.ctx.classes.contains_key(name) {
+        if self.is_visible_class(name) {
             return Ok(Type::Custom(name.clone()));
         }
 

@@ -52,15 +52,19 @@ impl<'tc, 'a, 'e> StmtVisitorMut<Result<(), CompileError>> for CheckStmtVisitor<
         value: &mut Expr,
     ) -> Result<(), CompileError> {
         self.check_and_rewrite(StmtKind::Assign {
-            target: target.clone(),
+            target: Box::new(target.clone()),
             value: value.clone(),
         })
     }
 
     fn visit_delete_mut(&mut self, target: &mut AssignTarget) -> Result<(), CompileError> {
         self.check_and_rewrite(StmtKind::Delete {
-            target: target.clone(),
+            target: Box::new(target.clone()),
         })
+    }
+
+    fn visit_class_mut(&mut self, def: &mut ClassDef) -> Result<(), CompileError> {
+        self.check_and_rewrite(StmtKind::Class { def: def.clone() })
     }
 
     fn visit_return_mut(&mut self, value: &mut Option<Expr>) -> Result<(), CompileError> {
@@ -263,7 +267,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     self.ensure_assignable(&ty, &outer_ty, stmt.span)?;
                     stmt.kind = StmtKind::Assign {
-                        target: AssignTarget::Name(name.clone()),
+                        target: Box::new(AssignTarget::Name(name.clone())),
                         value: value.clone(),
                     };
                     return Ok(());
@@ -292,14 +296,22 @@ impl<'a> TypeChecker<'a> {
                     }
                     self.ensure_assignable(&ty, &global_ty, stmt.span)?;
                     stmt.kind = StmtKind::Assign {
-                        target: AssignTarget::Name(name.clone()),
+                        target: Box::new(AssignTarget::Name(name.clone())),
                         value: value.clone(),
                     };
                     return Ok(());
                 }
-                if let ExprKind::Lambda { params, .. } = &value.kind {
+                if let ExprKind::Lambda {
+                    params,
+                    param_kinds,
+                    ..
+                } = &value.kind
+                {
                     let placeholder = Type::Lambda {
+                        param_names: params.clone(),
                         params: vec![Type::Unknown; params.len()],
+                        param_kinds: Vec::new(),
+                        has_defaults: Vec::new(),
                         ret: Box::new(Type::Unknown),
                     };
                     self.insert_var(name, placeholder, stmt.span)?;
@@ -309,7 +321,7 @@ impl<'a> TypeChecker<'a> {
                             return Err(self
                                 .error(stmt.span, "Iterator[T] is only allowed as a return type"));
                         }
-                        Some(ty)
+                        Some(Self::normalize_lambda_expected(ty, param_kinds))
                     } else {
                         None
                     };
@@ -328,9 +340,7 @@ impl<'a> TypeChecker<'a> {
                         ty
                     };
                     self.insert_var(name, declared, stmt.span)?;
-                    if !self.in_function() {
-                        self.lambda_defs.insert(name.clone(), value.clone());
-                    }
+                    self.lambda_defs.insert(name.clone(), value.clone());
                     return Ok(());
                 }
                 let expected = if let Some(ann) = ann {
@@ -377,12 +387,15 @@ impl<'a> TypeChecker<'a> {
             }
             StmtKind::Assign { target, value } => {
                 let mut ty = self.check_expr(value, None)?;
-                if matches!(target, AssignTarget::Tuple(_) | AssignTarget::List(_)) {
+                if matches!(
+                    target.as_ref(),
+                    AssignTarget::Tuple(_) | AssignTarget::List(_)
+                ) {
                     // Destructuring assignment: validate each leaf target against element types.
                     self.check_unpack_target(target, &ty, Some(value), stmt.span)?;
                 } else {
                     let mut promote_to_let: Option<(String, Expr)> = None;
-                    match target {
+                    match target.as_mut() {
                         AssignTarget::Name(name) => {
                             if name == "__name__" {
                                 return Err(self
@@ -460,8 +473,7 @@ impl<'a> TypeChecker<'a> {
                                 promote_to_let = Some((name.clone(), value.clone()));
                                 self.insert_var(name, ty, stmt.span)?;
                             }
-                            if !self.in_function() && matches!(value.kind, ExprKind::Lambda { .. })
-                            {
+                            if matches!(value.kind, ExprKind::Lambda { .. }) {
                                 self.lambda_defs.insert(name.clone(), value.clone());
                             }
                         }
@@ -526,6 +538,19 @@ impl<'a> TypeChecker<'a> {
                                 Type::Dict(key_ty, val_ty) => {
                                     self.ensure_assignable(&index_ty, &key_ty, stmt.span)?;
                                     self.ensure_assignable(&ty, &val_ty, stmt.span)?;
+                                    if let ExprKind::Name(dict_name) = &container.kind {
+                                        let refined_key =
+                                            Self::merge_types((*key_ty).clone(), index_ty.clone());
+                                        let refined_val =
+                                            Self::merge_types((*val_ty).clone(), ty.clone());
+                                        self.set_var_type(
+                                            dict_name,
+                                            Type::Dict(
+                                                Box::new(refined_key),
+                                                Box::new(refined_val),
+                                            ),
+                                        );
+                                    }
                                 }
                                 _ => {
                                     return Err(self.error(
@@ -550,7 +575,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            StmtKind::Delete { target } => match target {
+            StmtKind::Delete { target } => match target.as_mut() {
                 AssignTarget::Index {
                     value: container,
                     index,
@@ -601,6 +626,27 @@ impl<'a> TypeChecker<'a> {
                     return Err(self.error(stmt.span, "del unpacking targets are not supported"))
                 }
             },
+            StmtKind::Class { def } => {
+                if !self.in_function() {
+                    return Err(self.error(
+                        def.span,
+                        "Class statements are only supported inside function bodies",
+                    ));
+                }
+                if self.control_flow_depth > 0 {
+                    return Err(self.error(
+                        def.span,
+                        "Local class definitions are only supported at function-body scope",
+                    ));
+                }
+                self.register_local_class_signature(def)?;
+                self.insert_var(&def.name, Type::Custom(def.name.clone()), stmt.span)?;
+                let saved_floor = self.capture_scope_floor;
+                self.capture_scope_floor = Some(self.scopes.len());
+                let check_result = self.check_class(def);
+                self.capture_scope_floor = saved_floor;
+                check_result?;
+            }
             StmtKind::Return { value } => {
                 let ret_ann = expected_ret
                     .ok_or_else(|| self.error(stmt.span, "Return outside of function"))?;
@@ -716,31 +762,34 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                if let Some((name, true_ty, false_ty)) = narrowed {
-                    self.scopes.push(HashMap::new());
-                    if let Some(scope) = self.scopes.last_mut() {
-                        scope.insert(name.clone(), true_ty);
+                self.with_control_flow_depth(|tc| {
+                    if let Some((name, true_ty, false_ty)) = narrowed {
+                        tc.scopes.push(HashMap::new());
+                        if let Some(scope) = tc.scopes.last_mut() {
+                            scope.insert(name.clone(), true_ty);
+                        }
+                        for stmt in body {
+                            tc.check_stmt(stmt, expected_ret)?;
+                        }
+                        tc.scopes.pop();
+                        tc.scopes.push(HashMap::new());
+                        if let Some(scope) = tc.scopes.last_mut() {
+                            scope.insert(name.clone(), false_ty);
+                        }
+                        for stmt in orelse {
+                            tc.check_stmt(stmt, expected_ret)?;
+                        }
+                        tc.scopes.pop();
+                    } else {
+                        for stmt in body {
+                            tc.check_stmt(stmt, expected_ret)?;
+                        }
+                        for stmt in orelse {
+                            tc.check_stmt(stmt, expected_ret)?;
+                        }
                     }
-                    for stmt in body {
-                        self.check_stmt(stmt, expected_ret)?;
-                    }
-                    self.scopes.pop();
-                    self.scopes.push(HashMap::new());
-                    if let Some(scope) = self.scopes.last_mut() {
-                        scope.insert(name.clone(), false_ty);
-                    }
-                    for stmt in orelse {
-                        self.check_stmt(stmt, expected_ret)?;
-                    }
-                    self.scopes.pop();
-                } else {
-                    for stmt in body {
-                        self.check_stmt(stmt, expected_ret)?;
-                    }
-                    for stmt in orelse {
-                        self.check_stmt(stmt, expected_ret)?;
-                    }
-                }
+                    Ok(())
+                })?;
             }
             StmtKind::While { test, body } => {
                 // Python while-conditions use truthiness, not strict bool typing.
@@ -753,18 +802,24 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 if let Some((name, narrowed_ty)) = narrowed {
-                    self.scopes.push(HashMap::new());
-                    if let Some(scope) = self.scopes.last_mut() {
-                        scope.insert(name, narrowed_ty);
-                    }
-                    for stmt in body {
-                        self.check_stmt(stmt, expected_ret)?;
-                    }
-                    self.scopes.pop();
+                    self.with_control_flow_depth(|tc| {
+                        tc.scopes.push(HashMap::new());
+                        if let Some(scope) = tc.scopes.last_mut() {
+                            scope.insert(name, narrowed_ty);
+                        }
+                        for stmt in body {
+                            tc.check_stmt(stmt, expected_ret)?;
+                        }
+                        tc.scopes.pop();
+                        Ok(())
+                    })?;
                 } else {
-                    for stmt in body {
-                        self.check_stmt(stmt, expected_ret)?;
-                    }
+                    self.with_control_flow_depth(|tc| {
+                        for stmt in body {
+                            tc.check_stmt(stmt, expected_ret)?;
+                        }
+                        Ok(())
+                    })?;
                 }
             }
             StmtKind::For { target, iter, body } => {
@@ -860,9 +915,12 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                for stmt in body {
-                    self.check_stmt(stmt, expected_ret)?;
-                }
+                self.with_control_flow_depth(|tc| {
+                    for stmt in body {
+                        tc.check_stmt(stmt, expected_ret)?;
+                    }
+                    Ok(())
+                })?;
             }
             StmtKind::Import { names } => {
                 for binding in names {
@@ -1074,18 +1132,21 @@ impl<'a> TypeChecker<'a> {
                             resolved
                         };
 
-                    self.scopes.push(HashMap::new());
-                    for (binding, (_, field_ty)) in case.bindings.iter().zip(fields.iter()) {
-                        if let Some(existing) = self.lookup_var(binding) {
-                            self.ensure_assignable(field_ty, &existing, case.span)?;
-                        } else {
-                            self.insert_var(binding, field_ty.clone(), case.span)?;
+                    self.with_control_flow_depth(|tc| {
+                        tc.scopes.push(HashMap::new());
+                        for (binding, (_, field_ty)) in case.bindings.iter().zip(fields.iter()) {
+                            if let Some(existing) = tc.lookup_var(binding) {
+                                tc.ensure_assignable(field_ty, &existing, case.span)?;
+                            } else {
+                                tc.insert_var(binding, field_ty.clone(), case.span)?;
+                            }
                         }
-                    }
-                    for stmt in &mut case.body {
-                        self.check_stmt(stmt, expected_ret)?;
-                    }
-                    self.scopes.pop();
+                        for stmt in &mut case.body {
+                            tc.check_stmt(stmt, expected_ret)?;
+                        }
+                        tc.scopes.pop();
+                        Ok(())
+                    })?;
                 }
                 // Check for match exhaustiveness
                 let covered: HashSet<&String> = cases.iter().map(|c| &c.variant).collect();
@@ -1110,9 +1171,293 @@ impl<'a> TypeChecker<'a> {
                 handlers,
                 orelse,
                 finalbody,
-            } => self.check_try_stmt(body, handlers, orelse, finalbody, expected_ret)?,
+            } => {
+                self.with_control_flow_depth(|tc| {
+                    tc.check_try_stmt(body, handlers, orelse, finalbody, expected_ret)
+                })?;
+            }
             StmtKind::Raise { exc, cause } => self.check_raise_stmt(exc, cause, stmt.span)?,
         }
+        Ok(())
+    }
+
+    /// Normalize lambda annotation parameter types against the lowered parameter kinds.
+    ///
+    /// `TypeRef::Lambda` stores annotation payload types, while variadic parameters in Python
+    /// describe element/value types (`*args: T`, `**kwargs: T`). This helper wraps those payloads
+    /// into concrete container types so nested variadic defs type-check like top-level defs.
+    fn normalize_lambda_expected(expected: Type, param_kinds: &[ParamKind]) -> Type {
+        let Type::Lambda {
+            param_names,
+            mut params,
+            param_kinds: mut expected_kinds,
+            mut has_defaults,
+            ret,
+        } = expected
+        else {
+            return expected;
+        };
+
+        if params.len() != param_kinds.len() {
+            return Type::Lambda {
+                param_names,
+                params,
+                param_kinds: expected_kinds,
+                has_defaults,
+                ret,
+            };
+        }
+
+        for (idx, kind) in param_kinds.iter().enumerate() {
+            let current = params[idx].clone();
+            params[idx] = match kind {
+                ParamKind::VarArgs => match current {
+                    Type::List(_) => current,
+                    other => Type::List(Box::new(other)),
+                },
+                ParamKind::VarKeywords => match current {
+                    Type::Dict(key, value) if matches!(key.as_ref(), Type::Str) => {
+                        Type::Dict(key, value)
+                    }
+                    other => Type::Dict(Box::new(Type::Str), Box::new(other)),
+                },
+                _ => current,
+            };
+        }
+
+        if expected_kinds.len() != param_kinds.len() {
+            expected_kinds = param_kinds.to_vec();
+        }
+        if has_defaults.len() != param_kinds.len() {
+            has_defaults = vec![false; param_kinds.len()];
+        }
+
+        Type::Lambda {
+            param_names,
+            params,
+            param_kinds: expected_kinds,
+            has_defaults,
+            ret,
+        }
+    }
+
+    /// Run nested statement checking under increased control-flow depth.
+    fn with_control_flow_depth<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, CompileError>,
+    ) -> Result<T, CompileError> {
+        self.control_flow_depth += 1;
+        let result = f(self);
+        self.control_flow_depth -= 1;
+        result
+    }
+
+    /// Register a function-local class signature in the type context.
+    ///
+    /// Local classes are intentionally constrained: no inheritance and no name
+    /// collisions with already-registered classes.
+    fn register_local_class_signature(&mut self, class_def: &ClassDef) -> Result<(), CompileError> {
+        if class_def.base.is_some() {
+            return Err(self.error(
+                class_def.span,
+                "Class inheritance inside function bodies is not supported",
+            ));
+        }
+        if self.ctx.classes.contains_key(&class_def.name) {
+            return Err(self.error(
+                class_def.span,
+                format!(
+                    "Class `{}` conflicts with an existing class symbol",
+                    class_def.name
+                ),
+            ));
+        }
+        if self.lookup_local_var(&class_def.name).is_some() {
+            return Err(self.error(
+                class_def.span,
+                format!(
+                    "Class `{}` conflicts with an existing local symbol",
+                    class_def.name
+                ),
+            ));
+        }
+        let owner_scope = self.function_scopes.last().copied();
+        self.ctx.classes.insert(
+            class_def.name.clone(),
+            ClassInfo {
+                name: class_def.name.clone(),
+                owner_scope,
+                base: None,
+                fields: IndexMap::new(),
+                class_attrs: IndexMap::new(),
+                methods: HashMap::new(),
+                method_kinds: HashMap::new(),
+                properties: HashMap::new(),
+                init: None,
+                iter_return: None,
+                iter_item: None,
+                next_item: None,
+                match_args: class_def.match_args.clone(),
+            },
+        );
+
+        let mut fields = IndexMap::new();
+        for field in &class_def.fields {
+            let ty = self.resolve_type_ref(&field.ty, field.span)?;
+            if matches!(ty, Type::Iterator(_)) {
+                return Err(self.error(field.span, "Iterator[T] is only allowed as a return type"));
+            }
+            fields.insert(field.name.clone(), ty);
+        }
+
+        let mut class_attrs = IndexMap::new();
+        for attr in &class_def.class_attrs {
+            let ty = if let Some(ann) = &attr.ann {
+                let ty = self.resolve_type_ref(ann, attr.span)?;
+                if matches!(ty, Type::Iterator(_)) {
+                    return Err(
+                        self.error(attr.span, "Iterator[T] is only allowed as a return type")
+                    );
+                }
+                ty
+            } else {
+                Type::Unknown
+            };
+            let global_name = format!("__class_attr_{}_{}", class_def.name, attr.name);
+            class_attrs.insert(
+                attr.name.clone(),
+                ClassAttrInfo {
+                    ty: ty.clone(),
+                    global_name: global_name.clone(),
+                },
+            );
+            self.ctx.globals.insert(global_name, ty);
+        }
+
+        let mut methods = HashMap::new();
+        let method_kinds = class_def.method_kinds.clone();
+        let mut properties: HashMap<String, PropertyInfo> = HashMap::new();
+        for prop in &class_def.properties {
+            let entry = properties.entry(prop.name.clone()).or_insert(PropertyInfo {
+                getter: String::new(),
+                setter: None,
+                deleter: None,
+                ty: Type::Unknown,
+            });
+            if !prop.getter.is_empty() {
+                entry.getter = prop.getter.clone();
+            }
+            if prop.setter.is_some() {
+                entry.setter = prop.setter.clone();
+            }
+            if prop.deleter.is_some() {
+                entry.deleter = prop.deleter.clone();
+            }
+        }
+
+        let mut init = None;
+        let mut iter_return = None;
+        let mut iter_item = None;
+        let mut next_item = None;
+        for method in &class_def.methods {
+            let mut params = self.resolve_params(&method.params)?;
+            if method.name == "__exit__" {
+                for param_ty in params.iter_mut().skip(1) {
+                    if matches!(param_ty, Type::Unknown) {
+                        *param_ty = Type::Int;
+                    }
+                }
+            }
+            let ret = self.resolve_type_ref(&method.ret, method.span)?;
+            let defaults = method.params.iter().filter(|p| p.default.is_some()).count();
+            let sig = FunctionSig {
+                param_names: method.params.iter().map(|p| p.name.clone()).collect(),
+                param_kinds: method.params.iter().map(|p| p.kind).collect(),
+                has_defaults: method.params.iter().map(|p| p.default.is_some()).collect(),
+                params,
+                ret: ret.clone(),
+                span: method.span,
+                is_generator: false,
+                can_throw: false,
+                thrown_exceptions: Vec::new(),
+                defaults,
+            };
+            if method.name == "__init__" {
+                init = Some(sig.clone());
+            }
+            if method.name == "__iter__" {
+                if let Type::Iterator(item_ty) = ret.clone() {
+                    iter_item = Some(*item_ty);
+                }
+                if let Type::Custom(name) = ret.clone() {
+                    iter_return = Some(name);
+                }
+            }
+            if method.name == "next" {
+                if let Type::Option(item_ty) = ret.clone() {
+                    next_item = Some(*item_ty);
+                }
+            }
+            methods.insert(method.name.clone(), sig);
+        }
+
+        for info in properties.values_mut() {
+            if !info.getter.is_empty() {
+                if let Some(sig) = methods.get(&info.getter) {
+                    info.ty = sig.ret.clone();
+                    continue;
+                }
+            }
+            if let Some(setter) = info.setter.as_ref() {
+                if let Some(sig) = methods.get(setter) {
+                    let setter_shape_ok = sig.params.len() == 2
+                        && sig.param_names.len() == 2
+                        && sig.param_names[0] == "self"
+                        && sig.param_kinds.len() == 2
+                        && matches!(sig.param_kinds[0], ParamKind::PositionalOrKeyword)
+                        && matches!(sig.param_kinds[1], ParamKind::PositionalOrKeyword)
+                        && sig.has_defaults.len() == 2
+                        && !sig.has_defaults[1];
+                    if !setter_shape_ok {
+                        return Err(self.error(
+                            sig.span,
+                            "Property setter must have signature (self, value)",
+                        ));
+                    }
+                    info.ty = sig.params[1].clone();
+                }
+            }
+            if let Some(deleter) = info.deleter.as_ref() {
+                if let Some(sig) = methods.get(deleter) {
+                    let deleter_shape_ok = sig.params.len() == 1
+                        && sig.param_names.len() == 1
+                        && sig.param_names[0] == "self"
+                        && sig.param_kinds.len() == 1
+                        && matches!(sig.param_kinds[0], ParamKind::PositionalOrKeyword)
+                        && sig.has_defaults.len() == 1;
+                    if !deleter_shape_ok {
+                        return Err(
+                            self.error(sig.span, "Property deleter must have signature (self)")
+                        );
+                    }
+                }
+            }
+        }
+
+        if let Some(info) = self.ctx.classes.get_mut(&class_def.name) {
+            info.base = None;
+            info.fields = fields;
+            info.class_attrs = class_attrs;
+            info.methods = methods;
+            info.method_kinds = method_kinds;
+            info.properties = properties;
+            info.init = init;
+            info.iter_return = iter_return;
+            info.iter_item = iter_item;
+            info.next_item = next_item;
+            info.match_args = class_def.match_args.clone();
+        }
+
         Ok(())
     }
 }

@@ -621,3 +621,23 @@ def match_area(s: MatchShape) -> int:
 
 mr: MatchShape = MatchRect(10, 20, 30, 40)
 assert match_area(mr) == 1200, "match_area(MatchRect(...)) should equal 1200"
+
+# ===== SECTION: Local classes in function scope =====
+
+def make_local_class_result(start: int) -> int:
+    class LocalCounter:
+        value: int
+        factor: int
+
+        def __init__(self, value: int) -> None:
+            self.value = value
+            self.factor = 2
+
+        def scaled(self) -> int:
+            return self.value * self.factor
+
+    local_inst = LocalCounter(start)
+    return local_inst.scaled()
+
+assert make_local_class_result(7) == 14, "local class method call should work"
+assert make_local_class_result(3) == 6, "local class should be usable across calls"

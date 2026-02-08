@@ -11,7 +11,7 @@ impl<'a> TypeChecker<'a> {
         span: Span,
     ) -> Result<Type, CompileError> {
         let callable_ty = self.check_expr(func, None)?;
-        if let Type::Lambda { params, ret } = callable_ty {
+        if let Type::Lambda { params, ret, .. } = callable_ty {
             if !keywords.is_empty() {
                 return Err(self.error(
                     span,

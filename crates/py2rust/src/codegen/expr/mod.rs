@@ -96,7 +96,7 @@ impl<'cg, 'a> ExprVisitor<Result<String, CompileError>> for GenExprVisitor<'cg, 
         self.cg.gen_tuple_expr(self.expr, items)
     }
 
-    fn visit_dict(&mut self, items: &[(Expr, Expr)]) -> Result<String, CompileError> {
+    fn visit_dict(&mut self, items: &[DictEntry]) -> Result<String, CompileError> {
         self.cg.gen_dict_expr(self.expr, items)
     }
 
@@ -151,8 +151,15 @@ impl<'cg, 'a> ExprVisitor<Result<String, CompileError>> for GenExprVisitor<'cg, 
         self.cg.gen_union_ctor_expr(union, variant, inner)
     }
 
-    fn visit_lambda(&mut self, params: &[String], body: &Expr) -> Result<String, CompileError> {
-        self.cg.gen_lambda_expr(self.expr, params, body)
+    fn visit_lambda(
+        &mut self,
+        params: &[String],
+        param_kinds: &[ParamKind],
+        has_defaults: &[bool],
+        body: &Expr,
+    ) -> Result<String, CompileError> {
+        self.cg
+            .gen_lambda_expr(self.expr, params, param_kinds, has_defaults, body)
     }
 
     fn visit_if_expr(

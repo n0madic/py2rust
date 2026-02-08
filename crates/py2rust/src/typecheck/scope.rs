@@ -227,7 +227,11 @@ impl<'a> TypeChecker<'a> {
     /// then checks global context.
     /// Returns None if not found (caller handles error).
     pub(super) fn lookup_var(&self, name: &str) -> Option<Type> {
-        for scope in self.scopes.iter().rev() {
+        let floor = self.capture_scope_floor.unwrap_or(0);
+        for (idx, scope) in self.scopes.iter().enumerate().rev() {
+            if idx < floor {
+                break;
+            }
             if let Some(ty) = scope.get(name) {
                 return Some(ty.clone());
             }
@@ -251,5 +255,16 @@ impl<'a> TypeChecker<'a> {
             }
         }
         None
+    }
+
+    /// Return true when a class symbol is visible in the current scope.
+    pub(super) fn is_visible_class(&self, name: &str) -> bool {
+        let Some(info) = self.ctx.classes.get(name) else {
+            return false;
+        };
+        if info.owner_scope.is_none() {
+            return true;
+        }
+        matches!(self.lookup_var(name), Some(Type::Custom(class_name)) if class_name == name)
     }
 }

@@ -107,7 +107,10 @@ impl<'a> TypeChecker<'a> {
                 }
                 let ret_ty = self.resolve_type_ref(ret, span)?;
                 Ok(Type::Lambda {
+                    param_names: Vec::new(),
                     params: out,
+                    param_kinds: Vec::new(),
+                    has_defaults: Vec::new(),
                     ret: Box::new(ret_ty),
                 })
             }

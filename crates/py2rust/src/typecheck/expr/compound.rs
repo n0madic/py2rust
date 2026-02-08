@@ -91,7 +91,7 @@ impl<'a> TypeChecker<'a> {
     /// Type check dict literal expressions.
     pub(super) fn check_dict_expr(
         &mut self,
-        items: &mut [(Expr, Expr)],
+        items: &mut [DictEntry],
         expected: Option<&Type>,
         span: Span,
     ) -> Result<Type, CompileError> {
@@ -99,31 +99,124 @@ impl<'a> TypeChecker<'a> {
             if let Some(Type::Dict(key_ty, val_ty)) = expected {
                 return Ok(Type::Dict(key_ty.clone(), val_ty.clone()));
             }
-            return Ok(Type::Unknown);
+            return Ok(Type::Dict(Box::new(Type::Unknown), Box::new(Type::Unknown)));
         }
+        // Keep annotation-derived expectations separate from inferred literal types.
+        // Otherwise `dict[str, Unknown]` can accidentally become `dict[str, int]` after
+        // the first item and reject later compatible items.
+        let expected_key_ty = match expected {
+            Some(Type::Dict(expected_key, _)) => Some(expected_key.as_ref().clone()),
+            _ => None,
+        };
+        let expected_val_ty = match expected {
+            Some(Type::Dict(_, expected_val)) => Some(expected_val.as_ref().clone()),
+            _ => None,
+        };
+        let mut inferred_key_ty: Option<Type> = None;
+        let mut inferred_val_ty: Option<Type> = None;
 
-        if let Some(Type::Dict(expected_key, expected_val)) = expected {
-            // Honor dict annotation hints so wide unions can flow as Unknown.
-            let key_ty = (*expected_key.clone()).clone();
-            let val_ty = (*expected_val.clone()).clone();
-            for (k, v) in items.iter_mut() {
-                let kt = self.check_expr(k, Some(&key_ty))?;
-                let vt = self.check_expr(v, Some(&val_ty))?;
-                self.ensure_assignable(&kt, &key_ty, span)?;
-                self.ensure_assignable(&vt, &val_ty, span)?;
+        for entry in items.iter_mut() {
+            match entry {
+                DictEntry::Item { key, value } => {
+                    let key_hint = expected_key_ty
+                        .as_ref()
+                        .filter(|ty| !matches!(ty, Type::Unknown))
+                        .or(inferred_key_ty.as_ref());
+                    let value_hint = expected_val_ty
+                        .as_ref()
+                        .filter(|ty| !matches!(ty, Type::Unknown))
+                        .or(inferred_val_ty.as_ref());
+                    let kt = self.check_expr(key, key_hint)?;
+                    let vt = self.check_expr(value, value_hint)?;
+                    if let Some(expected_key) = expected_key_ty.as_ref() {
+                        self.ensure_assignable(&kt, expected_key, span)?;
+                    }
+                    if let Some(expected_val) = expected_val_ty.as_ref() {
+                        self.ensure_assignable(&vt, expected_val, span)?;
+                    }
+                    inferred_key_ty = Some(match inferred_key_ty.take() {
+                        Some(prev)
+                            if !matches!(prev, Type::Unknown)
+                                && !matches!(kt, Type::Unknown)
+                                && self.ensure_assignable(&kt, &prev, span).is_err()
+                                && self.ensure_assignable(&prev, &kt, span).is_err() =>
+                        {
+                            Type::Unknown
+                        }
+                        Some(prev) => Self::merge_types(prev, kt),
+                        None => kt,
+                    });
+                    inferred_val_ty = Some(match inferred_val_ty.take() {
+                        Some(prev)
+                            if !matches!(prev, Type::Unknown)
+                                && !matches!(vt, Type::Unknown)
+                                && self.ensure_assignable(&vt, &prev, span).is_err()
+                                && self.ensure_assignable(&prev, &vt, span).is_err() =>
+                        {
+                            Type::Unknown
+                        }
+                        Some(prev) => Self::merge_types(prev, vt),
+                        None => vt,
+                    });
+                }
+                DictEntry::Unpack { value } => {
+                    let unpack_ty = self.check_expr(value, None)?;
+                    let (unpack_key, unpack_val) = match unpack_ty {
+                        Type::Dict(key, val) => (*key, *val),
+                        Type::Unknown => (Type::Unknown, Type::Unknown),
+                        _ => {
+                            return Err(
+                                self.error(span, "Dictionary unpacking requires a dict expression")
+                            )
+                        }
+                    };
+                    if let Some(expected_key) = expected_key_ty.as_ref() {
+                        self.ensure_assignable(&unpack_key, expected_key, span)?;
+                    }
+                    if let Some(expected_val) = expected_val_ty.as_ref() {
+                        self.ensure_assignable(&unpack_val, expected_val, span)?;
+                    }
+                    inferred_key_ty = Some(match inferred_key_ty.take() {
+                        Some(prev)
+                            if !matches!(prev, Type::Unknown)
+                                && !matches!(unpack_key, Type::Unknown)
+                                && self.ensure_assignable(&unpack_key, &prev, span).is_err()
+                                && self.ensure_assignable(&prev, &unpack_key, span).is_err() =>
+                        {
+                            Type::Unknown
+                        }
+                        Some(prev) => Self::merge_types(prev, unpack_key),
+                        None => unpack_key,
+                    });
+                    inferred_val_ty = Some(match inferred_val_ty.take() {
+                        Some(prev)
+                            if !matches!(prev, Type::Unknown)
+                                && !matches!(unpack_val, Type::Unknown)
+                                && self.ensure_assignable(&unpack_val, &prev, span).is_err()
+                                && self.ensure_assignable(&prev, &unpack_val, span).is_err() =>
+                        {
+                            Type::Unknown
+                        }
+                        Some(prev) => Self::merge_types(prev, unpack_val),
+                        None => unpack_val,
+                    });
+                }
             }
-            return Ok(Type::Dict(Box::new(key_ty), Box::new(val_ty)));
         }
 
-        let (k0, v0) = &mut items[0];
-        let key_ty = self.check_expr(k0, None)?;
-        let val_ty = self.check_expr(v0, None)?;
-        for (k, v) in &mut items[1..] {
-            let kt = self.check_expr(k, Some(&key_ty))?;
-            let vt = self.check_expr(v, Some(&val_ty))?;
-            self.ensure_assignable(&kt, &key_ty, span)?;
-            self.ensure_assignable(&vt, &val_ty, span)?;
-        }
+        let key_ty = match (expected_key_ty, inferred_key_ty) {
+            (Some(expected), Some(inferred)) => Self::merge_types(expected, inferred),
+            (Some(expected), None) => expected,
+            (None, Some(inferred)) => inferred,
+            (None, None) => Type::Unknown,
+        };
+        let val_ty = match (expected_val_ty, inferred_val_ty) {
+            (Some(expected), Some(inferred)) => Self::merge_types(expected, inferred),
+            (Some(expected), None) => expected,
+            (None, Some(inferred)) => inferred,
+            (None, None) => Type::Unknown,
+        };
+
         Ok(Type::Dict(Box::new(key_ty), Box::new(val_ty)))
     }
 
@@ -472,10 +565,18 @@ impl<'a> TypeChecker<'a> {
     pub(super) fn check_lambda_expr(
         &mut self,
         params: &mut [String],
+        param_kinds: &mut [ParamKind],
+        has_defaults: &mut [bool],
         body: &mut Expr,
         expected: Option<&Type>,
         span: Span,
     ) -> Result<Type, CompileError> {
+        if params.len() != param_kinds.len() || params.len() != has_defaults.len() {
+            return Err(self.error(
+                span,
+                "Internal error: lambda parameter metadata length mismatch",
+            ));
+        }
         self.scopes.push(HashMap::new());
         self.global_scopes.push(GlobalScope::default());
         self.nonlocal_scopes.push(NonlocalScope::default());
@@ -485,16 +586,54 @@ impl<'a> TypeChecker<'a> {
             Some(Type::Lambda { params, .. }) => Some(params),
             _ => None,
         };
-        if let Some(expected_params) = expected_params {
-            if !expected_params.is_empty() && expected_params.len() != params.len() {
+        if let Some(expected_params) = expected_params.filter(|params| !params.is_empty()) {
+            if expected_params.len() != params.len() {
                 return Err(self.error(span, "Lambda parameter count mismatch"));
             }
-            for (param, ty) in params.iter().zip(expected_params.iter()) {
-                self.insert_var(param, ty.clone(), span)?;
+            for ((param, ty), kind) in params
+                .iter()
+                .zip(expected_params.iter())
+                .zip(param_kinds.iter())
+            {
+                // Variadic annotation payloads describe element/value types, so
+                // they must be wrapped into concrete container types in scope.
+                let inferred = match kind {
+                    ParamKind::VarArgs => match ty {
+                        Type::List(_) => ty.clone(),
+                        _ => {
+                            let elem_ty = if matches!(ty, Type::Unknown) {
+                                Type::Unknown
+                            } else {
+                                ty.clone()
+                            };
+                            Type::List(Box::new(elem_ty))
+                        }
+                    },
+                    ParamKind::VarKeywords => match ty {
+                        Type::Dict(key, _) if matches!(key.as_ref(), Type::Str) => ty.clone(),
+                        _ => {
+                            let value_ty = if matches!(ty, Type::Unknown) {
+                                Type::Unknown
+                            } else {
+                                ty.clone()
+                            };
+                            Type::Dict(Box::new(Type::Str), Box::new(value_ty))
+                        }
+                    },
+                    _ => ty.clone(),
+                };
+                self.insert_var(param, inferred, span)?;
             }
         } else {
-            for param in params.iter() {
-                self.insert_var(param, Type::Unknown, span)?;
+            for (param, kind) in params.iter().zip(param_kinds.iter()) {
+                let inferred = match kind {
+                    ParamKind::VarArgs => Type::List(Box::new(Type::Unknown)),
+                    ParamKind::VarKeywords => {
+                        Type::Dict(Box::new(Type::Str), Box::new(Type::Unknown))
+                    }
+                    _ => Type::Unknown,
+                };
+                self.insert_var(param, inferred, span)?;
             }
         }
 
@@ -528,7 +667,10 @@ impl<'a> TypeChecker<'a> {
         self.function_scopes.pop();
 
         Ok(Type::Lambda {
+            param_names: params.to_vec(),
             params: param_tys,
+            param_kinds: param_kinds.to_vec(),
+            has_defaults: has_defaults.to_vec(),
             ret: Box::new(ret_ty),
         })
     }

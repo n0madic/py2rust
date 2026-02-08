@@ -45,9 +45,7 @@ impl<'a> TypeChecker<'a> {
                     self.insert_var(name, value_ty.clone(), span)?;
                 }
                 // Preserve top-level lambda inference when unpacking literal tuples/lists.
-                if !self.in_function()
-                    && value_expr.is_some_and(|expr| matches!(expr.kind, ExprKind::Lambda { .. }))
-                {
+                if value_expr.is_some_and(|expr| matches!(expr.kind, ExprKind::Lambda { .. })) {
                     if let Some(expr) = value_expr {
                         self.lambda_defs.insert(name.clone(), expr.clone());
                     }

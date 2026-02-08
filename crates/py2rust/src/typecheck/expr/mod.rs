@@ -99,7 +99,7 @@ impl<'tc, 'a, 'e> ExprVisitorMut<Result<Type, CompileError>> for CheckExprVisito
         self.tc.check_tuple_expr(items)
     }
 
-    fn visit_dict_mut(&mut self, items: &mut [(Expr, Expr)]) -> Result<Type, CompileError> {
+    fn visit_dict_mut(&mut self, items: &mut [DictEntry]) -> Result<Type, CompileError> {
         self.tc.check_dict_expr(items, self.expected, self.span)
     }
 
@@ -162,10 +162,18 @@ impl<'tc, 'a, 'e> ExprVisitorMut<Result<Type, CompileError>> for CheckExprVisito
     fn visit_lambda_mut(
         &mut self,
         params: &mut [String],
+        param_kinds: &mut [ParamKind],
+        has_defaults: &mut [bool],
         body: &mut Expr,
     ) -> Result<Type, CompileError> {
-        self.tc
-            .check_lambda_expr(params, body, self.expected, self.span)
+        self.tc.check_lambda_expr(
+            params,
+            param_kinds,
+            has_defaults,
+            body,
+            self.expected,
+            self.span,
+        )
     }
 
     fn visit_if_expr_mut(

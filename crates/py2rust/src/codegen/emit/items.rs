@@ -127,7 +127,7 @@ impl<'a> Codegen<'a> {
         for stmt in &init.body {
             match &stmt.kind {
                 StmtKind::Assign { target, value } => {
-                    if let AssignTarget::Attr { value: obj, attr } = target {
+                    if let AssignTarget::Attr { value: obj, attr } = target.as_ref() {
                         if matches!(&obj.kind, ExprKind::Name(n) if n == "self") {
                             self.record_field_init(&mut field_inits, class_info, attr, value)?;
                         } else if let ExprKind::Name(name) = &obj.kind {
@@ -236,7 +236,8 @@ impl<'a> Codegen<'a> {
                         for stmt in &base_init.body {
                             match &stmt.kind {
                                 StmtKind::Assign { target, value } => {
-                                    if let AssignTarget::Attr { value: obj, attr } = target {
+                                    if let AssignTarget::Attr { value: obj, attr } = target.as_ref()
+                                    {
                                         if matches!(&obj.kind, ExprKind::Name(n) if n == "self") {
                                             self.record_field_init(
                                                 &mut field_inits,

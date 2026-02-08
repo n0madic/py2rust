@@ -21,6 +21,7 @@ impl<'a> Codegen<'a> {
         if let ExprKind::Lambda {
             params: names,
             body,
+            ..
         } = &expr.kind
         {
             let expected_params = match expected {

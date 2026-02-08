@@ -242,8 +242,12 @@ impl ThrowAnalyzer {
             | ExprKind::Set(values) => values
                 .iter()
                 .any(|value| self.expr_contains_uncaught_raise(value)),
-            ExprKind::Dict(items) => items.iter().any(|(k, v)| {
-                self.expr_contains_uncaught_raise(k) || self.expr_contains_uncaught_raise(v)
+            ExprKind::Dict(items) => items.iter().any(|item| match item {
+                DictEntry::Item { key, value } => {
+                    self.expr_contains_uncaught_raise(key)
+                        || self.expr_contains_uncaught_raise(value)
+                }
+                DictEntry::Unpack { value } => self.expr_contains_uncaught_raise(value),
             }),
             ExprKind::Index { value, index } => {
                 self.expr_contains_uncaught_raise(value) || self.expr_contains_uncaught_raise(index)
@@ -487,8 +491,12 @@ impl ThrowAnalyzer {
             }
 
             // Dict literal - check keys and values
-            ExprKind::Dict(pairs) => pairs.iter().any(|(k, v)| {
-                self.expr_calls_throwing_function(k) || self.expr_calls_throwing_function(v)
+            ExprKind::Dict(items) => items.iter().any(|item| match item {
+                DictEntry::Item { key, value } => {
+                    self.expr_calls_throwing_function(key)
+                        || self.expr_calls_throwing_function(value)
+                }
+                DictEntry::Unpack { value } => self.expr_calls_throwing_function(value),
             }),
 
             // Indexing/slicing - check all parts

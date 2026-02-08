@@ -44,6 +44,9 @@ pub struct FunctionSig {
 #[derive(Debug, Clone)]
 pub struct ClassInfo {
     pub name: String,
+    /// Function-scope owner for local classes.
+    /// `None` means a top-level class visible module-wide.
+    pub owner_scope: Option<usize>,
     pub base: Option<String>,
     pub fields: IndexMap<String, Type>,
     pub class_attrs: IndexMap<String, ClassAttrInfo>,

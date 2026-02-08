@@ -339,6 +339,11 @@ impl<'a> TypeChecker<'a> {
                             "dict.setdefault() without default requires dict values that can be None",
                         ));
                     }
+                    if let ExprKind::Name(name) = &value.kind {
+                        let refined_key =
+                            Self::merge_types(key_ty.as_ref().clone(), arg_key.clone());
+                        self.set_var_type(name, Type::Dict(Box::new(refined_key), val_ty.clone()));
+                    }
                     return Ok(*val_ty.clone());
                 }
 
@@ -348,17 +353,20 @@ impl<'a> TypeChecker<'a> {
                     self.ensure_assignable(&default_ty, val_ty, span)?;
                 }
 
+                if let ExprKind::Name(name) = &value.kind {
+                    let refined_key = Self::merge_types(key_ty.as_ref().clone(), arg_key.clone());
+                    let refined_val =
+                        Self::merge_types(val_ty.as_ref().clone(), default_ty.clone());
+                    self.set_var_type(
+                        name,
+                        Type::Dict(Box::new(refined_key), Box::new(refined_val)),
+                    );
+                }
                 if matches!(val_ty.as_ref(), Type::Unknown) && !matches!(default_ty, Type::Unknown)
                 {
-                    if let ExprKind::Name(name) = &value.kind {
-                        self.set_var_type(
-                            name,
-                            Type::Dict(key_ty.clone(), Box::new(default_ty.clone())),
-                        );
-                    }
                     return Ok(default_ty);
                 }
-                return Ok(*val_ty.clone());
+                return Ok(Self::merge_types(val_ty.as_ref().clone(), default_ty));
             }
         }
         if let Type::Set(inner) = &obj_ty {

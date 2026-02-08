@@ -519,7 +519,7 @@ impl<'a> Codegen<'a> {
             }
 
             // filter(lambda, iter) - inline lambda directly
-            if let ExprKind::Lambda { params, body } = &args[0].kind {
+            if let ExprKind::Lambda { params, body, .. } = &args[0].kind {
                 if params.len() == 1 {
                     let param = &params[0];
                     let lambda_body = self.gen_expr(body)?;

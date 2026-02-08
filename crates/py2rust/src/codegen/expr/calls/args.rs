@@ -117,14 +117,14 @@ impl<'a> Codegen<'a> {
             }
             let mut items = Vec::new();
             for (name, value) in varkw_values {
-                items.push((
-                    Expr {
+                items.push(DictEntry::Item {
+                    key: Expr {
                         kind: ExprKind::Literal(Literal::Str(name)),
                         span: params[varkw_idx].span,
                         ty: Some(Type::Str),
                     },
-                    value,
-                ));
+                    value: Box::new(value),
+                });
             }
             out[varkw_idx] = Some(Expr {
                 kind: ExprKind::Dict(items),

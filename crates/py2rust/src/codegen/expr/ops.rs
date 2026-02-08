@@ -3,6 +3,85 @@
 use super::super::*;
 
 impl<'a> Codegen<'a> {
+    pub(crate) fn gen_list_concat_expr_with_storage(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+        storage: ListStorage,
+    ) -> Result<String, CompileError> {
+        let left_expr = self.gen_expr(left)?;
+        let right_expr = self.gen_expr(right)?;
+        let left_local = matches!(self.list_storage_for_expr(left), ListStorage::Local);
+        let right_local = matches!(self.list_storage_for_expr(right), ListStorage::Local);
+        let out_tmp = self.new_tmp();
+        let mut steps = Vec::new();
+
+        if left_local {
+            steps.push(format!(
+                "let mut {out_tmp} = {left_expr}.clone()",
+                out_tmp = out_tmp,
+                left_expr = left_expr
+            ));
+        } else {
+            let left_tmp = self.new_tmp();
+            let left_guard = self.new_tmp();
+            let left_init = if matches!(left.kind, ExprKind::Name(_)) {
+                format!("{}.clone()", left_expr)
+            } else {
+                left_expr
+            };
+            steps.push(format!(
+                "let {left_tmp} = {left_init}",
+                left_tmp = left_tmp,
+                left_init = left_init
+            ));
+            steps.push(format!(
+                "let {left_guard} = {left_tmp}.lock().expect(\"list mutex poisoned\")",
+                left_guard = left_guard,
+                left_tmp = left_tmp
+            ));
+            steps.push(format!(
+                "let mut {out_tmp} = {left_guard}.iter().cloned().collect::<Vec<_>>()",
+                out_tmp = out_tmp,
+                left_guard = left_guard
+            ));
+        }
+
+        if right_local {
+            steps.push(format!(
+                "{out_tmp}.extend({right_expr}.iter().cloned())",
+                out_tmp = out_tmp,
+                right_expr = right_expr
+            ));
+        } else {
+            let right_tmp = self.new_tmp();
+            let right_guard = self.new_tmp();
+            let right_init = if matches!(right.kind, ExprKind::Name(_)) {
+                format!("{}.clone()", right_expr)
+            } else {
+                right_expr
+            };
+            steps.push(format!(
+                "let {right_tmp} = {right_init}",
+                right_tmp = right_tmp,
+                right_init = right_init
+            ));
+            steps.push(format!(
+                "let {right_guard} = {right_tmp}.lock().expect(\"list mutex poisoned\")",
+                right_guard = right_guard,
+                right_tmp = right_tmp
+            ));
+            steps.push(format!(
+                "{out_tmp}.extend({right_guard}.iter().cloned())",
+                out_tmp = out_tmp,
+                right_guard = right_guard
+            ));
+        }
+
+        let base = format!("{{ {}; {} }}", steps.join("; "), out_tmp);
+        Ok(self.wrap_list_storage_expr(&base, storage))
+    }
+
     /// Lower a binary operation expression.
     pub(super) fn gen_binary_expr(
         &mut self,
@@ -72,6 +151,12 @@ impl<'a> Codegen<'a> {
                     left_spec, right_spec, left_expr, right_expr
                 ));
             }
+        }
+        if matches!(op, BinOp::Add)
+            && matches!(left.ty.as_ref(), Some(Type::List(_)))
+            && matches!(right.ty.as_ref(), Some(Type::List(_)))
+        {
+            return self.gen_list_concat_expr_with_storage(left, right, ListStorage::Shared);
         }
         if matches!(op, BinOp::Mul) {
             let left_is_str = matches!(left.ty.as_ref(), Some(Type::Str));

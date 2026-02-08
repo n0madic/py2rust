@@ -74,6 +74,11 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
+                StmtKind::Class { def } => {
+                    if !skip.contains(&def.name) {
+                        locals.insert(def.name.clone());
+                    }
+                }
                 _ => {}
             });
         }
@@ -88,7 +93,7 @@ impl<'a> Codegen<'a> {
             unresolved: &mut HashSet<String>,
         ) {
             match &expr.kind {
-                ExprKind::Lambda { params, body } => {
+                ExprKind::Lambda { params, body, .. } => {
                     if let ExprKind::Block { stmts } = &body.kind {
                         let info = this.collect_nonlocal_info_for_stmts(stmts, params);
                         for name in info.unresolved {
@@ -254,25 +259,40 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 ExprKind::Dict(items) => {
-                    for (k, v) in items {
-                        visit_expr_for_lambdas(
-                            this,
-                            k,
-                            locals,
-                            nonlocals,
-                            globals,
-                            cell_locals,
-                            unresolved,
-                        );
-                        visit_expr_for_lambdas(
-                            this,
-                            v,
-                            locals,
-                            nonlocals,
-                            globals,
-                            cell_locals,
-                            unresolved,
-                        );
+                    for entry in items {
+                        match entry {
+                            DictEntry::Item { key, value } => {
+                                visit_expr_for_lambdas(
+                                    this,
+                                    key,
+                                    locals,
+                                    nonlocals,
+                                    globals,
+                                    cell_locals,
+                                    unresolved,
+                                );
+                                visit_expr_for_lambdas(
+                                    this,
+                                    value,
+                                    locals,
+                                    nonlocals,
+                                    globals,
+                                    cell_locals,
+                                    unresolved,
+                                );
+                            }
+                            DictEntry::Unpack { value } => {
+                                visit_expr_for_lambdas(
+                                    this,
+                                    value,
+                                    locals,
+                                    nonlocals,
+                                    globals,
+                                    cell_locals,
+                                    unresolved,
+                                );
+                            }
+                        }
                     }
                 }
                 ExprKind::Index { value, index } => {
@@ -543,6 +563,30 @@ impl<'a> Codegen<'a> {
                             cell_locals,
                             unresolved,
                         );
+                    }
+                    StmtKind::Class { def } => {
+                        for attr in &def.class_attrs {
+                            visit_expr_for_lambdas(
+                                this,
+                                &attr.value,
+                                locals,
+                                nonlocals,
+                                globals,
+                                cell_locals,
+                                unresolved,
+                            );
+                        }
+                        for method in &def.methods {
+                            visit_stmts_for_lambdas(
+                                this,
+                                &method.body,
+                                locals,
+                                nonlocals,
+                                globals,
+                                cell_locals,
+                                unresolved,
+                            );
+                        }
                     }
                     StmtKind::Return { value } => {
                         if let Some(expr) = value {

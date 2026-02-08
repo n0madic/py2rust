@@ -33,7 +33,7 @@ impl<'cg, 'a, 'm> StmtVisitor<Result<(), CompileError>> for EmitStmtVisitor<'cg,
     fn visit_assign(&mut self, target: &AssignTarget, value: &Expr) -> Result<(), CompileError> {
         let tmp = Stmt {
             kind: StmtKind::Assign {
-                target: target.clone(),
+                target: Box::new(target.clone()),
                 value: value.clone(),
             },
             span: self.span,
@@ -44,8 +44,16 @@ impl<'cg, 'a, 'm> StmtVisitor<Result<(), CompileError>> for EmitStmtVisitor<'cg,
     fn visit_delete(&mut self, target: &AssignTarget) -> Result<(), CompileError> {
         let tmp = Stmt {
             kind: StmtKind::Delete {
-                target: target.clone(),
+                target: Box::new(target.clone()),
             },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
+    fn visit_class(&mut self, def: &ClassDef) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Class { def: def.clone() },
             span: self.span,
         };
         self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
@@ -263,6 +271,58 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
+        }
+    }
+
+    /// Normalize lambda annotation payloads for variadic parameters.
+    ///
+    /// Lowered nested-def annotations keep `*args: T` and `**kwargs: T` payloads as `T`.
+    /// Codegen needs container-shaped parameter types to emit callable signatures correctly.
+    fn normalize_lambda_expected_for_codegen(expected: Type, param_kinds: &[ParamKind]) -> Type {
+        let Type::Lambda {
+            param_names,
+            mut params,
+            param_kinds: mut expected_kinds,
+            has_defaults,
+            ret,
+        } = expected
+        else {
+            return expected;
+        };
+        if params.len() != param_kinds.len() {
+            return Type::Lambda {
+                param_names,
+                params,
+                param_kinds: expected_kinds,
+                has_defaults,
+                ret,
+            };
+        }
+        for (idx, kind) in param_kinds.iter().enumerate() {
+            let current = params[idx].clone();
+            params[idx] = match kind {
+                ParamKind::VarArgs => match current {
+                    Type::List(_) => current,
+                    other => Type::List(Box::new(other)),
+                },
+                ParamKind::VarKeywords => match current {
+                    Type::Dict(key, value) if matches!(key.as_ref(), Type::Str) => {
+                        Type::Dict(key, value)
+                    }
+                    other => Type::Dict(Box::new(Type::Str), Box::new(other)),
+                },
+                _ => current,
+            };
+        }
+        if expected_kinds.len() != param_kinds.len() {
+            expected_kinds = param_kinds.to_vec();
+        }
+        Type::Lambda {
+            param_names,
+            params,
+            param_kinds: expected_kinds,
+            has_defaults,
+            ret,
         }
     }
 
@@ -639,7 +699,13 @@ impl<'a> Codegen<'a> {
                         return Ok(());
                     }
                 }
-                if let ExprKind::Lambda { params, body } = &value.kind {
+                if let ExprKind::Lambda {
+                    params,
+                    param_kinds,
+                    body,
+                    ..
+                } = &value.kind
+                {
                     if let ExprKind::Block { stmts } = &body.kind {
                         fn expr_mentions_name(expr: &Expr, target: &str) -> bool {
                             match &expr.kind {
@@ -680,8 +746,14 @@ impl<'a> Codegen<'a> {
                                 | ExprKind::Set(values) => {
                                     values.iter().any(|expr| expr_mentions_name(expr, target))
                                 }
-                                ExprKind::Dict(items) => items.iter().any(|(k, v)| {
-                                    expr_mentions_name(k, target) || expr_mentions_name(v, target)
+                                ExprKind::Dict(items) => items.iter().any(|entry| match entry {
+                                    DictEntry::Item { key, value } => {
+                                        expr_mentions_name(key, target)
+                                            || expr_mentions_name(value, target)
+                                    }
+                                    DictEntry::Unpack { value } => {
+                                        expr_mentions_name(value, target)
+                                    }
                                 }),
                                 ExprKind::Index { value, index } => {
                                     expr_mentions_name(value, target)
@@ -811,6 +883,17 @@ impl<'a> Codegen<'a> {
                                             .as_ref()
                                             .is_some_and(|expr| expr_mentions_name(expr, target))
                                 }
+                                StmtKind::Class { def } => {
+                                    def.class_attrs
+                                        .iter()
+                                        .any(|attr| expr_mentions_name(&attr.value, target))
+                                        || def.methods.iter().any(|method| {
+                                            method
+                                                .body
+                                                .iter()
+                                                .any(|stmt| stmt_mentions_name(stmt, target))
+                                        })
+                                }
                                 StmtKind::Import { .. }
                                 | StmtKind::ImportFrom { .. }
                                 | StmtKind::Global { .. }
@@ -846,6 +929,10 @@ impl<'a> Codegen<'a> {
                                         || orelse.iter().any(contains_nonlocal_decl)
                                         || finalbody.iter().any(contains_nonlocal_decl)
                                 }
+                                StmtKind::Class { def } => def
+                                    .methods
+                                    .iter()
+                                    .any(|method| method.body.iter().any(contains_nonlocal_decl)),
                                 _ => false,
                             }
                         }
@@ -853,7 +940,7 @@ impl<'a> Codegen<'a> {
                         let has_nonlocal_decl = stmts.iter().any(contains_nonlocal_decl);
                         let has_unknown_sig = matches!(
                             value.ty.as_ref(),
-                            Some(Type::Lambda { params, ret })
+                            Some(Type::Lambda { params, ret, .. })
                                 if params.iter().any(|ty| matches!(ty, Type::Unknown))
                                     || matches!(ret.as_ref(), Type::Unknown)
                         );
@@ -862,7 +949,8 @@ impl<'a> Codegen<'a> {
                         // Nested def: inside a function, emit a closure to allow captures.
                         if self.current_function.is_some() && !is_recursive_nested {
                             let expected = if let Some(ann) = ann {
-                                Some(self.resolve_type_ref(ann, stmt.span)?)
+                                let ty = self.resolve_type_ref(ann, stmt.span)?;
+                                Some(Self::normalize_lambda_expected_for_codegen(ty, param_kinds))
                             } else {
                                 None
                             };
@@ -877,7 +965,7 @@ impl<'a> Codegen<'a> {
                             }
                             let mut_kw = mut_kw_for_name(name, mut_counts);
                             self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
-                            if let Some(ty) = expected.or_else(|| value.ty.clone()) {
+                            if let Some(ty) = value.ty.clone().or(expected) {
                                 self.set_local_var_type(name, ty);
                             }
                             return Ok(());
@@ -888,6 +976,7 @@ impl<'a> Codegen<'a> {
                         if let Some(Type::Lambda {
                             params: param_tys,
                             ret,
+                            ..
                         }) = value.ty.as_ref()
                         {
                             ret_ty = (**ret).clone();
@@ -1013,7 +1102,10 @@ impl<'a> Codegen<'a> {
                 }
             }
             StmtKind::Assign { target, value } => {
-                if matches!(target, AssignTarget::Tuple(_) | AssignTarget::List(_)) {
+                if matches!(
+                    target.as_ref(),
+                    AssignTarget::Tuple(_) | AssignTarget::List(_)
+                ) {
                     self.emit_unpack_assign(target, value, mut_counts)?;
                 } else {
                     self.emit_simple_assign(target, value, mut_counts, false)?;
@@ -1021,6 +1113,10 @@ impl<'a> Codegen<'a> {
             }
             StmtKind::Delete { target } => {
                 self.emit_delete_target(target, stmt.span)?;
+            }
+            StmtKind::Class { def } => {
+                self.class_defs.insert(def.name.clone(), def.clone());
+                self.emit_class(def)?;
             }
             StmtKind::Return { value } => {
                 // Check if we're in a throwing function or inside a try block with value return.
@@ -1082,10 +1178,13 @@ impl<'a> Codegen<'a> {
                             StmtKind::Let { name, ann, value } => {
                                 Some((name.clone(), ann.clone(), value.clone(), true))
                             }
-                            StmtKind::Assign {
-                                target: AssignTarget::Name(name),
-                                value,
-                            } => Some((name.clone(), None, value.clone(), false)),
+                            StmtKind::Assign { target, value } => {
+                                if let AssignTarget::Name(name) = target.as_ref() {
+                                    Some((name.clone(), None, value.clone(), false))
+                                } else {
+                                    None
+                                }
+                            }
                             _ => None,
                         }
                     };

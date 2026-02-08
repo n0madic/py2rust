@@ -112,7 +112,7 @@ impl<'a> Codegen<'a> {
     pub(super) fn gen_dict_expr(
         &mut self,
         expr: &Expr,
-        items: &[(Expr, Expr)],
+        items: &[DictEntry],
     ) -> Result<String, CompileError> {
         self.gen_dict_expr_with_storage(expr, items, DictStorage::Shared)
     }
@@ -121,7 +121,7 @@ impl<'a> Codegen<'a> {
     pub(crate) fn gen_dict_expr_with_storage(
         &mut self,
         expr: &Expr,
-        items: &[(Expr, Expr)],
+        items: &[DictEntry],
         storage: DictStorage,
     ) -> Result<String, CompileError> {
         self.uses.index_map = true;
@@ -138,21 +138,57 @@ impl<'a> Codegen<'a> {
         if unknown_key || unknown_val {
             self.uses.py_repr = true;
         }
-        let mut pairs = Vec::new();
-        for (k, v) in items {
-            let key_expr = if unknown_key {
-                self.gen_unknown_dict_part(k)?
-            } else {
-                self.gen_expr_with_expected(k, expected_key)?
-            };
-            let val_expr = if unknown_val {
-                self.gen_unknown_dict_part(v)?
-            } else {
-                self.gen_expr_with_expected(v, expected_val)?
-            };
-            pairs.push(format!("({}, {})", key_expr, val_expr));
+        let dict_tmp = self.new_tmp();
+        let mut ops = vec![format!("let mut {} = IndexMap::new()", dict_tmp)];
+        for entry in items {
+            match entry {
+                DictEntry::Item { key, value } => {
+                    let key_expr = if unknown_key {
+                        self.gen_unknown_dict_part(key)?
+                    } else {
+                        self.gen_expr_with_expected(key, expected_key)?
+                    };
+                    let val_expr = if unknown_val {
+                        self.gen_unknown_dict_part(value)?
+                    } else {
+                        self.gen_expr_with_expected(value, expected_val)?
+                    };
+                    ops.push(format!("{}.insert({}, {})", dict_tmp, key_expr, val_expr));
+                }
+                DictEntry::Unpack { value } => {
+                    let src_expr = self.gen_expr(value)?;
+                    let key_map_expr = if unknown_key {
+                        "PyRepr(format!(\"{:?}\", k))".to_string()
+                    } else {
+                        "k.clone()".to_string()
+                    };
+                    let val_map_expr = if unknown_val {
+                        "PyRepr(format!(\"{:?}\", v))".to_string()
+                    } else {
+                        "v.clone()".to_string()
+                    };
+                    if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                        ops.push(format!(
+                            "{}.extend({}.iter().map(|(k, v)| ({}, {})))",
+                            dict_tmp, src_expr, key_map_expr, val_map_expr
+                        ));
+                    } else {
+                        let src_tmp = self.new_tmp();
+                        let src_guard = self.new_tmp();
+                        ops.push(format!(
+                            "{{ let {src_tmp} = {src_expr}; let {src_guard} = {src_tmp}.lock().expect(\"dict mutex poisoned\"); {dict_tmp}.extend({src_guard}.iter().map(|(k, v)| ({key_map_expr}, {val_map_expr}))); }}",
+                            src_tmp = src_tmp,
+                            src_expr = src_expr,
+                            src_guard = src_guard,
+                            dict_tmp = dict_tmp,
+                            key_map_expr = key_map_expr,
+                            val_map_expr = val_map_expr
+                        ));
+                    }
+                }
+            }
         }
-        let base = format!("IndexMap::from([{}])", pairs.join(", "));
+        let base = format!("{{ {}; {} }}", ops.join("; "), dict_tmp);
         Ok(self.wrap_dict_storage_expr(&base, storage))
     }
 

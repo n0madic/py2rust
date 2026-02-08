@@ -7,8 +7,10 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Function signatures with positional-only params (`/`), defaults, keyword arguments, `*args`, keyword-only params, and `**kwargs`
 - Basic types: `int`, `float`, `bool`, `str`, `bytes`, `None`
 - Collections: `list[T]`, `dict[K, V]`, `tuple[...]`, `set[T]`
+- Dict literal unpacking: `{**d1, "k": v, **d2}` with CPython-style last-write-wins override semantics
 - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, chained comparisons (including set subset/superset ordering with `<`, `<=`, `>`, `>=`)
 - Arithmetic and bitwise ops: `+`, `-`, `*`, `/`, `//`, `%`, `**`, `&`, `|`, `^`, `~`, `<<`, `>>` (`int` for bitwise/shifts; `%` follows Python sign semantics)
+- List concatenation via `a + b` and in-place concatenation via `a += b`
 - Augmented assignment: `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 - Control flow: `if/elif/else`, `x if cond else y`, `while`, `for`, `return`, `break`, `continue`
 - Tuple/list unpacking assignments (including nested and one starred target like `a, *rest, b = ...`)
@@ -30,6 +32,8 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Generator functions (`yield`) with `next(...)`, `.send(...)`, `.close()`, and generator expressions
 - Call-site unpacking via `*args` and `**kwargs` (including mixed call forms)
 - Nested functions with closure capture and `nonlocal` writes
+- Nested local functions with variadic parameters (`*args`, `**kwargs`)
+- Local classes inside function bodies (direct function-body scope)
 - `global` declarations with CPython-compatible shadowing rules (local assignment shadows module names unless explicitly declared `global`)
 - Builtins: `abs`, `all`, `any`, `ascii`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `input`, `int`, `isinstance`, `iter`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `type`, `zip`
 - Stdlib modules (registry-backed):
@@ -122,12 +126,14 @@ The generated Rust injects tiny helper functions only when needed:
 - Builtins are mostly positional-only; keyword arguments are supported for `print(sep=..., end=...)`, `sorted(key=..., reverse=...)`, and iterable-form `min/max(key=...)`.
 - `map(...)` currently supports one or two iterable arguments (`map(func, it)` and `map(func, it1, it2)`).
 - `set.extend(iterable)` is supported as an update-style alias that adds all iterable items to the target set.
+- Empty container bindings (`[]`, `{}`, `set()`) can refine from first mutating use (`append`, `add`, `d[k]=v`, `setdefault`) for named variables.
 - `print(x)` in single-argument form uses a direct fast-path (no intermediate `vec![...].join(...)` and no forced `format!` wrapping).
 - Generator expressions are lowered through comprehension+`iter(...)` codegen.
 - `generator.send(...)` expects a non-`None` value once the generator has started.
 - `round(x)` with a float input currently keeps a float result (`round(3.0)` -> `3.0`), while integer inputs stay integer.
 - Call-site `**kwargs` unpacking requires a `dict[str, T]` expression.
-- Nested `def` lowering currently rejects advanced parameter forms (`/`, `*args`, keyword-only, `**kwargs`) inside nested local functions.
+- Nested `def` supports `*args/**kwargs`; default argument omission for nested callable values remains unsupported in dynamic-call paths.
+- Local classes are limited to direct function-body scope (no `if/for/while/try/match` nesting), and methods cannot capture outer function locals.
 - `global x` requires `x` to exist at module scope, and declaration order follows CPython rules (`global` must appear before first use in the function).
 - `__init__` is treated as a constructor; it must only assign `self` fields.
 - Class decorators and decorator calls are rejected (e.g. `@decorator()` or `@dataclass`).

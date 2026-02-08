@@ -374,11 +374,13 @@ impl<'a> Codegen<'a> {
     pub(crate) fn method_is_mutating(&self, func: &Function) -> bool {
         fn stmt_mutates(stmt: &Stmt) -> bool {
             match &stmt.kind {
-                StmtKind::Assign {
-                    target: AssignTarget::Attr { value, .. },
-                    ..
-                } => matches!(&value.kind, ExprKind::Name(n) if n == "self"),
-                StmtKind::Assign { .. } => false,
+                StmtKind::Assign { target, .. } => {
+                    matches!(
+                        target.as_ref(),
+                        AssignTarget::Attr { value, .. }
+                            if matches!(&value.kind, ExprKind::Name(n) if n == "self")
+                    )
+                }
                 StmtKind::If { body, orelse, .. } => {
                     body.iter().any(stmt_mutates) || orelse.iter().any(stmt_mutates)
                 }
@@ -593,7 +595,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             StmtKind::Assign { target, value } => {
-                if let AssignTarget::Name(name) = target {
+                if let AssignTarget::Name(name) = target.as_ref() {
                     if let ExprKind::Yield { value: yield_value } = &value.kind {
                         self.emit_generator_yield(
                             yield_value.as_deref(),

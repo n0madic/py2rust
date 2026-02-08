@@ -91,6 +91,9 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
+                StmtKind::Class { def } => {
+                    vars.insert(def.name.clone());
+                }
                 StmtKind::If { .. }
                 | StmtKind::While { .. }
                 | StmtKind::Return { .. }
@@ -158,6 +161,11 @@ impl<'a> Codegen<'a> {
                     globals.insert(name.clone());
                     // Global declarations override any prior local binding.
                     locals.remove(name);
+                }
+            }
+            StmtKind::Class { def } => {
+                if !globals.contains(&def.name) {
+                    locals.insert(def.name.clone());
                 }
             }
             StmtKind::Nonlocal { names } => {
@@ -241,7 +249,7 @@ impl<'a> Codegen<'a> {
                         used,
                     );
                 }
-                StmtKind::Delete { target } => match target {
+                StmtKind::Delete { target } => match target.as_ref() {
                     AssignTarget::Attr { value, .. } => {
                         self.collect_used_globals_in_expr(
                             value,
@@ -332,6 +340,38 @@ impl<'a> Codegen<'a> {
                     }
                     AssignTarget::Name(_) => {}
                 },
+                StmtKind::Class { def } => {
+                    for attr in &def.class_attrs {
+                        self.collect_used_globals_in_expr(
+                            &attr.value,
+                            locals,
+                            outers,
+                            globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                    for method in &def.methods {
+                        let mut method_locals: HashSet<String> =
+                            method.params.iter().map(|p| p.name.clone()).collect();
+                        let mut method_globals = HashSet::new();
+                        self.collect_scope_locals(
+                            &method.body,
+                            &mut method_locals,
+                            &mut method_globals,
+                        );
+                        let mut method_outers = outers.clone();
+                        method_outers.extend(locals.iter().cloned());
+                        self.collect_used_globals_in_stmts(
+                            &method.body,
+                            &method_locals,
+                            &method_outers,
+                            &method_globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                }
                 StmtKind::Return { value } => {
                     if let Some(expr) = value {
                         self.collect_used_globals_in_expr(
@@ -680,23 +720,37 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Dict(items) => {
-                for (k, v) in items {
-                    self.collect_used_globals_in_expr(
-                        k,
-                        locals,
-                        outers,
-                        globals,
-                        module_vars,
-                        used,
-                    );
-                    self.collect_used_globals_in_expr(
-                        v,
-                        locals,
-                        outers,
-                        globals,
-                        module_vars,
-                        used,
-                    );
+                for entry in items {
+                    match entry {
+                        DictEntry::Item { key, value } => {
+                            self.collect_used_globals_in_expr(
+                                key,
+                                locals,
+                                outers,
+                                globals,
+                                module_vars,
+                                used,
+                            );
+                            self.collect_used_globals_in_expr(
+                                value,
+                                locals,
+                                outers,
+                                globals,
+                                module_vars,
+                                used,
+                            );
+                        }
+                        DictEntry::Unpack { value } => {
+                            self.collect_used_globals_in_expr(
+                                value,
+                                locals,
+                                outers,
+                                globals,
+                                module_vars,
+                                used,
+                            );
+                        }
+                    }
                 }
             }
             ExprKind::Index { value, index } => {
@@ -835,7 +889,7 @@ impl<'a> Codegen<'a> {
                     used,
                 );
             }
-            ExprKind::Lambda { params, body } => {
+            ExprKind::Lambda { params, body, .. } => {
                 let mut lambda_locals: HashSet<String> = params.iter().cloned().collect();
                 let mut lambda_globals = HashSet::new();
                 if let ExprKind::Block { stmts } = &body.kind {

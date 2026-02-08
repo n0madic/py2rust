@@ -97,7 +97,7 @@ impl<'a> Codegen<'a> {
                 "impl Iterator<Item = {}>",
                 self.rust_type_with_lambda_depth(inner, lambda_depth)
             ),
-            Type::Lambda { params, ret } => {
+            Type::Lambda { params, ret, .. } => {
                 let args: Vec<String> = params
                     .iter()
                     .map(|t| {
@@ -184,7 +184,7 @@ impl<'a> Codegen<'a> {
                 self.uses.py_iter = true;
                 format!("PyIter<{}>", self.rust_type_for_global(inner))
             }
-            Type::Lambda { params, ret } => {
+            Type::Lambda { params, ret, .. } => {
                 let args: Vec<String> = params
                     .iter()
                     .map(|t| {
@@ -302,7 +302,10 @@ impl<'a> Codegen<'a> {
                 }
                 let ret_ty = self.resolve_type_ref(ret, span)?;
                 Ok(Type::Lambda {
+                    param_names: Vec::new(),
                     params: out,
+                    param_kinds: Vec::new(),
+                    has_defaults: Vec::new(),
                     ret: Box::new(ret_ty),
                 })
             }

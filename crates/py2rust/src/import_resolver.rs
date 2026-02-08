@@ -672,6 +672,9 @@ impl<'a> ModuleRewriter<'a> {
                     self.rewrite_expr(cause)?;
                 }
             }
+            StmtKind::Class { def } => {
+                self.rewrite_class(def)?;
+            }
         }
         Ok(())
     }
@@ -789,9 +792,16 @@ impl<'a> ModuleRewriter<'a> {
                 }
             }
             ExprKind::Dict(items) => {
-                for (key, value) in items {
-                    self.rewrite_expr(key)?;
-                    self.rewrite_expr(value)?;
+                for item in items {
+                    match item {
+                        DictEntry::Item { key, value } => {
+                            self.rewrite_expr(key)?;
+                            self.rewrite_expr(value)?;
+                        }
+                        DictEntry::Unpack { value } => {
+                            self.rewrite_expr(value)?;
+                        }
+                    }
                 }
             }
             ExprKind::Index { value, index } => {
@@ -858,7 +868,7 @@ impl<'a> ModuleRewriter<'a> {
                 }
                 self.rewrite_expr(inner.as_mut())?;
             }
-            ExprKind::Lambda { params, body } => {
+            ExprKind::Lambda { params, body, .. } => {
                 self.push_scope();
                 for param in params.iter() {
                     self.bind_local(param.as_str());

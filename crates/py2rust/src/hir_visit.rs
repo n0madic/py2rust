@@ -145,8 +145,8 @@ define_expr_visitors!(
         mut_pat: ExprKind::Tuple(items) => visit_tuple_mut(items: &mut [Expr]) => (items)
     },
     {
-        imm_pat: ExprKind::Dict(items) => visit_dict(items: &[(Expr, Expr)]) => (items),
-        mut_pat: ExprKind::Dict(items) => visit_dict_mut(items: &mut [(Expr, Expr)]) => (items)
+        imm_pat: ExprKind::Dict(items) => visit_dict(items: &[DictEntry]) => (items),
+        mut_pat: ExprKind::Dict(items) => visit_dict_mut(items: &mut [DictEntry]) => (items)
     },
     {
         imm_pat: ExprKind::Set(items) => visit_set(items: &[Expr]) => (items),
@@ -173,8 +173,8 @@ define_expr_visitors!(
         mut_pat: ExprKind::UnionCtor { union, variant, inner } => visit_union_ctor_mut(union: &mut String, variant: &mut String, inner: &mut Expr) => (union, variant, inner)
     },
     {
-        imm_pat: ExprKind::Lambda { params, body } => visit_lambda(params: &[String], body: &Expr) => (params, body),
-        mut_pat: ExprKind::Lambda { params, body } => visit_lambda_mut(params: &mut [String], body: &mut Expr) => (params, body)
+        imm_pat: ExprKind::Lambda { params, param_kinds, has_defaults, body } => visit_lambda(params: &[String], param_kinds: &[ParamKind], has_defaults: &[bool], body: &Expr) => (params, param_kinds, has_defaults, body),
+        mut_pat: ExprKind::Lambda { params, param_kinds, has_defaults, body } => visit_lambda_mut(params: &mut [String], param_kinds: &mut [ParamKind], has_defaults: &mut [bool], body: &mut Expr) => (params, param_kinds, has_defaults, body)
     },
     {
         imm_pat: ExprKind::IfExpr { test, body, orelse } => visit_if_expr(test: &Expr, body: &Expr, orelse: &Expr) => (test, body, orelse),
@@ -198,6 +198,10 @@ define_stmt_visitors!(
     {
         imm_pat: StmtKind::Delete { target } => visit_delete(target: &AssignTarget) => (target),
         mut_pat: StmtKind::Delete { target } => visit_delete_mut(target: &mut AssignTarget) => (target)
+    },
+    {
+        imm_pat: StmtKind::Class { def } => visit_class(def: &ClassDef) => (def),
+        mut_pat: StmtKind::Class { def } => visit_class_mut(def: &mut ClassDef) => (def)
     },
     {
         imm_pat: StmtKind::Return { value } => visit_return(value: Option<&Expr>) => (value.as_ref()),
@@ -328,10 +332,17 @@ pub trait ExprWalkerMut {
         walk_expr_slice_mut(self, items);
     }
 
-    fn visit_dict_mut(&mut self, items: &mut [(Expr, Expr)]) {
-        for (key, value) in items {
-            walk_expr_mut(self, key);
-            walk_expr_mut(self, value);
+    fn visit_dict_mut(&mut self, items: &mut [DictEntry]) {
+        for entry in items {
+            match entry {
+                DictEntry::Item { key, value } => {
+                    walk_expr_mut(self, key);
+                    walk_expr_mut(self, value);
+                }
+                DictEntry::Unpack { value } => {
+                    walk_expr_mut(self, value);
+                }
+            }
         }
     }
 
@@ -400,7 +411,13 @@ pub trait ExprWalkerMut {
         walk_expr_mut(self, inner);
     }
 
-    fn visit_lambda_mut(&mut self, _params: &mut [String], body: &mut Expr) {
+    fn visit_lambda_mut(
+        &mut self,
+        _params: &mut [String],
+        _param_kinds: &mut [ParamKind],
+        _has_defaults: &mut [bool],
+        body: &mut Expr,
+    ) {
         walk_expr_mut(self, body);
     }
 
@@ -430,6 +447,10 @@ pub trait StmtWalkerMut: ExprWalkerMut {
 
     fn visit_delete_mut(&mut self, target: &mut AssignTarget) {
         walk_assign_target_mut(self, target);
+    }
+
+    fn visit_class_mut(&mut self, def: &mut ClassDef) {
+        walk_class_def_mut(self, def);
     }
 
     fn visit_return_mut(&mut self, value: &mut Option<Expr>) {
@@ -564,7 +585,7 @@ impl<T: ExprWalkerMut + ?Sized> ExprVisitorMut<()> for T {
         ExprWalkerMut::visit_tuple_mut(self, items);
     }
 
-    fn visit_dict_mut(&mut self, items: &mut [(Expr, Expr)]) {
+    fn visit_dict_mut(&mut self, items: &mut [DictEntry]) {
         ExprWalkerMut::visit_dict_mut(self, items);
     }
 
@@ -612,8 +633,14 @@ impl<T: ExprWalkerMut + ?Sized> ExprVisitorMut<()> for T {
         ExprWalkerMut::visit_union_ctor_mut(self, union, variant, inner);
     }
 
-    fn visit_lambda_mut(&mut self, params: &mut [String], body: &mut Expr) {
-        ExprWalkerMut::visit_lambda_mut(self, params, body);
+    fn visit_lambda_mut(
+        &mut self,
+        params: &mut [String],
+        param_kinds: &mut [ParamKind],
+        has_defaults: &mut [bool],
+        body: &mut Expr,
+    ) {
+        ExprWalkerMut::visit_lambda_mut(self, params, param_kinds, has_defaults, body);
     }
 
     fn visit_if_expr_mut(&mut self, test: &mut Expr, body: &mut Expr, orelse: &mut Expr) {
@@ -636,6 +663,10 @@ impl<T: StmtWalkerMut + ?Sized> StmtVisitorMut<()> for T {
 
     fn visit_delete_mut(&mut self, target: &mut AssignTarget) {
         StmtWalkerMut::visit_delete_mut(self, target);
+    }
+
+    fn visit_class_mut(&mut self, def: &mut ClassDef) {
+        StmtWalkerMut::visit_class_mut(self, def);
     }
 
     fn visit_return_mut(&mut self, value: &mut Option<Expr>) {
@@ -725,6 +756,9 @@ fn walk_stmt_expr_only_mut<W: ExprWalkerMut + ?Sized>(walker: &mut W, stmt: &mut
         StmtKind::Delete { target } => {
             walk_assign_target_mut(walker, target);
         }
+        StmtKind::Class { def } => {
+            walk_class_def_expr_only_mut(walker, def);
+        }
         StmtKind::Return { value } => {
             if let Some(value) = value {
                 walk_expr_mut(walker, value);
@@ -813,6 +847,38 @@ fn walk_comp_clause_slice_mut<W: ExprWalkerMut + ?Sized>(
 ) {
     for clause in clauses {
         walk_comp_clause_mut(walker, clause);
+    }
+}
+
+fn walk_function_expr_only_mut<W: ExprWalkerMut + ?Sized>(walker: &mut W, func: &mut Function) {
+    for param in &mut func.params {
+        if let Some(default) = &mut param.default {
+            walk_expr_mut(walker, default);
+        }
+    }
+    walk_stmt_slice_expr_only_mut(walker, &mut func.body);
+}
+
+fn walk_class_def_expr_only_mut<W: ExprWalkerMut + ?Sized>(walker: &mut W, def: &mut ClassDef) {
+    for attr in &mut def.class_attrs {
+        walk_expr_mut(walker, &mut attr.value);
+    }
+    for method in &mut def.methods {
+        walk_function_expr_only_mut(walker, method);
+    }
+}
+
+fn walk_class_def_mut<W: StmtWalkerMut + ?Sized>(walker: &mut W, def: &mut ClassDef) {
+    for attr in &mut def.class_attrs {
+        walk_expr_mut(walker, &mut attr.value);
+    }
+    for method in &mut def.methods {
+        for param in &mut method.params {
+            if let Some(default) = &mut param.default {
+                walk_expr_mut(walker, default);
+            }
+        }
+        walk_stmt_slice_mut(walker, &mut method.body);
     }
 }
 

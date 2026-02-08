@@ -26,13 +26,21 @@ impl<'a> Codegen<'a> {
                     self.collect_list_elem_types_in_expr(value, inferred);
                 }
                 StmtKind::Assign { target, value } => {
-                    if let AssignTarget::Name(name) = target {
+                    if let AssignTarget::Name(name) = target.as_ref() {
                         self.note_list_assignment(name, value, inferred);
                     }
                     self.collect_list_elem_types_in_expr(value, inferred);
                 }
                 StmtKind::Delete { target } => {
                     self.collect_list_elem_types_in_target(target, inferred);
+                }
+                StmtKind::Class { def } => {
+                    for attr in &def.class_attrs {
+                        self.collect_list_elem_types_in_expr(&attr.value, inferred);
+                    }
+                    for method in &def.methods {
+                        self.collect_list_elem_types_in_stmts(&method.body, inferred);
+                    }
                 }
                 StmtKind::Return { value } => {
                     if let Some(expr) = value {
@@ -210,9 +218,16 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Dict(items) => {
-                for (k, v) in items {
-                    self.collect_list_elem_types_in_expr(k, inferred);
-                    self.collect_list_elem_types_in_expr(v, inferred);
+                for entry in items {
+                    match entry {
+                        DictEntry::Item { key, value } => {
+                            self.collect_list_elem_types_in_expr(key, inferred);
+                            self.collect_list_elem_types_in_expr(value, inferred);
+                        }
+                        DictEntry::Unpack { value } => {
+                            self.collect_list_elem_types_in_expr(value, inferred);
+                        }
+                    }
                 }
             }
             ExprKind::Index { value, index } => {

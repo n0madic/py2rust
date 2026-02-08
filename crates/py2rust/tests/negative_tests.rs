@@ -60,6 +60,42 @@ class Child(Base1, Base2):
 }
 
 #[test]
+fn rejects_local_class_inside_control_flow() {
+    let source = r#"
+def build(flag: bool) -> int:
+    if flag:
+        class Inner:
+            def value(self) -> int:
+                return 1
+    return 0
+"#;
+    let error = expect_error(source);
+    assert!(
+        error.contains("Local class definitions are only supported at function-body scope"),
+        "Error: {}",
+        error
+    );
+}
+
+#[test]
+fn rejects_local_class_capture_of_outer_local() {
+    let source = r#"
+def build() -> int:
+    outer_value: int = 7
+
+    class Inner:
+        def value(self) -> int:
+            return outer_value
+
+    obj = Inner()
+    return obj.value()
+"#;
+    let error = expect_error(source);
+    assert!(error.contains("NameError"), "Error: {}", error);
+    assert!(error.contains("outer_value"), "Error: {}", error);
+}
+
+#[test]
 fn rejects_class_decorators() {
     let source = r#"
 @dataclass

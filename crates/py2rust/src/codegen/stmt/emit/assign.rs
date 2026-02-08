@@ -224,6 +224,9 @@ impl<'a> Codegen<'a> {
                         Some(Type::Option(inner))
                             if matches!(inner.as_ref(), Type::List(_) | Type::Dict(_, _))
                     );
+                    if !allow_let && self.emit_inplace_list_add_assign(name, value)? {
+                        return Ok(());
+                    }
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                     if !expected_is_optional_collection {
                         if let Some(local_expr) = self.gen_list_assignment_expr(name, value)? {
@@ -1070,6 +1073,19 @@ impl<'a> Codegen<'a> {
                 items,
                 ListStorage::Local,
             )?)),
+            ExprKind::Binary {
+                op: BinOp::Add,
+                left,
+                right,
+            } if matches!(left.ty.as_ref(), Some(Type::List(_)))
+                && matches!(right.ty.as_ref(), Some(Type::List(_))) =>
+            {
+                Ok(Some(self.gen_list_concat_expr_with_storage(
+                    left,
+                    right,
+                    ListStorage::Local,
+                )?))
+            }
             ExprKind::ListComp {
                 elt,
                 target,
@@ -1086,6 +1102,72 @@ impl<'a> Codegen<'a> {
             )?)),
             _ => Ok(None),
         }
+    }
+
+    fn emit_inplace_list_add_assign(
+        &mut self,
+        name: &str,
+        value: &Expr,
+    ) -> Result<bool, CompileError> {
+        let ExprKind::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+        } = &value.kind
+        else {
+            return Ok(false);
+        };
+        let ExprKind::Name(left_name) = &left.kind else {
+            return Ok(false);
+        };
+        if left_name != name {
+            return Ok(false);
+        }
+        if !matches!(left.ty.as_ref(), Some(Type::List(_)))
+            || !matches!(right.ty.as_ref(), Some(Type::List(_)))
+        {
+            return Ok(false);
+        }
+
+        let rhs_expr = self.gen_expr(right)?;
+        let rhs_items = if matches!(self.list_storage_for_expr(right), ListStorage::Local) {
+            format!("{}.iter().cloned().collect::<Vec<_>>()", rhs_expr)
+        } else {
+            let rhs_tmp = self.new_tmp();
+            let rhs_guard = self.new_tmp();
+            let rhs_init = if matches!(right.kind, ExprKind::Name(_)) {
+                format!("{}.clone()", rhs_expr)
+            } else {
+                rhs_expr
+            };
+            format!(
+                "{{ let {rhs_tmp} = {rhs_init}; let {rhs_guard} = {rhs_tmp}.lock().expect(\"list mutex poisoned\"); {rhs_guard}.iter().cloned().collect::<Vec<_>>() }}",
+                rhs_tmp = rhs_tmp,
+                rhs_init = rhs_init,
+                rhs_guard = rhs_guard
+            )
+        };
+
+        if matches!(self.list_storage_for_name(name), ListStorage::Local) {
+            let rhs_tmp = self.new_tmp();
+            self.push_line(&format!("let {} = {};", rhs_tmp, rhs_items));
+            self.push_line(&format!("{}.extend({});", name, rhs_tmp));
+            return Ok(true);
+        }
+
+        let rhs_tmp = self.new_tmp();
+        let target_guard = self.new_tmp();
+        self.push_line("{");
+        self.indent += 1;
+        self.push_line(&format!("let {} = {};", rhs_tmp, rhs_items));
+        self.push_line(&format!(
+            "let mut {} = {}.lock().expect(\"list mutex poisoned\");",
+            target_guard, name
+        ));
+        self.push_line(&format!("{}.extend({});", target_guard, rhs_tmp));
+        self.indent -= 1;
+        self.push_line("}");
+        Ok(true)
     }
 
     /// Generate a dict expression for a local IndexMap-backed dict assignment.

@@ -157,6 +157,13 @@ impl<'a> TypeChecker<'a> {
 
                 if !left_ty.is_numeric() || !right_ty.is_numeric() {
                     if matches!(op, BinOp::Add) {
+                        if let (Type::List(left_inner), Type::List(right_inner)) =
+                            (&left_ty, &right_ty)
+                        {
+                            let merged =
+                                Self::merge_types(*left_inner.clone(), *right_inner.clone());
+                            return Ok(Type::List(Box::new(merged)));
+                        }
                         if let (Type::Tuple(left_items), Type::Tuple(right_items)) =
                             (&left_ty, &right_ty)
                         {
@@ -445,10 +452,20 @@ impl<'a> TypeChecker<'a> {
         }
         if let ExprKind::Call { func, .. } = &expr.kind {
             if let ExprKind::Name(name) = &func.kind {
-                if let Some(Type::Lambda { params, ret }) = self.lookup_var(name) {
+                if let Some(Type::Lambda {
+                    param_names,
+                    params,
+                    param_kinds,
+                    has_defaults,
+                    ret,
+                }) = self.lookup_var(name)
+                {
                     if matches!(ret.as_ref(), Type::Unknown) {
                         let updated = Type::Lambda {
+                            param_names,
                             params,
+                            param_kinds,
+                            has_defaults,
                             ret: Box::new(desired.clone()),
                         };
                         self.set_var_type(name, updated);

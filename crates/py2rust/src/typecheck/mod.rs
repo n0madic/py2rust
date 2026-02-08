@@ -89,6 +89,10 @@ pub struct TypeChecker<'a> {
     generator_yield_stack: Vec<Option<Type>>,
     /// Active lambda names currently being re-inferred from stored lambda bodies.
     active_lambda_inference: HashSet<String>,
+    /// Optional scope floor used to block outer-local capture in constrained contexts.
+    capture_scope_floor: Option<usize>,
+    /// Statement nesting depth for control-flow blocks.
+    control_flow_depth: usize,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -132,6 +136,7 @@ impl<'a> TypeChecker<'a> {
                     class_def.name.clone(),
                     ClassInfo {
                         name: class_def.name.clone(),
+                        owner_scope: None,
                         base: class_def.base.clone(),
                         fields: IndexMap::new(),
                         class_attrs: IndexMap::new(),
@@ -167,6 +172,8 @@ impl<'a> TypeChecker<'a> {
             function_scopes: Vec::new(),
             generator_yield_stack: Vec::new(),
             active_lambda_inference: HashSet::new(),
+            capture_scope_floor: None,
+            control_flow_depth: 0,
         };
 
         // Third pass: collect function and class signatures (methods, fields)

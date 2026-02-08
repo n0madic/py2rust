@@ -83,7 +83,10 @@ impl<'a> Lowerer<'a> {
                                 }
                             };
                             let value = self.lower_expr(&kw.value)?;
-                            items.push((key, value));
+                            items.push(DictEntry::Item {
+                                key,
+                                value: Box::new(value),
+                            });
                         }
                         ExprKind::Dict(items)
                     } else {
@@ -261,14 +264,18 @@ impl<'a> Lowerer<'a> {
             }
             // Dict literal: {"a": 1, "b": 2}
             // Python allows dict unpacking: {**other_dict}
-            // We reject this because it's runtime-dependent
             ast::Expr::Dict(dict) => {
                 let mut items = Vec::new();
                 for (k, v) in dict.keys.iter().zip(dict.values.iter()) {
-                    let key = k.as_ref().ok_or_else(|| {
-                        self.error(expr.range(), "Dict unpacking is not supported")
-                    })?;
-                    items.push((self.lower_expr(key)?, self.lower_expr(v)?));
+                    let value = self.lower_expr(v)?;
+                    if let Some(key) = k.as_ref() {
+                        items.push(DictEntry::Item {
+                            key: self.lower_expr(key)?,
+                            value: Box::new(value),
+                        });
+                    } else {
+                        items.push(DictEntry::Unpack { value });
+                    }
                 }
                 ExprKind::Dict(items)
             }
@@ -630,14 +637,20 @@ impl<'a> Lowerer<'a> {
                     return Err(self.error(expr.range(), "Lambda *args/**kwargs not supported"));
                 }
                 let mut params = Vec::new();
+                let mut param_kinds = Vec::new();
+                let mut has_defaults = Vec::new();
                 for arg in &lam.args.args {
                     if arg.default.is_some() {
                         return Err(self.error(expr.range(), "Lambda defaults not supported"));
                     }
                     params.push(self.ident(arg.def.arg.as_str()));
+                    param_kinds.push(ParamKind::PositionalOrKeyword);
+                    has_defaults.push(false);
                 }
                 ExprKind::Lambda {
                     params,
+                    param_kinds,
+                    has_defaults,
                     body: Box::new(self.lower_expr(&lam.body)?),
                 }
             }

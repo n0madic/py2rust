@@ -93,27 +93,92 @@ impl<'a> TypeChecker<'a> {
             // Lambda types: merge parameter and return types recursively
             (
                 Type::Lambda {
+                    param_names: left_names,
                     params: left_params,
+                    param_kinds: left_kinds,
+                    has_defaults: left_defaults,
                     ret: left_ret,
                 },
                 Type::Lambda {
+                    param_names: right_names,
                     params: right_params,
+                    param_kinds: right_kinds,
+                    has_defaults: right_defaults,
                     ret: right_ret,
                 },
             ) => {
                 if left_params.len() != right_params.len() {
                     return Type::Lambda {
+                        param_names: left_names,
                         params: left_params,
+                        param_kinds: left_kinds,
+                        has_defaults: left_defaults,
                         ret: left_ret,
                     };
                 }
+                let expected_arity = left_params.len();
                 let params = left_params
                     .into_iter()
                     .zip(right_params)
                     .map(|(l, r)| Self::merge_types(l, r))
                     .collect();
                 let ret = Box::new(Self::merge_types(*left_ret, *right_ret));
-                Type::Lambda { params, ret }
+                let left_names_complete = left_names.len() == expected_arity;
+                let right_names_complete = right_names.len() == expected_arity;
+                let left_kinds_complete = left_kinds.len() == expected_arity;
+                let right_kinds_complete = right_kinds.len() == expected_arity;
+                let left_defaults_complete = left_defaults.len() == expected_arity;
+                let right_defaults_complete = right_defaults.len() == expected_arity;
+                Type::Lambda {
+                    param_names: if left_names_complete {
+                        left_names
+                    } else if right_names_complete {
+                        right_names
+                    } else {
+                        Vec::new()
+                    },
+                    params,
+                    param_kinds: if left_kinds_complete {
+                        left_kinds
+                    } else if right_kinds_complete {
+                        right_kinds
+                    } else {
+                        Vec::new()
+                    },
+                    has_defaults: if left_defaults_complete {
+                        left_defaults
+                    } else if right_defaults_complete {
+                        right_defaults
+                    } else {
+                        Vec::new()
+                    },
+                    ret,
+                }
+            }
+            (Type::List(left_inner), Type::List(right_inner)) => {
+                Type::List(Box::new(Self::merge_types(*left_inner, *right_inner)))
+            }
+            (Type::Set(left_inner), Type::Set(right_inner)) => {
+                Type::Set(Box::new(Self::merge_types(*left_inner, *right_inner)))
+            }
+            (Type::Dict(left_key, left_val), Type::Dict(right_key, right_val)) => Type::Dict(
+                Box::new(Self::merge_types(*left_key, *right_key)),
+                Box::new(Self::merge_types(*left_val, *right_val)),
+            ),
+            (Type::Option(left_inner), Type::Option(right_inner)) => {
+                Type::Option(Box::new(Self::merge_types(*left_inner, *right_inner)))
+            }
+            (Type::Tuple(left_items), Type::Tuple(right_items)) => {
+                if left_items.len() == right_items.len() {
+                    let merged = left_items
+                        .into_iter()
+                        .zip(right_items)
+                        .map(|(l, r)| Self::merge_types(l, r))
+                        .collect();
+                    Type::Tuple(merged)
+                } else {
+                    Type::Tuple(left_items)
+                }
             }
             (left, right) => {
                 // Keep bool stable for bool-only flows (e.g. boolean vars/returns).
@@ -165,7 +230,7 @@ impl<'a> TypeChecker<'a> {
             Type::Custom(name) => TypeRef::Name(name.clone()),
             Type::Union(name) => TypeRef::Name(name.clone()),
             Type::Iterator(inner) => TypeRef::Iterator(Box::new(Self::type_to_ref(inner))),
-            Type::Lambda { params, ret } => TypeRef::Lambda {
+            Type::Lambda { params, ret, .. } => TypeRef::Lambda {
                 params: params.iter().map(Self::type_to_ref).collect(),
                 ret: Box::new(Self::type_to_ref(ret)),
             },
@@ -257,16 +322,37 @@ impl<'a> TypeChecker<'a> {
             // Callable types: check parameter and return type compatibility
             (
                 Type::Lambda {
+                    param_names: e_names,
                     params: e_params,
+                    param_kinds: e_kinds,
+                    has_defaults: e_defaults,
                     ret: e_ret,
                 },
                 Type::Lambda {
+                    param_names: a_names,
                     params: a_params,
+                    param_kinds: a_kinds,
+                    has_defaults: a_defaults,
                     ret: a_ret,
                 },
             ) => {
                 if e_params.len() != a_params.len() {
                     return Err(self.error(span, "Callable arity mismatch"));
+                }
+                let e_names_complete = e_names.len() == e_params.len();
+                let a_names_complete = a_names.len() == a_params.len();
+                let e_kinds_complete = e_kinds.len() == e_params.len();
+                let a_kinds_complete = a_kinds.len() == a_params.len();
+                let e_defaults_complete = e_defaults.len() == e_params.len();
+                let a_defaults_complete = a_defaults.len() == a_params.len();
+                if e_kinds_complete && a_kinds_complete && e_kinds != a_kinds {
+                    return Err(self.error(span, "Callable parameter kind mismatch"));
+                }
+                if e_defaults_complete && a_defaults_complete && e_defaults != a_defaults {
+                    return Err(self.error(span, "Callable default-parameter mismatch"));
+                }
+                if e_names_complete && a_names_complete && e_names != a_names {
+                    return Err(self.error(span, "Callable keyword parameter mismatch"));
                 }
                 for (e, a) in e_params.iter().zip(a_params.iter()) {
                     if matches!(e, Type::Unknown) || matches!(a, Type::Unknown) {

@@ -7,6 +7,7 @@ mod format;
 mod stdlib;
 
 use super::super::*;
+use crate::call_bind::{plan_non_unpacking_bind, BoundArg};
 use crate::stdlib::registry::{find_stdlib_method, resolve_module};
 
 impl<'a> Codegen<'a> {
@@ -93,13 +94,188 @@ impl<'a> Codegen<'a> {
                 return Ok(call);
             }
         }
-        if !keywords.is_empty() {
-            return Err(self.error(
-                expr.span,
-                "Keyword arguments are not supported for this call target",
-            ));
-        }
-        if let Some(Type::Lambda { params, .. }) = func.ty.as_ref() {
+        let callable_ty = if let Some(ty) = func.ty.clone() {
+            Some(ty)
+        } else if let ExprKind::Name(name) = &func.kind {
+            self.local_var_type(name)
+                .cloned()
+                .or_else(|| self.ctx.globals.get(name).cloned())
+        } else {
+            None
+        };
+        if let Some(Type::Lambda {
+            param_names,
+            params,
+            param_kinds,
+            has_defaults,
+            ..
+        }) = callable_ty.as_ref()
+        {
+            let arity = params.len();
+            let normalized_names = if param_names.len() == arity {
+                param_names.clone()
+            } else {
+                (0..arity)
+                    .map(|idx| format!("arg{idx}"))
+                    .collect::<Vec<_>>()
+            };
+            let normalized_kinds = if param_kinds.len() == arity {
+                param_kinds.clone()
+            } else {
+                vec![ParamKind::PositionalOrKeyword; arity]
+            };
+            let normalized_defaults = if has_defaults.len() == arity {
+                has_defaults.clone()
+            } else {
+                vec![false; arity]
+            };
+            let has_keyword_shape = param_names.len() == arity;
+            let has_unpacking = args
+                .iter()
+                .any(|arg| matches!(arg.kind, ExprKind::Starred { .. }))
+                || keywords.iter().any(|kw| kw.name.is_none());
+            if !has_unpacking {
+                if !has_keyword_shape && !keywords.is_empty() {
+                    return Err(self.error(
+                        expr.span,
+                        "Keyword arguments are not supported for this call target",
+                    ));
+                }
+                let keyword_names: Vec<Option<&str>> =
+                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
+                let plan = plan_non_unpacking_bind(
+                    &normalized_names,
+                    &normalized_kinds,
+                    &normalized_defaults,
+                    args.len(),
+                    &keyword_names,
+                    false,
+                )
+                .map_err(|err| self.error(expr.span, err.message()))?;
+
+                let mut rendered_args: Vec<Option<String>> = vec![None; params.len()];
+                for (idx, maybe_source) in plan.bound.iter().copied().enumerate() {
+                    let Some(source) = maybe_source else {
+                        continue;
+                    };
+                    let param_ty = &params[idx];
+                    let (arg_expr, arg_ty_ref): (&Expr, Option<&Type>) = match source {
+                        BoundArg::Positional(pos_idx) => {
+                            (&args[pos_idx], args[pos_idx].ty.as_ref())
+                        }
+                        BoundArg::Keyword(kw_idx) => {
+                            (&keywords[kw_idx].value, keywords[kw_idx].value.ty.as_ref())
+                        }
+                    };
+                    let mut rendered = self.gen_expr_with_expected(arg_expr, Some(param_ty))?;
+                    if matches!(
+                        param_ty,
+                        Type::List(_) | Type::Dict(_, _) | Type::Str | Type::Bytes
+                    ) {
+                        rendered = format!("{}.clone()", rendered);
+                    } else if self.needs_borrow(arg_ty_ref, param_ty) {
+                        rendered = format!("&{}", rendered);
+                    } else if matches!(param_ty, Type::Lambda { .. }) {
+                        rendered = format!("Box::new({})", rendered);
+                    }
+                    rendered_args[idx] = Some(rendered);
+                }
+
+                if let Some(vararg_idx) = plan.vararg_idx {
+                    let inner_ty = match params.get(vararg_idx) {
+                        Some(Type::List(inner)) => inner.as_ref().clone(),
+                        _ => Type::Unknown,
+                    };
+                    let mut elems = Vec::new();
+                    for pos_idx in plan.vararg_positional {
+                        if matches!(inner_ty, Type::Unknown) {
+                            self.uses.py_repr = true;
+                            let raw = self.gen_expr(&args[pos_idx])?;
+                            elems.push(format!("PyRepr(format!(\"{{:?}}\", {}))", raw));
+                        } else {
+                            elems.push(
+                                self.gen_expr_with_expected(&args[pos_idx], Some(&inner_ty))?,
+                            );
+                        }
+                    }
+                    let vec_expr = if elems.is_empty() {
+                        if matches!(inner_ty, Type::Unknown) {
+                            "Vec::<PyRepr>::new()".to_string()
+                        } else {
+                            format!("Vec::<{}>::new()", self.rust_type(&inner_ty))
+                        }
+                    } else {
+                        format!("vec![{}]", elems.join(", "))
+                    };
+                    if matches!(inner_ty, Type::Unknown) {
+                        self.uses.py_repr = true;
+                    }
+                    rendered_args[vararg_idx] = Some(format!("Arc::new(Mutex::new({}))", vec_expr));
+                } else if !plan.vararg_positional.is_empty() {
+                    return Err(self.error(expr.span, "Argument count mismatch"));
+                }
+
+                if let Some(varkw_idx) = plan.varkw_idx {
+                    let value_ty = match params.get(varkw_idx) {
+                        Some(Type::Dict(_, value_ty)) => value_ty.as_ref().clone(),
+                        _ => Type::Unknown,
+                    };
+                    self.uses.index_map = true;
+                    let mut entries = Vec::new();
+                    for kw_idx in plan.varkw_keywords {
+                        let kw_name = keywords[kw_idx].name.as_deref().ok_or_else(|| {
+                            self.error(
+                                expr.span,
+                                "Call-site **kwargs unpacking is not supported for this callable",
+                            )
+                        })?;
+                        let value_expr =
+                            self.gen_expr_with_expected(&keywords[kw_idx].value, Some(&value_ty))?;
+                        entries.push(format!(
+                            "\"{kw_name}\".to_string(), {value_expr}",
+                            kw_name = kw_name,
+                            value_expr = value_expr
+                        ));
+                    }
+                    let dict_expr = if entries.is_empty() {
+                        "IndexMap::new()".to_string()
+                    } else {
+                        format!("IndexMap::from([({})])", entries.join("), ("))
+                    };
+                    rendered_args[varkw_idx] = Some(format!("Arc::new(Mutex::new({}))", dict_expr));
+                } else if !plan.varkw_keywords.is_empty() {
+                    return Err(self.error(expr.span, "Unknown keyword argument"));
+                }
+
+                for (idx, slot) in rendered_args.iter_mut().enumerate() {
+                    if slot.is_some() {
+                        continue;
+                    }
+                    if normalized_defaults.get(idx).copied().unwrap_or(false) {
+                        return Err(self.error(
+                            expr.span,
+                            "Default arguments for nested callables are not supported yet",
+                        ));
+                    }
+                    return Err(self.error(expr.span, "Argument count mismatch"));
+                }
+
+                let final_args = rendered_args
+                    .into_iter()
+                    .map(|item| item.expect("filled above"))
+                    .collect::<Vec<_>>();
+                return Ok(format!(
+                    "{}({})",
+                    self.gen_expr(func)?,
+                    final_args.join(", ")
+                ));
+            }
+            if !keywords.is_empty() {
+                return Err(self.error(
+                    expr.span,
+                    "Keyword arguments are not supported for this call target",
+                ));
+            }
             if !params.is_empty() && params.len() != args.len() {
                 return Err(self.error(expr.span, "Argument count mismatch"));
             }
@@ -130,6 +306,12 @@ impl<'a> Codegen<'a> {
                 "{}({})",
                 self.gen_expr(func)?,
                 rendered_args.join(", ")
+            ));
+        }
+        if !keywords.is_empty() {
+            return Err(self.error(
+                expr.span,
+                "Keyword arguments are not supported for this call target",
             ));
         }
         Ok(format!(

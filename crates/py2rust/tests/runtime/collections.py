@@ -1,5 +1,5 @@
-# Del-property coverage uses a top-level class because nested classes are out of
-# scope for the supported Python subset.
+# Del-property coverage keeps this helper class at module scope so it can be
+# reused across multiple collection-focused tests.
 class DeleteProp:
     _value: int
 
@@ -68,6 +68,20 @@ def test_lists() -> None:
     assert extend_list[3] == 4
     assert extend_list[5] == 6
 
+    # list + list returns a new list.
+    left: list[int] = [1, 2]
+    right: list[int] = [3, 4]
+    combined: list[int] = left + right
+    assert combined == [1, 2, 3, 4]
+    assert left == [1, 2]
+    assert right == [3, 4]
+
+    # list += list mutates in place (alias observes updates).
+    alias = left
+    left += right
+    assert left == [1, 2, 3, 4]
+    assert alias == [1, 2, 3, 4]
+
     # Pop
     values: list[int] = [10, 20, 30, 40]
     last: int = values.pop()
@@ -87,6 +101,12 @@ def test_lists() -> None:
     empty.append(42)
     assert len(empty) == 1
     assert empty[0] == 42
+
+    # Empty list infers element type from first append.
+    inferred_from_mutation = []
+    inferred_from_mutation.append(10)
+    inferred_from_mutation.append(20)
+    assert inferred_from_mutation == [10, 20]
 
     # Slicing (positive, negative, step)
     slice_nums: list[int] = [0, 1, 2, 3, 4, 5]
@@ -685,6 +705,22 @@ def test_dicts() -> None:
     ordered["y"] = 200
     assert list(ordered) == ["x", "z", "y"]
 
+    # Dict unpacking keeps source-order evaluation and CPython-style overrides.
+    unpack_basic: dict[str, int] = {"a": 1, **{"b": 2}}
+    assert unpack_basic == {"a": 1, "b": 2}
+
+    unpack_override: dict[str, int] = {"a": 1, **{"a": 2}}
+    assert unpack_override == {"a": 2}
+
+    unpack_chain: dict[str, int] = {
+        "first": 1,
+        **{"second": 2, "first": 10},
+        "third": 3,
+        **{"second": 20},
+    }
+    assert unpack_chain == {"first": 10, "second": 20, "third": 3}
+    assert list(unpack_chain.keys()) == ["first", "second", "third"]
+
 
 # Set operations
 def test_sets() -> None:
@@ -713,6 +749,13 @@ def test_sets() -> None:
     except KeyError:
         got_key_error = True
     assert got_key_error
+
+    # Empty set infers element type from first add.
+    inferred_set = set()
+    inferred_set.add("x")
+    inferred_set.add("y")
+    assert "x" in inferred_set
+    assert len(inferred_set) == 2
 
 # For-loop tuple unpacking
 def test_for_tuple_unpacking() -> None:
@@ -830,6 +873,16 @@ def test_methods_and_delete() -> None:
     prop = DeleteProp(42)
     del prop.value
     assert prop.value == -1
+
+    # Empty dict infers key/value types from first assignment and setdefault.
+    inferred_dict = {}
+    inferred_dict["x"] = 1
+    inserted_default = inferred_dict.setdefault("y", 2)
+    existing_default = inferred_dict.setdefault("y", 99)
+    assert inserted_default == 2
+    assert existing_default == 2
+    assert inferred_dict["x"] == 1
+    assert inferred_dict["y"] == 2
 
 # Run all tests
 test_lists()

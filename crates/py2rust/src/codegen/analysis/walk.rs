@@ -78,7 +78,7 @@ pub(super) fn walk_storage_stmt_events<Ctx: Copy>(
         }
         StmtKind::Assign { target, value } => {
             visit(StorageStmtEvent::Assign { target, value });
-            let ctx = match target {
+            let ctx = match target.as_ref() {
                 AssignTarget::Attr { .. } | AssignTarget::Index { .. } => escape_ctx,
                 _ => value_ctx,
             };
@@ -91,6 +91,14 @@ pub(super) fn walk_storage_stmt_events<Ctx: Copy>(
                     ctx: value_ctx,
                 });
             });
+        }
+        StmtKind::Class { def } => {
+            for attr in &def.class_attrs {
+                visit(StorageStmtEvent::Expr {
+                    expr: &attr.value,
+                    ctx: value_ctx,
+                });
+            }
         }
         StmtKind::Return { value } => {
             if let Some(expr) = value {
@@ -246,9 +254,16 @@ pub(super) fn walk_storage_expr_tree<Ctx: Copy, C: StorageExprCallbacks<Ctx>>(
             }
         }
         ExprKind::Dict(items) => {
-            for (key, value) in items {
-                walk_storage_expr_tree(callbacks, key, callbacks.escape_ctx());
-                walk_storage_expr_tree(callbacks, value, callbacks.escape_ctx());
+            for entry in items {
+                match entry {
+                    DictEntry::Item { key, value } => {
+                        walk_storage_expr_tree(callbacks, key, callbacks.escape_ctx());
+                        walk_storage_expr_tree(callbacks, value, callbacks.escape_ctx());
+                    }
+                    DictEntry::Unpack { value } => {
+                        walk_storage_expr_tree(callbacks, value, callbacks.escape_ctx());
+                    }
+                }
             }
         }
         ExprKind::Index { value, index } => {
@@ -335,5 +350,10 @@ fn walk_stmt_tree_one(stmt: &Stmt, visit: &mut impl FnMut(&Stmt)) {
         | StmtKind::Nonlocal { .. }
         | StmtKind::Break
         | StmtKind::Continue => {}
+        StmtKind::Class { def } => {
+            for method in &def.methods {
+                walk_stmt_tree(&method.body, visit);
+            }
+        }
     }
 }

@@ -2,6 +2,7 @@
 
 use super::super::super::*;
 use crate::builtin::registry::find_builtin;
+use crate::call_bind::{plan_non_unpacking_bind, BoundArg};
 use crate::callspec::validate_call_shape;
 use crate::stdlib::registry::{find_stdlib_method, resolve_module};
 
@@ -679,7 +680,12 @@ impl<'a> TypeChecker<'a> {
                 .ok_or_else(|| self.error(span, "super() has no base class"))?;
             return Ok(Type::Custom(base));
         }
-        if let Some(class_info) = self.ctx.classes.get(name) {
+        if self.is_visible_class(name) {
+            let class_info = self
+                .ctx
+                .classes
+                .get(name)
+                .ok_or_else(|| self.error(span, format!("Unknown class: {name}")))?;
             if let Some(init_sig) = class_info.init.clone() {
                 self.check_call_args(&init_sig, args, keywords, span, true)?;
             } else {
@@ -725,23 +731,137 @@ impl<'a> TypeChecker<'a> {
                 })?;
                 return self.check_stdlib_call(spec, args, keywords, span);
             }
-            if let Type::Lambda { params, ret } = var_ty {
-                if params.len() != args.len() && !params.is_empty() {
-                    return Err(self.error(span, "Argument count mismatch"));
-                }
+            if let Type::Lambda {
+                param_names,
+                params,
+                param_kinds,
+                has_defaults,
+                ret,
+            } = var_ty
+            {
                 let mut refined_params = params.clone();
-                for (idx, (arg, param_ty)) in args.iter_mut().zip(params.iter()).enumerate() {
-                    if !matches!(param_ty, Type::Unknown) {
-                        let arg_ty = self.check_expr(arg, Some(param_ty))?;
-                        self.ensure_assignable(&arg_ty, param_ty, span)?;
-                    } else {
-                        let arg_ty = self.check_expr(arg, None)?;
-                        if idx < refined_params.len() {
-                            refined_params[idx] = arg_ty;
+                let mut refined_ret = *ret.clone();
+
+                let shape_complete = param_names.len() == params.len()
+                    && param_kinds.len() == params.len()
+                    && has_defaults.len() == params.len();
+                if shape_complete {
+                    let sig = FunctionSig {
+                        param_names: param_names.clone(),
+                        param_kinds: param_kinds.clone(),
+                        has_defaults: has_defaults.clone(),
+                        params: params.clone(),
+                        ret: refined_ret.clone(),
+                        span,
+                        is_generator: false,
+                        can_throw: false,
+                        thrown_exceptions: Vec::new(),
+                        defaults: has_defaults.iter().filter(|d| **d).count(),
+                    };
+                    self.check_call_args(&sig, args, keywords, span, false)?;
+
+                    let has_unpacking = args
+                        .iter()
+                        .any(|arg| matches!(arg.kind, ExprKind::Starred { .. }))
+                        || keywords.iter().any(|kw| kw.name.is_none());
+                    if !has_unpacking {
+                        let keyword_names: Vec<Option<&str>> =
+                            keywords.iter().map(|kw| kw.name.as_deref()).collect();
+                        let plan = plan_non_unpacking_bind(
+                            &param_names,
+                            &param_kinds,
+                            &has_defaults,
+                            args.len(),
+                            &keyword_names,
+                            false,
+                        )
+                        .map_err(|err| self.error(span, err.message()))?;
+
+                        for (idx, maybe_source) in plan.bound.iter().copied().enumerate() {
+                            let Some(source) = maybe_source else {
+                                continue;
+                            };
+                            if !matches!(refined_params[idx], Type::Unknown) {
+                                continue;
+                            }
+                            let source_ty = match source {
+                                BoundArg::Positional(pos_idx) => {
+                                    args[pos_idx].ty.clone().unwrap_or(Type::Unknown)
+                                }
+                                BoundArg::Keyword(kw_idx) => {
+                                    keywords[kw_idx].value.ty.clone().unwrap_or(Type::Unknown)
+                                }
+                            };
+                            if !matches!(source_ty, Type::Unknown) {
+                                refined_params[idx] = source_ty;
+                            }
+                        }
+
+                        if let Some(vararg_idx) = plan.vararg_idx {
+                            let mut merged_inner = Type::Unknown;
+                            for pos_idx in plan.vararg_positional {
+                                let arg_ty = args[pos_idx].ty.clone().unwrap_or(Type::Unknown);
+                                merged_inner = Self::merge_types(merged_inner, arg_ty);
+                            }
+                            match refined_params[vararg_idx].clone() {
+                                Type::List(existing_inner) => {
+                                    let merged =
+                                        Self::merge_types(*existing_inner.clone(), merged_inner);
+                                    refined_params[vararg_idx] = Type::List(Box::new(merged));
+                                }
+                                Type::Unknown => {
+                                    refined_params[vararg_idx] = Type::List(Box::new(merged_inner));
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if let Some(varkw_idx) = plan.varkw_idx {
+                            let mut merged_val = Type::Unknown;
+                            for kw_idx in plan.varkw_keywords {
+                                let value_ty =
+                                    keywords[kw_idx].value.ty.clone().unwrap_or(Type::Unknown);
+                                merged_val = Self::merge_types(merged_val, value_ty);
+                            }
+                            match refined_params[varkw_idx].clone() {
+                                Type::Dict(existing_key, existing_val) => {
+                                    let key_ty = if matches!(existing_key.as_ref(), Type::Unknown) {
+                                        Type::Str
+                                    } else {
+                                        existing_key.as_ref().clone()
+                                    };
+                                    let val_ty = Self::merge_types(
+                                        existing_val.as_ref().clone(),
+                                        merged_val,
+                                    );
+                                    refined_params[varkw_idx] =
+                                        Type::Dict(Box::new(key_ty), Box::new(val_ty));
+                                }
+                                Type::Unknown => {
+                                    refined_params[varkw_idx] =
+                                        Type::Dict(Box::new(Type::Str), Box::new(merged_val));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                } else {
+                    if params.len() != args.len() && !params.is_empty() {
+                        return Err(self.error(span, "Argument count mismatch"));
+                    }
+                    for (idx, (arg, param_ty)) in args.iter_mut().zip(params.iter()).enumerate() {
+                        if !matches!(param_ty, Type::Unknown) {
+                            let arg_ty = self.check_expr(arg, Some(param_ty))?;
+                            self.ensure_assignable(&arg_ty, param_ty, span)?;
+                        } else {
+                            let arg_ty = self.check_expr(arg, None)?;
+                            if idx < refined_params.len() {
+                                refined_params[idx] = arg_ty;
+                            }
                         }
                     }
                 }
-                let mut refined_ret = *ret.clone();
+
                 if matches!(refined_ret, Type::Unknown) {
                     if let Some(expected_ty) = expected {
                         if !matches!(expected_ty, Type::Unknown) {
@@ -750,17 +870,20 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                if matches!(refined_ret, Type::Unknown) {
+                if refined_ret.contains_unknown() {
                     if let Some(lambda_expr) = self.lambda_defs.get(name).cloned() {
                         let expected = Type::Lambda {
+                            param_names: param_names.clone(),
                             params: refined_params.clone(),
+                            param_kinds: param_kinds.clone(),
+                            has_defaults: has_defaults.clone(),
                             ret: Box::new(Type::Unknown),
                         };
                         let mut expr_clone = lambda_expr;
                         let inferred = self.with_lambda_inference_guard(name, span, |tc| {
                             tc.check_expr(&mut expr_clone, Some(&expected))
                         })?;
-                        if let Type::Lambda { params, ret } = inferred {
+                        if let Type::Lambda { params, ret, .. } = inferred {
                             refined_params = params;
                             refined_ret = *ret;
                         }
@@ -769,7 +892,10 @@ impl<'a> TypeChecker<'a> {
                 self.set_var_type(
                     name,
                     Type::Lambda {
+                        param_names: param_names.clone(),
                         params: refined_params,
+                        param_kinds: param_kinds.clone(),
+                        has_defaults: has_defaults.clone(),
                         ret: Box::new(refined_ret.clone()),
                     },
                 );
@@ -786,7 +912,12 @@ impl<'a> TypeChecker<'a> {
                     .cloned()
                     .unwrap_or(Type::Unknown);
                 let lambda = Type::Lambda {
+                    param_names: (0..param_tys.len())
+                        .map(|idx| format!("arg{idx}"))
+                        .collect(),
                     params: param_tys,
+                    param_kinds: vec![ParamKind::PositionalOrKeyword; args.len()],
+                    has_defaults: vec![false; args.len()],
                     ret: Box::new(inferred_ret),
                 };
                 self.set_var_type(name, lambda);

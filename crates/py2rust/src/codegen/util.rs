@@ -408,9 +408,16 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                 }
             }
             ExprKind::Dict(items) => {
-                for (k, v) in items {
-                    visit_expr(k, counts);
-                    visit_expr(v, counts);
+                for entry in items {
+                    match entry {
+                        DictEntry::Item { key, value } => {
+                            visit_expr(key, counts);
+                            visit_expr(value, counts);
+                        }
+                        DictEntry::Unpack { value } => {
+                            visit_expr(value, counts);
+                        }
+                    }
                 }
             }
             ExprKind::Index { value, index } => {

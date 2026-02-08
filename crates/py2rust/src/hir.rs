@@ -71,7 +71,7 @@ pub struct Param {
 /// - VarArgs: captures extra positional args (`def f(*args): ...`)
 /// - KeywordOnly: parameter after `*` or `*args` (`def f(*, x): ...`)
 /// - VarKeywords: captures extra keyword args (`def f(**kwargs): ...`)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamKind {
     PositionalOnly,
     PositionalOrKeyword,
@@ -180,13 +180,20 @@ pub enum StmtKind {
     /// Assignment to an existing variable, field, or index.
     /// In Rust: bare assignment without `let`
     Assign {
-        target: AssignTarget,
+        target: Box<AssignTarget>,
         value: Expr,
     },
     /// Delete from a mutable container/attribute.
     /// Supported forms are validated later (e.g., `del list[idx]`, `del dict[key]`, `del obj.attr`).
     Delete {
-        target: AssignTarget,
+        target: Box<AssignTarget>,
+    },
+    /// Local class definition inside a function body.
+    ///
+    /// This keeps the original class body semantics available to later passes while
+    /// allowing scope-aware restrictions (for example, no closure capture from methods).
+    Class {
+        def: ClassDef,
     },
     Return {
         value: Option<Expr>,
@@ -393,6 +400,16 @@ pub struct CompClause {
     pub ifs: Vec<Expr>,
 }
 
+/// One entry in a dict literal expression.
+///
+/// `Item` is a normal `key: value` pair, while `Unpack` preserves source-order
+/// `**mapping` entries so codegen can apply CPython override semantics.
+#[derive(Debug, Clone)]
+pub enum DictEntry {
+    Item { key: Expr, value: Box<Expr> },
+    Unpack { value: Expr },
+}
+
 /// Expression kinds supported by the transpiler.
 ///
 /// Design notes:
@@ -459,7 +476,7 @@ pub enum ExprKind {
     },
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
-    Dict(Vec<(Expr, Expr)>),
+    Dict(Vec<DictEntry>),
     Set(Vec<Expr>),
     Index {
         value: Box<Expr>,
@@ -510,6 +527,8 @@ pub enum ExprKind {
     /// Rust:   `|x, y| x + y` or `move |x, y| x + y`
     Lambda {
         params: Vec<String>,
+        param_kinds: Vec<ParamKind>,
+        has_defaults: Vec<bool>,
         body: Box<Expr>,
     },
     /// Conditional expression (ternary).

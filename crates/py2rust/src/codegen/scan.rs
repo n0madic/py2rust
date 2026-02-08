@@ -54,7 +54,7 @@ impl<'a> Codegen<'a> {
                     self.scan_type_uses(item);
                 }
             }
-            Type::Lambda { params, ret } => {
+            Type::Lambda { params, ret, .. } => {
                 for p in params {
                     self.scan_type_uses(p);
                 }
@@ -121,6 +121,16 @@ impl<'a> Codegen<'a> {
                 StmtKind::Let { value, .. } => visit_expr(value, ok),
                 StmtKind::Assign { value, .. } => visit_expr(value, ok),
                 StmtKind::Delete { target } => visit_assign_target(target, ok),
+                StmtKind::Class { def } => {
+                    for attr in &def.class_attrs {
+                        visit_expr(&attr.value, ok);
+                    }
+                    for method in &def.methods {
+                        for stmt in &method.body {
+                            visit_stmt(stmt, ok);
+                        }
+                    }
+                }
                 StmtKind::Return { value } => {
                     if let Some(expr) = value {
                         visit_expr(expr, ok);
@@ -286,9 +296,14 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 ExprKind::Dict(items) => {
-                    for (k, v) in items {
-                        visit_expr(k, ok);
-                        visit_expr(v, ok);
+                    for entry in items {
+                        match entry {
+                            DictEntry::Item { key, value } => {
+                                visit_expr(key, ok);
+                                visit_expr(value, ok);
+                            }
+                            DictEntry::Unpack { value } => visit_expr(value, ok),
+                        }
                     }
                 }
                 ExprKind::Index { value, index } => {
@@ -370,6 +385,16 @@ impl<'a> Codegen<'a> {
             StmtKind::Let { value, .. } => self.scan_expr(value)?,
             StmtKind::Assign { value, .. } => self.scan_expr(value)?,
             StmtKind::Delete { target } => self.scan_assign_target_exprs(target)?,
+            StmtKind::Class { def } => {
+                for attr in &def.class_attrs {
+                    self.scan_expr(&attr.value)?;
+                }
+                for method in &def.methods {
+                    for stmt in &method.body {
+                        self.scan_stmt(stmt)?;
+                    }
+                }
+            }
             StmtKind::Return { value } => {
                 if let Some(expr) = value {
                     self.scan_expr(expr)?;

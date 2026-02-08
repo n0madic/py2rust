@@ -486,9 +486,14 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 ExprKind::Dict(items) => {
-                    for (key, value) in items {
-                        collect_expr(key, out);
-                        collect_expr(value, out);
+                    for entry in items {
+                        match entry {
+                            DictEntry::Item { key, value } => {
+                                collect_expr(key, out);
+                                collect_expr(value, out);
+                            }
+                            DictEntry::Unpack { value } => collect_expr(value, out),
+                        }
                     }
                 }
                 ExprKind::Index { value, index } => {
@@ -576,6 +581,14 @@ impl<'a> Codegen<'a> {
                     }
                     StmtKind::Delete { target } => {
                         collect_assign_target(target, out);
+                    }
+                    StmtKind::Class { def } => {
+                        for attr in &def.class_attrs {
+                            collect_expr(&attr.value, out);
+                        }
+                        for method in &def.methods {
+                            collect_stmts(&method.body, out);
+                        }
                     }
                     StmtKind::Return { value } => {
                         if let Some(value) = value {

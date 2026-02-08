@@ -67,17 +67,20 @@ impl<'a> Lowerer<'a> {
                 if !def.type_params.is_empty() {
                     return Err(self.error(def.range(), "Type parameters are not supported"));
                 }
-                if !def.args.posonlyargs.is_empty() || !def.args.kwonlyargs.is_empty() {
-                    return Err(self.error(
-                        def.range(),
-                        "positional-only and keyword-only args are not supported",
-                    ));
-                }
-                if def.args.vararg.is_some() || def.args.kwarg.is_some() {
-                    return Err(self.error(def.range(), "*args/**kwargs are not supported"));
-                }
                 let mut params = Vec::new();
+                let mut param_kinds = Vec::new();
+                let mut has_defaults = Vec::new();
                 let mut param_types = Vec::new();
+                for arg in &def.args.posonlyargs {
+                    params.push(self.ident(arg.def.arg.as_str()));
+                    let ann = match &arg.def.annotation {
+                        Some(expr) => self.lower_type_ref(expr)?,
+                        None => TypeRef::Unknown,
+                    };
+                    param_types.push(ann);
+                    param_kinds.push(ParamKind::PositionalOnly);
+                    has_defaults.push(arg.default.is_some());
+                }
                 for arg in &def.args.args {
                     params.push(self.ident(arg.def.arg.as_str()));
                     let ann = match &arg.def.annotation {
@@ -85,6 +88,38 @@ impl<'a> Lowerer<'a> {
                         None => TypeRef::Unknown,
                     };
                     param_types.push(ann);
+                    param_kinds.push(ParamKind::PositionalOrKeyword);
+                    has_defaults.push(arg.default.is_some());
+                }
+                if let Some(vararg) = &def.args.vararg {
+                    params.push(self.ident(vararg.arg.as_str()));
+                    let ann = match &vararg.annotation {
+                        Some(expr) => self.lower_type_ref(expr)?,
+                        None => TypeRef::Unknown,
+                    };
+                    param_types.push(ann);
+                    param_kinds.push(ParamKind::VarArgs);
+                    has_defaults.push(false);
+                }
+                for arg in &def.args.kwonlyargs {
+                    params.push(self.ident(arg.def.arg.as_str()));
+                    let ann = match &arg.def.annotation {
+                        Some(expr) => self.lower_type_ref(expr)?,
+                        None => TypeRef::Unknown,
+                    };
+                    param_types.push(ann);
+                    param_kinds.push(ParamKind::KeywordOnly);
+                    has_defaults.push(arg.default.is_some());
+                }
+                if let Some(kwarg) = &def.args.kwarg {
+                    params.push(self.ident(kwarg.arg.as_str()));
+                    let ann = match &kwarg.annotation {
+                        Some(expr) => self.lower_type_ref(expr)?,
+                        None => TypeRef::Unknown,
+                    };
+                    param_types.push(ann);
+                    param_kinds.push(ParamKind::VarKeywords);
+                    has_defaults.push(false);
                 }
                 let ret = if let Some(ret_expr) = &def.returns {
                     self.lower_type_ref(ret_expr)?
@@ -103,6 +138,8 @@ impl<'a> Lowerer<'a> {
                 let value = Expr {
                     kind: ExprKind::Lambda {
                         params,
+                        param_kinds,
+                        has_defaults,
                         body: Box::new(block),
                     },
                     span: Span::from(def.range()),
@@ -117,6 +154,9 @@ impl<'a> Lowerer<'a> {
                     value,
                 }
             }
+            ast::Stmt::ClassDef(def) => StmtKind::Class {
+                def: self.lower_class(def)?,
+            },
             ast::Stmt::AnnAssign(def) => {
                 let ann = self.lower_type_ref(&def.annotation)?;
                 let value = def.value.as_ref().ok_or_else(|| {
@@ -132,10 +172,10 @@ impl<'a> Lowerer<'a> {
                     ast::Expr::Attribute(attr) => {
                         let value_expr = self.lower_expr(&attr.value)?;
                         StmtKind::Assign {
-                            target: AssignTarget::Attr {
+                            target: Box::new(AssignTarget::Attr {
                                 value: value_expr,
                                 attr: attr.attr.to_string(),
-                            },
+                            }),
                             value,
                         }
                     }
@@ -155,14 +195,19 @@ impl<'a> Lowerer<'a> {
                 }
                 let target = self.lower_assign_target(&def.targets[0])?;
                 let value = self.lower_expr(&def.value)?;
-                StmtKind::Assign { target, value }
+                StmtKind::Assign {
+                    target: Box::new(target),
+                    value,
+                }
             }
             ast::Stmt::Delete(def) => {
                 if def.targets.len() != 1 {
                     return Err(self.error(def.range(), "Only single-target del is supported"));
                 }
                 let target = self.lower_assign_target(&def.targets[0])?;
-                StmtKind::Delete { target }
+                StmtKind::Delete {
+                    target: Box::new(target),
+                }
             }
             ast::Stmt::Return(def) => {
                 let value = match &def.value {
@@ -257,7 +302,7 @@ impl<'a> Lowerer<'a> {
                             };
                             body_stmts.push(Stmt {
                                 kind: StmtKind::Assign {
-                                    target: unpack_target,
+                                    target: Box::new(unpack_target),
                                     value: unpack_value,
                                 },
                                 span: target_span,
@@ -283,7 +328,7 @@ impl<'a> Lowerer<'a> {
                         };
                         body_stmts.push(Stmt {
                             kind: StmtKind::Assign {
-                                target: unpack_target,
+                                target: Box::new(unpack_target),
                                 value: unpack_value,
                             },
                             span: target_span,
@@ -344,7 +389,10 @@ impl<'a> Lowerer<'a> {
                     span,
                     ty: None,
                 };
-                StmtKind::Assign { target, value }
+                StmtKind::Assign {
+                    target: Box::new(target),
+                    value,
+                }
             }
             // Match statement (pattern matching):
             // 1. Class-constructor-only matches stay as HIR Match (union dispatch path).

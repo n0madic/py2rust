@@ -8,13 +8,16 @@ impl<'a> Codegen<'a> {
         &mut self,
         expr: &Expr,
         params: &[String],
+        _param_kinds: &[ParamKind],
+        _has_defaults: &[bool],
         body: &Expr,
     ) -> Result<String, CompileError> {
-        let (param_types, ret_type) = if let Some(Type::Lambda { params, ret }) = expr.ty.as_ref() {
-            (Some(params.as_slice()), Some(ret.as_ref()))
-        } else {
-            (None, None)
-        };
+        let (param_types, ret_type) =
+            if let Some(Type::Lambda { params, ret, .. }) = expr.ty.as_ref() {
+                (Some(params.as_slice()), Some(ret.as_ref()))
+            } else {
+                (None, None)
+            };
         self.gen_lambda_with_param_types(params, body, param_types, ret_type)
     }
 

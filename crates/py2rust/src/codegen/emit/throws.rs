@@ -103,9 +103,12 @@ impl<'a> Codegen<'a> {
             ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
                 items.iter().any(|e| self.expr_can_throw(e))
             }
-            ExprKind::Dict(pairs) => pairs
-                .iter()
-                .any(|(k, v)| self.expr_can_throw(k) || self.expr_can_throw(v)),
+            ExprKind::Dict(items) => items.iter().any(|entry| match entry {
+                DictEntry::Item { key, value } => {
+                    self.expr_can_throw(key) || self.expr_can_throw(value)
+                }
+                DictEntry::Unpack { value } => self.expr_can_throw(value),
+            }),
             ExprKind::Index { value, index } => {
                 if self.expr_can_throw(value) || self.expr_can_throw(index) {
                     return true;

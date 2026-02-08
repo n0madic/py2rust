@@ -1,3 +1,4 @@
+use crate::hir::ParamKind;
 use std::fmt;
 
 /// The type system used during type checking and code generation.
@@ -42,7 +43,10 @@ pub enum Type {
     Union(String),
     Iterator(Box<Type>),
     Lambda {
+        param_names: Vec<String>,
         params: Vec<Type>,
+        param_kinds: Vec<ParamKind>,
+        has_defaults: Vec<bool>,
         ret: Box<Type>,
     },
     Ref(Box<Type>),    // &T (immutable reference)
@@ -100,7 +104,7 @@ impl Type {
                 key.contains_unknown() || value.contains_unknown()
             }
             Type::Tuple(items) => items.iter().any(Type::contains_unknown),
-            Type::Lambda { params, ret } => {
+            Type::Lambda { params, ret, .. } => {
                 params.iter().any(Type::contains_unknown) || ret.contains_unknown()
             }
             Type::Int

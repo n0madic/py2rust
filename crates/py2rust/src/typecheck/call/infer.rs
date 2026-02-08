@@ -76,22 +76,28 @@ impl<'a> TypeChecker<'a> {
                     }
                     return Ok(sig.ret);
                 }
-                if let Some(Type::Lambda { params, ret }) = self.lookup_var(name) {
+                if let Some(Type::Lambda { params, ret, .. }) = self.lookup_var(name) {
                     let needs_refine = matches!(ret.as_ref(), Type::Unknown)
                         || params.iter().any(|p| matches!(p, Type::Unknown));
                     if needs_refine {
                         if let Some(lambda_expr) = self.lambda_defs.get(name).cloned() {
                             let expected = Type::Lambda {
+                                param_names: Vec::new(),
                                 params: arg_tys.to_vec(),
+                                param_kinds: Vec::new(),
+                                has_defaults: Vec::new(),
                                 ret: Box::new(Type::Unknown),
                             };
                             let mut expr_clone = lambda_expr.clone();
                             let inferred = self.with_lambda_inference_guard(name, span, |tc| {
                                 tc.check_expr(&mut expr_clone, Some(&expected))
                             })?;
-                            if let Type::Lambda { params, ret } = inferred {
+                            if let Type::Lambda { params, ret, .. } = inferred {
                                 let updated = Type::Lambda {
+                                    param_names: Vec::new(),
                                     params: params.clone(),
+                                    param_kinds: Vec::new(),
+                                    has_defaults: Vec::new(),
                                     ret: ret.clone(),
                                 };
                                 self.set_var_type(name, updated);
@@ -110,7 +116,7 @@ impl<'a> TypeChecker<'a> {
                     return Ok(*ret);
                 }
                 let ty = self.check_expr(func, None)?;
-                if let Type::Lambda { params, ret } = ty {
+                if let Type::Lambda { params, ret, .. } = ty {
                     if !params.is_empty() && params.len() != arg_tys.len() {
                         return Err(self.error(span, arity_error_msg.clone()));
                     }
@@ -123,7 +129,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 Ok(Type::Unknown)
             }
-            ExprKind::Lambda { params, body } => {
+            ExprKind::Lambda { params, body, .. } => {
                 if params.len() != arg_tys.len() {
                     return Err(self.error(span, arity_error_msg.clone()));
                 }
@@ -134,14 +140,17 @@ impl<'a> TypeChecker<'a> {
                 let ret_ty = self.check_expr(body, None)?;
                 self.scopes.pop();
                 func.ty = Some(Type::Lambda {
+                    param_names: params.to_vec(),
                     params: arg_tys.to_vec(),
+                    param_kinds: vec![ParamKind::PositionalOrKeyword; params.len()],
+                    has_defaults: vec![false; params.len()],
                     ret: Box::new(ret_ty.clone()),
                 });
                 Ok(ret_ty)
             }
             _ => {
                 let ty = self.check_expr(func, None)?;
-                if let Type::Lambda { params, ret } = ty {
+                if let Type::Lambda { params, ret, .. } = ty {
                     if !params.is_empty() && params.len() != arg_tys.len() {
                         return Err(self.error(span, arity_error_msg));
                     }
