@@ -293,6 +293,10 @@ pub struct Codegen<'a> {
     pub(crate) inferred_list_elems: Option<HashMap<String, Type>>,
     /// Inferred list element types for top-level statements.
     pub(crate) main_list_elems: HashMap<String, Type>,
+    /// Inferred dict key/value hints for the current function scope, if any.
+    pub(crate) inferred_dict_kv: Option<HashMap<String, (Type, Type)>>,
+    /// Inferred dict key/value hints for top-level statements.
+    pub(crate) main_dict_kv: HashMap<String, (Type, Type)>,
     /// Storage strategy for list locals in the current function.
     pub(crate) local_list_storage: Option<HashMap<String, ListStorage>>,
     /// Storage strategy for list locals at top level (inside main).
@@ -333,6 +337,8 @@ impl<'a> Codegen<'a> {
             name_overrides: Vec::new(),
             inferred_list_elems: None,
             main_list_elems: HashMap::new(),
+            inferred_dict_kv: None,
+            main_dict_kv: HashMap::new(),
             local_list_storage: None,
             main_list_storage: HashMap::new(),
             local_dict_storage: None,
@@ -362,6 +368,7 @@ impl<'a> Codegen<'a> {
                 | "IndexError"
                 | "AttributeError"
                 | "ZeroDivisionError"
+                | "SyntaxError"
                 | "NameError"
                 | "AssertionError"
                 | "StopIteration"
@@ -467,6 +474,8 @@ impl<'a> Codegen<'a> {
         }
         // Capture list element type hints for top-level statements before codegen.
         self.main_list_elems = self.collect_list_elem_types_for_stmts(&top_level);
+        // Capture dict key/value hints for top-level empty-literal inference.
+        self.main_dict_kv = self.collect_dict_kv_types_for_stmts(&top_level);
         // Compute list storage strategy for top-level locals.
         self.main_list_storage =
             self.collect_list_storage_for_stmts(&top_level, &self.shared_globals);

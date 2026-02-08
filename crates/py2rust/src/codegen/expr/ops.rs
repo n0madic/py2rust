@@ -496,7 +496,117 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
+        if matches!(op, CmpOp::Eq | CmpOp::NotEq | CmpOp::Is | CmpOp::IsNot) {
+            let is_type_call = |candidate: &Expr| {
+                matches!(
+                    &candidate.kind,
+                    ExprKind::Call {
+                        func,
+                        args,
+                        keywords
+                    } if matches!(&func.kind, ExprKind::Name(name) if name == "type")
+                        && args.len() == 1
+                        && keywords.is_empty()
+                )
+            };
+            let type_object_literal = |candidate: &Expr| -> Option<String> {
+                let ExprKind::Name(name) = &candidate.kind else {
+                    return None;
+                };
+                let builtin = match name.as_str() {
+                    "int" => Some("<class 'int'>"),
+                    "float" => Some("<class 'float'>"),
+                    "bool" => Some("<class 'bool'>"),
+                    "str" => Some("<class 'str'>"),
+                    "bytes" => Some("<class 'bytes'>"),
+                    "list" => Some("<class 'list'>"),
+                    "tuple" => Some("<class 'tuple'>"),
+                    "dict" => Some("<class 'dict'>"),
+                    "set" => Some("<class 'set'>"),
+                    _ => None,
+                };
+                if let Some(class_lit) = builtin {
+                    return Some(class_lit.to_string());
+                }
+                if self.ctx.classes.contains_key(name) {
+                    return Some(format!("<class '{}'>", name));
+                }
+                None
+            };
+            let op_str = if matches!(op, CmpOp::Eq | CmpOp::Is) {
+                "=="
+            } else {
+                "!="
+            };
+            if is_type_call(left) {
+                if let Some(class_lit) = type_object_literal(right) {
+                    return Ok(format!(
+                        "({} {} {:?}.to_string())",
+                        self.gen_expr(left)?,
+                        op_str,
+                        class_lit
+                    ));
+                }
+            }
+            if is_type_call(right) {
+                if let Some(class_lit) = type_object_literal(left) {
+                    return Ok(format!(
+                        "({:?}.to_string() {} {})",
+                        class_lit,
+                        op_str,
+                        self.gen_expr(right)?
+                    ));
+                }
+            }
+        }
         if matches!(op, CmpOp::In | CmpOp::NotIn) {
+            let types_compatible = |left_ty: &Type, elem_ty: &Type| -> bool {
+                matches!(left_ty, Type::Unknown)
+                    || matches!(elem_ty, Type::Unknown)
+                    || left_ty == elem_ty
+                    || (left_ty.is_numeric() && elem_ty.is_numeric())
+            };
+            let membership_mismatch = match (left.ty.as_ref(), right.ty.as_ref()) {
+                (Some(left_ty), Some(Type::List(inner)))
+                | (Some(left_ty), Some(Type::Set(inner)))
+                | (Some(left_ty), Some(Type::Slice(inner))) => {
+                    !types_compatible(left_ty, inner.as_ref())
+                }
+                (Some(left_ty), Some(Type::Dict(key, _))) => {
+                    !types_compatible(left_ty, key.as_ref())
+                }
+                (Some(left_ty), Some(Type::Str)) => !matches!(left_ty, Type::Str | Type::Unknown),
+                (Some(left_ty), Some(Type::Tuple(items))) => {
+                    if let Some(first) = items.first() {
+                        !types_compatible(left_ty, first)
+                    } else {
+                        false
+                    }
+                }
+                (Some(left_ty), Some(Type::Ref(inner))) => match inner.as_ref() {
+                    Type::List(elem) | Type::Set(elem) | Type::Slice(elem) => {
+                        !types_compatible(left_ty, elem.as_ref())
+                    }
+                    Type::Dict(key, _) => !types_compatible(left_ty, key.as_ref()),
+                    Type::Str => !matches!(left_ty, Type::Str | Type::Unknown),
+                    Type::Tuple(items) => {
+                        if let Some(first) = items.first() {
+                            !types_compatible(left_ty, first)
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if membership_mismatch {
+                return Ok(if matches!(op, CmpOp::NotIn) {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                });
+            }
             let left_expr = self.gen_expr(left)?;
             let right_expr = self.gen_expr(right)?;
             let mut expr = match right.ty.as_ref() {
@@ -510,7 +620,22 @@ impl<'a> Codegen<'a> {
                         )
                     }
                 }
-                Some(Type::Set(_)) | Some(Type::Slice(_)) => {
+                Some(Type::Set(inner)) => {
+                    if self.set_uses_pyrepr_storage(right, inner.as_ref()) {
+                        // CPython-compat divergence:
+                        // Unknown-typed sets are represented as `HashSet<PyRepr>` until a
+                        // stable element type is known, so membership checks must use the
+                        // same PyRepr coercion path as insertions.
+                        self.uses.py_repr = true;
+                        format!(
+                            "{}.contains(&PyRepr(format!(\"{{:?}}\", {})))",
+                            right_expr, left_expr
+                        )
+                    } else {
+                        format!("{}.contains(&{})", right_expr, left_expr)
+                    }
+                }
+                Some(Type::Slice(_)) => {
                     format!("{}.contains(&{})", right_expr, left_expr)
                 }
                 Some(Type::Dict(_, _)) => {
@@ -535,7 +660,18 @@ impl<'a> Codegen<'a> {
                             )
                         }
                     }
-                    Type::Set(_) | Type::List(_) | Type::Slice(_) => {
+                    Type::Set(inner) => {
+                        if self.set_uses_pyrepr_storage(right, inner.as_ref()) {
+                            self.uses.py_repr = true;
+                            format!(
+                                "{}.contains(&PyRepr(format!(\"{{:?}}\", {})))",
+                                right_expr, left_expr
+                            )
+                        } else {
+                            format!("{}.contains(&{})", right_expr, left_expr)
+                        }
+                    }
+                    Type::List(_) | Type::Slice(_) => {
                         format!("{}.contains(&{})", right_expr, left_expr)
                     }
                     Type::Str => format!("{}.contains(&{})", right_expr, left_expr),
@@ -652,6 +788,20 @@ impl<'a> Codegen<'a> {
                 }
                 return Ok(format!("!({})", expr));
             }
+            if matches!(left.ty.as_ref(), Some(Type::Set(_)))
+                && matches!(right.ty.as_ref(), Some(Type::Set(_)))
+            {
+                // CPython-compat divergence:
+                // Sets are value-backed in this build, so identity checks use
+                // address comparison of the current Rust bindings.
+                let left_expr = self.gen_expr(left)?;
+                let right_expr = self.gen_expr(right)?;
+                let expr = format!("std::ptr::eq(&{}, &{})", left_expr, right_expr);
+                if matches!(op, CmpOp::Is) {
+                    return Ok(expr);
+                }
+                return Ok(format!("!({})", expr));
+            }
         }
         if matches!(op, CmpOp::Eq | CmpOp::NotEq) {
             let op_str = if matches!(op, CmpOp::Eq) { "==" } else { "!=" };
@@ -726,6 +876,24 @@ impl<'a> Codegen<'a> {
                         right_expr = right_expr
                     )
                 };
+                if matches!(op, CmpOp::Eq) {
+                    return Ok(eq_expr);
+                }
+                return Ok(format!("!({})", eq_expr));
+            }
+            if let (Some(Type::List(_)), Some(Type::Tuple(items))) =
+                (left.ty.as_ref(), right.ty.as_ref())
+            {
+                let eq_expr = self.gen_list_tuple_eq_expr(left, right, items.len(), true)?;
+                if matches!(op, CmpOp::Eq) {
+                    return Ok(eq_expr);
+                }
+                return Ok(format!("!({})", eq_expr));
+            }
+            if let (Some(Type::Tuple(items)), Some(Type::List(_))) =
+                (left.ty.as_ref(), right.ty.as_ref())
+            {
+                let eq_expr = self.gen_list_tuple_eq_expr(right, left, items.len(), false)?;
                 if matches!(op, CmpOp::Eq) {
                     return Ok(eq_expr);
                 }
@@ -848,6 +1016,73 @@ impl<'a> Codegen<'a> {
                     });
                 }
             }
+            if let (Some(Type::Tuple(left_items)), Some(Type::Tuple(right_items))) =
+                (left.ty.as_ref(), right.ty.as_ref())
+            {
+                if left_items.len() == right_items.len() {
+                    let left_expr = self.gen_expr(left)?;
+                    let right_expr = self.gen_expr(right)?;
+                    let left_tmp = self.new_tmp();
+                    let right_tmp = self.new_tmp();
+                    let mut parts = Vec::new();
+                    for idx in 0..left_items.len() {
+                        let left_elem_expr = format!("{left_tmp}.{idx}");
+                        let right_elem_expr = format!("{right_tmp}.{idx}");
+                        let part = match (&left_items[idx], &right_items[idx]) {
+                            (Type::List(_), Type::List(_)) => self.gen_list_eq_from_rendered(
+                                &left_elem_expr,
+                                true,
+                                &right_elem_expr,
+                                true,
+                            ),
+                            (Type::List(_), Type::Tuple(items)) => {
+                                // CPython-compat divergence:
+                                // We allow list-vs-tuple element equality inside tuple
+                                // comparison to keep varargs interop practical.
+                                self.gen_list_tuple_eq_from_rendered(
+                                    &left_elem_expr,
+                                    true,
+                                    &right_elem_expr,
+                                    items.len(),
+                                    true,
+                                )
+                            }
+                            (Type::Tuple(items), Type::List(_)) => self
+                                .gen_list_tuple_eq_from_rendered(
+                                    &right_elem_expr,
+                                    true,
+                                    &left_elem_expr,
+                                    items.len(),
+                                    false,
+                                ),
+                            (Type::Dict(_, _), Type::Dict(_, _)) => self.gen_dict_eq_from_rendered(
+                                &left_elem_expr,
+                                true,
+                                &right_elem_expr,
+                                true,
+                            ),
+                            _ => format!("({left_elem_expr} == {right_elem_expr})"),
+                        };
+                        parts.push(format!("({})", part));
+                    }
+                    if parts.is_empty() {
+                        // CPython semantics: empty tuples are equal to each other.
+                        return Ok(if matches!(op, CmpOp::Eq) {
+                            "true".to_string()
+                        } else {
+                            "false".to_string()
+                        });
+                    }
+                    let eq_expr = format!(
+                        "{{ let {left_tmp} = &{left_expr}; let {right_tmp} = &{right_expr}; {} }}",
+                        parts.join(" && ")
+                    );
+                    if matches!(op, CmpOp::Eq) {
+                        return Ok(eq_expr);
+                    }
+                    return Ok(format!("!({})", eq_expr));
+                }
+            }
         }
         if let (Some(Type::Tuple(left_items)), Some(Type::Tuple(right_items))) =
             (left.ty.as_ref(), right.ty.as_ref())
@@ -921,6 +1156,141 @@ impl<'a> Codegen<'a> {
             op_str,
             self.gen_expr(right)?
         ))
+    }
+
+    fn gen_list_tuple_eq_expr(
+        &mut self,
+        list_expr: &Expr,
+        tuple_expr: &Expr,
+        tuple_len: usize,
+        list_on_left: bool,
+    ) -> Result<String, CompileError> {
+        let list_rendered = self.gen_expr(list_expr)?;
+        let tuple_rendered = self.gen_expr(tuple_expr)?;
+        let list_is_shared = !matches!(self.list_storage_for_expr(list_expr), ListStorage::Local);
+        Ok(self.gen_list_tuple_eq_from_rendered(
+            &list_rendered,
+            list_is_shared,
+            &tuple_rendered,
+            tuple_len,
+            list_on_left,
+        ))
+    }
+
+    fn gen_list_tuple_eq_from_rendered(
+        &mut self,
+        list_expr: &str,
+        list_is_shared: bool,
+        tuple_expr: &str,
+        tuple_len: usize,
+        list_on_left: bool,
+    ) -> String {
+        let list_tmp = self.new_tmp();
+        let tuple_tmp = self.new_tmp();
+        let mut comps = Vec::new();
+        for idx in 0..tuple_len {
+            let list_item = if list_is_shared {
+                format!("&{list_tmp}_guard[{idx}]")
+            } else {
+                format!("&{list_tmp}[{idx}]")
+            };
+            let tuple_item = format!("&{tuple_tmp}.{idx}");
+            if list_on_left {
+                comps.push(format!("({list_item} == {tuple_item})"));
+            } else {
+                comps.push(format!("({tuple_item} == {list_item})"));
+            }
+        }
+        let checks = if comps.is_empty() {
+            "true".to_string()
+        } else {
+            comps.join(" && ")
+        };
+        if list_is_shared {
+            format!(
+                "{{ let {list_tmp} = ({list_expr}).clone(); let {tuple_tmp} = &({tuple_expr}); let {list_tmp}_guard = {list_tmp}.lock().expect(\"list mutex poisoned\"); ({list_tmp}_guard.len() == {tuple_len}) && ({checks}) }}"
+            )
+        } else {
+            format!(
+                "{{ let {list_tmp} = &({list_expr}); let {tuple_tmp} = &({tuple_expr}); ({list_tmp}.len() == {tuple_len}) && ({checks}) }}"
+            )
+        }
+    }
+
+    fn gen_list_eq_from_rendered(
+        &mut self,
+        left_expr: &str,
+        left_is_shared: bool,
+        right_expr: &str,
+        right_is_shared: bool,
+    ) -> String {
+        match (left_is_shared, right_is_shared) {
+            (false, false) => {
+                format!(
+                    "{{ let _left = &({left_expr}); let _right = &({right_expr}); _left.iter().eq(_right.iter()) }}"
+                )
+            }
+            (false, true) => {
+                let right_tmp = self.new_tmp();
+                let right_guard = self.new_tmp();
+                format!(
+                    "{{ let _left = &({left_expr}); let {right_tmp} = ({right_expr}).clone(); let {right_guard} = {right_tmp}.lock().expect(\"list mutex poisoned\"); _left.iter().eq({right_guard}.iter()) }}"
+                )
+            }
+            (true, false) => {
+                let left_tmp = self.new_tmp();
+                let left_guard = self.new_tmp();
+                format!(
+                    "{{ let {left_tmp} = ({left_expr}).clone(); let {left_guard} = {left_tmp}.lock().expect(\"list mutex poisoned\"); let _right = &({right_expr}); {left_guard}.iter().eq(_right.iter()) }}"
+                )
+            }
+            (true, true) => {
+                let left_tmp = self.new_tmp();
+                let right_tmp = self.new_tmp();
+                let left_guard = self.new_tmp();
+                let right_guard = self.new_tmp();
+                format!(
+                    "{{ let {left_tmp} = ({left_expr}).clone(); let {right_tmp} = ({right_expr}).clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().expect(\"list mutex poisoned\"); let {right_guard} = {right_tmp}.lock().expect(\"list mutex poisoned\"); {left_guard}.iter().eq({right_guard}.iter()) }} }}"
+                )
+            }
+        }
+    }
+
+    fn gen_dict_eq_from_rendered(
+        &mut self,
+        left_expr: &str,
+        left_is_shared: bool,
+        right_expr: &str,
+        right_is_shared: bool,
+    ) -> String {
+        match (left_is_shared, right_is_shared) {
+            (false, false) => {
+                format!("({left_expr} == {right_expr})")
+            }
+            (false, true) => {
+                let right_tmp = self.new_tmp();
+                let right_guard = self.new_tmp();
+                format!(
+                    "{{ let _left = &({left_expr}); let {right_tmp} = ({right_expr}).clone(); let {right_guard} = {right_tmp}.lock().expect(\"dict mutex poisoned\"); *_left == *{right_guard} }}"
+                )
+            }
+            (true, false) => {
+                let left_tmp = self.new_tmp();
+                let left_guard = self.new_tmp();
+                format!(
+                    "{{ let {left_tmp} = ({left_expr}).clone(); let {left_guard} = {left_tmp}.lock().expect(\"dict mutex poisoned\"); let _right = &({right_expr}); *{left_guard} == *_right }}"
+                )
+            }
+            (true, true) => {
+                let left_tmp = self.new_tmp();
+                let right_tmp = self.new_tmp();
+                let left_guard = self.new_tmp();
+                let right_guard = self.new_tmp();
+                format!(
+                    "{{ let {left_tmp} = ({left_expr}).clone(); let {right_tmp} = ({right_expr}).clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().expect(\"dict mutex poisoned\"); let {right_guard} = {right_tmp}.lock().expect(\"dict mutex poisoned\"); *{left_guard} == *{right_guard} }} }}"
+                )
+            }
+        }
     }
 
     /// Lower a chained comparison expression (e.g., a < b < c).

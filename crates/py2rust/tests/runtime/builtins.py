@@ -115,6 +115,8 @@ bool_items.append(1)
 assert bool(bool_items) == True, "bool(bool_items) should equal True"
 
 # bool(tuple) - False if empty, True otherwise
+empty_tuple: tuple[()] = ()
+assert bool(empty_tuple) == False, "bool(empty_tuple) should equal False"
 full_tuple: tuple[int, int] = (1, 2)
 assert bool(full_tuple) == True, "bool(full_tuple) should equal True"
 
@@ -622,6 +624,9 @@ assert str(type(type_list)) == "<class 'list'>", "type(type_list) should equal \
 # type(tuple)
 type_tuple: tuple[int, int] = (1, 2)
 assert str(type(type_tuple)) == "<class 'tuple'>", "type(type_tuple) should equal \"<class 'tuple'>\""
+assert str(type((1,))) == "<class 'tuple'>", "type((1,)) should equal \"<class 'tuple'>\""
+assert str(type((1))) == "<class 'int'>", "type((1)) should equal \"<class 'int'>\""
+assert str(type(())) == "<class 'tuple'>", "type(()) should equal \"<class 'tuple'>\""
 
 # type(dict)
 type_dict: dict[str, int] = {"a": 1}

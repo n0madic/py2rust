@@ -356,7 +356,25 @@ impl<'a> TypeChecker<'a> {
                 };
                 let ty = self.check_expr(value, expected.as_ref())?;
                 if let Some(expected) = expected {
-                    self.ensure_assignable(&ty, &expected, stmt.span)?;
+                    fn is_decorator_chain_expr(expr: &Expr) -> bool {
+                        match &expr.kind {
+                            ExprKind::Call { args, keywords, .. }
+                                if keywords.is_empty() && args.len() == 1 =>
+                            {
+                                matches!(args[0].kind, ExprKind::Lambda { .. })
+                                    || is_decorator_chain_expr(&args[0])
+                            }
+                            _ => false,
+                        }
+                    }
+                    let assignable = self.ensure_assignable(&ty, &expected, stmt.span);
+                    let relax_decorator_callable_shape = assignable.is_err()
+                        && matches!(expected, Type::Lambda { .. })
+                        && matches!(ty, Type::Lambda { .. })
+                        && is_decorator_chain_expr(value);
+                    if !relax_decorator_callable_shape {
+                        assignable?;
+                    }
                     // Tuple annotations with homogeneous element types accept any length.
                     // Store the actual tuple length to avoid codegen length mismatches.
                     let declared = if let (Type::Tuple(exp_items), Type::Tuple(actual_items)) =
@@ -374,14 +392,21 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         expected.clone()
                     };
-                    // Preserve explicit annotation constraints, but allow Unknown annotations
-                    // (for example, wide inline unions) to refine from the initializer.
-                    let declared = Self::merge_types(declared, ty.clone());
+                    // CPython-compat note:
+                    // Decorator wrappers often return a callable whose static parameter model
+                    // differs from the original function annotation (`*args/**kwargs` wrapper).
+                    // Keep the concrete post-decoration callable shape in that case.
+                    let declared = if relax_decorator_callable_shape {
+                        ty.clone()
+                    } else {
+                        // Preserve explicit annotation constraints, but allow Unknown annotations
+                        // (for example, wide inline unions) to refine from the initializer.
+                        Self::merge_types(declared, ty.clone())
+                    };
                     self.insert_var(name, declared, stmt.span)?;
                 } else {
-                    if matches!(ty, Type::Unknown) {
-                        return Err(self.error(stmt.span, "Unable to infer type; add annotation"));
-                    }
+                    // Python allows local names to be rebound from dynamically-typed values.
+                    // Keep Unknown when inference is impossible instead of hard-failing.
                     self.insert_var(name, ty, stmt.span)?;
                 }
             }
@@ -435,41 +460,30 @@ impl<'a> TypeChecker<'a> {
                                 && !self.is_declared_global(name)
                                 && !self.is_declared_nonlocal(name)
                             {
-                                if let Some(existing) = self.lookup_local_var(name) {
-                                    if ty.contains_unknown() && !existing.contains_unknown() {
-                                        ty = self.check_expr(value, Some(&existing))?;
-                                    }
-                                    if ty.contains_unknown() && !existing.contains_unknown() {
-                                        return Err(self.error(
-                                            stmt.span,
-                                            "Unable to infer type; add annotation",
-                                        ));
-                                    }
-                                    self.ensure_assignable(&ty, &existing, stmt.span)?;
+                                if self.lookup_local_var(name).is_some() {
+                                    // Plain Python assignment rebinds local names and does not
+                                    // require compatibility with prior runtime values.
+                                    let rebound = self
+                                        .lookup_local_var(name)
+                                        .map(|existing| {
+                                            Self::preserve_optional_binding(existing, ty.clone())
+                                        })
+                                        .unwrap_or_else(|| ty.clone());
+                                    self.insert_var(name, rebound, stmt.span)?;
                                 } else {
-                                    if matches!(ty, Type::Unknown) {
-                                        return Err(self.error(
-                                            stmt.span,
-                                            "Unable to infer type; add annotation",
-                                        ));
-                                    }
                                     promote_to_let = Some((name.clone(), value.clone()));
                                     self.insert_var(name, ty, stmt.span)?;
                                 }
-                            } else if let Some(existing) = self.lookup_var(name) {
-                                if ty.contains_unknown() && !existing.contains_unknown() {
-                                    ty = self.check_expr(value, Some(&existing))?;
-                                }
-                                if ty.contains_unknown() && !existing.contains_unknown() {
-                                    return Err(self
-                                        .error(stmt.span, "Unable to infer type; add annotation"));
-                                }
-                                self.ensure_assignable(&ty, &existing, stmt.span)?;
+                            } else if self.lookup_var(name).is_some() {
+                                // Module-scope rebinding follows the same Python semantics.
+                                let rebound = self
+                                    .lookup_var(name)
+                                    .map(|existing| {
+                                        Self::preserve_optional_binding(existing, ty.clone())
+                                    })
+                                    .unwrap_or_else(|| ty.clone());
+                                self.insert_var(name, rebound, stmt.span)?;
                             } else {
-                                if matches!(ty, Type::Unknown) {
-                                    return Err(self
-                                        .error(stmt.span, "Unable to infer type; add annotation"));
-                                }
                                 promote_to_let = Some((name.clone(), value.clone()));
                                 self.insert_var(name, ty, stmt.span)?;
                             }
@@ -488,35 +502,69 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
                             if let Type::Custom(class_name) = obj_ty {
-                                let class_info =
-                                    self.ctx.classes.get(&class_name).ok_or_else(|| {
-                                        self.error(
-                                            stmt.span,
-                                            format!("Unknown class: {class_name}"),
-                                        )
-                                    })?;
-                                if let Some(prop) = class_info.properties.get(attr) {
-                                    if let Some(setter_name) = &prop.setter {
-                                        if let Some(sig) = class_info.methods.get(setter_name) {
-                                            if sig.params.len() >= 2 {
-                                                let expected = sig.params[1].clone();
-                                                self.ensure_assignable(&ty, &expected, stmt.span)?;
+                                if !self.ctx.classes.contains_key(&class_name) {
+                                    return Err(self
+                                        .error(stmt.span, format!("Unknown class: {class_name}")));
+                                }
+                                let prop = self
+                                    .ctx
+                                    .classes
+                                    .get(&class_name)
+                                    .and_then(|info| info.properties.get(attr))
+                                    .cloned();
+                                if let Some(prop) = prop {
+                                    if let Some(setter_name) = prop.setter.as_ref() {
+                                        let expected = self
+                                            .ctx
+                                            .classes
+                                            .get(&class_name)
+                                            .and_then(|info| info.methods.get(setter_name))
+                                            .and_then(|sig| sig.params.get(1))
+                                            .cloned()
+                                            .unwrap_or(Type::Unknown);
+                                        self.ensure_assignable(&ty, &expected, stmt.span)?;
+                                        if matches!(expected, Type::Unknown)
+                                            && !matches!(ty, Type::Unknown)
+                                        {
+                                            if let Some(info) =
+                                                self.ctx.classes.get_mut(&class_name)
+                                            {
+                                                if let Some(sig) = info.methods.get_mut(setter_name)
+                                                {
+                                                    if sig.params.len() >= 2 {
+                                                        sig.params[1] = ty.clone();
+                                                    }
+                                                }
                                             }
-                                            return Ok(());
                                         }
+                                        return Ok(());
                                     }
                                     return Err(self.error(
                                         stmt.span,
                                         format!("Property {class_name}.{attr} has no setter"),
                                     ));
                                 }
-                                let field_ty = class_info.fields.get(attr).ok_or_else(|| {
-                                    self.error(
-                                        stmt.span,
-                                        format!("Unknown field {class_name}.{attr}"),
-                                    )
-                                })?;
-                                self.ensure_assignable(&ty, field_ty, stmt.span)?;
+                                let field_ty = self
+                                    .ctx
+                                    .classes
+                                    .get(&class_name)
+                                    .and_then(|info| info.fields.get(attr))
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        self.error(
+                                            stmt.span,
+                                            format!("Unknown field {class_name}.{attr}"),
+                                        )
+                                    })?;
+                                self.ensure_assignable(&ty, &field_ty, stmt.span)?;
+                                if matches!(field_ty, Type::Unknown) && !matches!(ty, Type::Unknown)
+                                {
+                                    if let Some(info) = self.ctx.classes.get_mut(&class_name) {
+                                        if let Some(slot) = info.fields.get_mut(attr) {
+                                            *slot = ty.clone();
+                                        }
+                                    }
+                                }
                             } else {
                                 return Err(self.error(
                                     stmt.span,
@@ -551,6 +599,12 @@ impl<'a> TypeChecker<'a> {
                                             ),
                                         );
                                     }
+                                }
+                                Type::Tuple(_) => {
+                                    // CPython raises TypeError at runtime for tuple item
+                                    // assignment; keep the statement type-checkable so
+                                    // try/except handlers can observe that runtime error.
+                                    self.ensure_assignable(&index_ty, &Type::Int, stmt.span)?;
                                 }
                                 _ => {
                                     return Err(self.error(
@@ -603,16 +657,17 @@ impl<'a> TypeChecker<'a> {
                     let class_info = self.ctx.classes.get(&class_name).ok_or_else(|| {
                         self.error(stmt.span, format!("Unknown class: {class_name}"))
                     })?;
-                    let prop = class_info.properties.get(attr).ok_or_else(|| {
-                        self.error(
-                            stmt.span,
-                            format!("Unknown property {class_name}.{attr} for del"),
-                        )
-                    })?;
-                    if prop.deleter.is_none() {
+                    if let Some(prop) = class_info.properties.get(attr) {
+                        if prop.deleter.is_none() {
+                            return Err(self.error(
+                                stmt.span,
+                                format!("Property {class_name}.{attr} has no deleter"),
+                            ));
+                        }
+                    } else if !class_info.fields.contains_key(attr) {
                         return Err(self.error(
                             stmt.span,
-                            format!("Property {class_name}.{attr} has no deleter"),
+                            format!("Unknown attribute {class_name}.{attr} for del"),
                         ));
                     }
                 }
@@ -764,6 +819,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.with_control_flow_depth(|tc| {
                     if let Some((name, true_ty, false_ty)) = narrowed {
+                        let mut true_end_ty = true_ty.clone();
                         tc.scopes.push(HashMap::new());
                         if let Some(scope) = tc.scopes.last_mut() {
                             scope.insert(name.clone(), true_ty);
@@ -771,7 +827,14 @@ impl<'a> TypeChecker<'a> {
                         for stmt in body {
                             tc.check_stmt(stmt, expected_ret)?;
                         }
+                        if let Some(scope) = tc.scopes.last() {
+                            if let Some(ty) = scope.get(&name) {
+                                true_end_ty = ty.clone();
+                            }
+                        }
                         tc.scopes.pop();
+
+                        let mut false_end_ty = false_ty.clone();
                         tc.scopes.push(HashMap::new());
                         if let Some(scope) = tc.scopes.last_mut() {
                             scope.insert(name.clone(), false_ty);
@@ -779,7 +842,37 @@ impl<'a> TypeChecker<'a> {
                         for stmt in orelse {
                             tc.check_stmt(stmt, expected_ret)?;
                         }
+                        if let Some(scope) = tc.scopes.last() {
+                            if let Some(ty) = scope.get(&name) {
+                                false_end_ty = ty.clone();
+                            }
+                        }
                         tc.scopes.pop();
+
+                        // Merge branch-local refinements back into the outer binding.
+                        // This keeps Optional narrowing + reassignment flows usable after `if`.
+                        let merged_after_if = match (&true_end_ty, &false_end_ty) {
+                            (Type::None, Type::Unknown) | (Type::Unknown, Type::None) => {
+                                Type::Option(Box::new(Type::Unknown))
+                            }
+                            (Type::None, other) => Type::Option(Box::new(other.clone())),
+                            (other, Type::None) => Type::Option(Box::new(other.clone())),
+                            (Type::Unknown, other) => other.clone(),
+                            (other, Type::Unknown) => other.clone(),
+                            _ => Self::merge_types(true_end_ty.clone(), false_end_ty.clone()),
+                        };
+
+                        let mut updated = false;
+                        for scope in tc.scopes.iter_mut().rev() {
+                            if scope.contains_key(&name) {
+                                scope.insert(name.clone(), merged_after_if.clone());
+                                updated = true;
+                                break;
+                            }
+                        }
+                        if !updated {
+                            tc.set_var_type(&name, merged_after_if);
+                        }
                     } else {
                         for stmt in body {
                             tc.check_stmt(stmt, expected_ret)?;
@@ -825,6 +918,11 @@ impl<'a> TypeChecker<'a> {
             StmtKind::For { target, iter, body } => {
                 let iter_ty = self.check_expr(iter, None)?;
                 let item_ty = self.iter_item_type(&iter_ty, stmt.span)?;
+                let iter_name = if let ExprKind::Name(name) = &iter.kind {
+                    Some(name.clone())
+                } else {
+                    None
+                };
 
                 // Handle different target patterns.
                 match target {
@@ -921,6 +1019,37 @@ impl<'a> TypeChecker<'a> {
                     }
                     Ok(())
                 })?;
+
+                if matches!(iter_ty, Type::Unknown) {
+                    if let Some(iter_name) = iter_name {
+                        let inferred_item = match target {
+                            ForTarget::Name(name) => self.lookup_var(name).unwrap_or(Type::Unknown),
+                            ForTarget::Tuple(names) => {
+                                let mut items = Vec::with_capacity(names.len());
+                                let mut has_unknown = false;
+                                for name in names {
+                                    let ty = self.lookup_var(name).unwrap_or(Type::Unknown);
+                                    if matches!(ty, Type::Unknown) {
+                                        has_unknown = true;
+                                        break;
+                                    }
+                                    items.push(ty);
+                                }
+                                if has_unknown {
+                                    Type::Unknown
+                                } else {
+                                    Type::Tuple(items)
+                                }
+                            }
+                        };
+                        if !matches!(inferred_item, Type::Unknown) {
+                            // CPython-compat divergence:
+                            // Unknown loop iterables are refined from target usage so
+                            // nested defs/lambdas gain concrete iterator parameter types.
+                            self.set_var_type(&iter_name, Type::Iterator(Box::new(inferred_item)));
+                        }
+                    }
+                }
             }
             StmtKind::Import { names } => {
                 for binding in names {
@@ -1252,17 +1381,25 @@ impl<'a> TypeChecker<'a> {
         result
     }
 
+    /// Keep `Optional` bindings stable across plain rebinding assignments.
+    fn preserve_optional_binding(existing: Type, assigned: Type) -> Type {
+        match existing {
+            Type::Option(inner) => match assigned {
+                Type::None => Type::Option(inner),
+                Type::Option(rhs_inner) => {
+                    Type::Option(Box::new(Self::merge_types(*inner, *rhs_inner)))
+                }
+                other => Type::Option(Box::new(Self::merge_types(*inner, other))),
+            },
+            _ => assigned,
+        }
+    }
+
     /// Register a function-local class signature in the type context.
     ///
-    /// Local classes are intentionally constrained: no inheritance and no name
-    /// collisions with already-registered classes.
+    /// Local classes share the same signature shape as top-level classes, but
+    /// remain scoped to their owner function.
     fn register_local_class_signature(&mut self, class_def: &ClassDef) -> Result<(), CompileError> {
-        if class_def.base.is_some() {
-            return Err(self.error(
-                class_def.span,
-                "Class inheritance inside function bodies is not supported",
-            ));
-        }
         if self.ctx.classes.contains_key(&class_def.name) {
             return Err(self.error(
                 class_def.span,
@@ -1280,6 +1417,11 @@ impl<'a> TypeChecker<'a> {
                     class_def.name
                 ),
             ));
+        }
+        if let Some(base) = class_def.base.as_ref() {
+            if !self.is_visible_class(base) && !Self::is_builtin_exception_name(base) {
+                return Err(self.error(class_def.span, format!("Unknown base class: {base}")));
+            }
         }
         let owner_scope = self.function_scopes.last().copied();
         self.ctx.classes.insert(
@@ -1444,17 +1586,96 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        let mut merged_fields = fields;
+        let mut merged_class_attrs = class_attrs;
+        let mut merged_methods = methods;
+        let mut merged_method_kinds = method_kinds;
+        let mut merged_properties = properties;
+        let mut merged_init = init;
+        let mut merged_iter_return = iter_return;
+        let mut merged_iter_item = iter_item;
+        let mut merged_next_item = next_item;
+
+        if let Some(base) = class_def.base.as_ref() {
+            if Self::is_builtin_exception_name(base) {
+                if merged_init.is_none() {
+                    merged_init = Some(FunctionSig {
+                        param_names: vec!["self".to_string(), "message".to_string()],
+                        param_kinds: vec![
+                            ParamKind::PositionalOrKeyword,
+                            ParamKind::PositionalOrKeyword,
+                        ],
+                        has_defaults: vec![false, true],
+                        params: vec![Type::Custom(class_def.name.clone()), Type::Str],
+                        ret: Type::None,
+                        span: class_def.span,
+                        is_generator: false,
+                        can_throw: false,
+                        thrown_exceptions: Vec::new(),
+                        defaults: 1,
+                    });
+                }
+            } else {
+                let base_info = self.ctx.classes.get(base).cloned().ok_or_else(|| {
+                    self.error(class_def.span, format!("Unknown base class: {base}"))
+                })?;
+
+                let mut inherited_fields = base_info.fields;
+                for (name, ty) in merged_fields {
+                    inherited_fields.insert(name, ty);
+                }
+                merged_fields = inherited_fields;
+
+                let mut inherited_class_attrs = base_info.class_attrs;
+                for (name, info) in merged_class_attrs {
+                    inherited_class_attrs.insert(name, info);
+                }
+                merged_class_attrs = inherited_class_attrs;
+
+                let mut inherited_methods = base_info.methods;
+                for (name, sig) in merged_methods {
+                    inherited_methods.insert(name, sig);
+                }
+                merged_methods = inherited_methods;
+
+                let mut inherited_kinds = base_info.method_kinds;
+                for (name, kind) in merged_method_kinds {
+                    inherited_kinds.insert(name, kind);
+                }
+                merged_method_kinds = inherited_kinds;
+
+                let mut inherited_properties = base_info.properties;
+                for (name, prop) in merged_properties {
+                    inherited_properties.insert(name, prop);
+                }
+                merged_properties = inherited_properties;
+
+                if merged_init.is_none() {
+                    merged_init = base_info.init;
+                }
+                if merged_iter_return.is_none() {
+                    merged_iter_return = base_info.iter_return;
+                }
+                if merged_iter_item.is_none() {
+                    merged_iter_item = base_info.iter_item;
+                }
+                if merged_next_item.is_none() {
+                    merged_next_item = base_info.next_item;
+                }
+            }
+        }
+
         if let Some(info) = self.ctx.classes.get_mut(&class_def.name) {
-            info.base = None;
-            info.fields = fields;
-            info.class_attrs = class_attrs;
-            info.methods = methods;
-            info.method_kinds = method_kinds;
-            info.properties = properties;
-            info.init = init;
-            info.iter_return = iter_return;
-            info.iter_item = iter_item;
-            info.next_item = next_item;
+            info.base = class_def.base.clone();
+            info.fields = merged_fields;
+            info.class_attrs = merged_class_attrs;
+            info.methods = merged_methods;
+            info.method_kinds = merged_method_kinds;
+            info.properties = merged_properties;
+            info.init = merged_init;
+            info.iter_return = merged_iter_return;
+            info.iter_item = merged_iter_item;
+            info.next_item = merged_next_item;
             info.match_args = class_def.match_args.clone();
         }
 

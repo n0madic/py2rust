@@ -34,7 +34,25 @@ impl<'a> TypeChecker<'a> {
     /// - `*args: T` -> `list[T]`
     /// - `**kwargs: T` -> `dict[str, T]`
     pub(super) fn resolve_param_type(&self, param: &Param) -> Result<Type, CompileError> {
-        let ty = self.resolve_type_ref(&param.ann, param.span)?;
+        let mut ty = self.resolve_type_ref(&param.ann, param.span)?;
+        if matches!(ty, Type::Unknown) {
+            if let Some(default) = param.default.as_ref() {
+                if let Some(hint) = Self::infer_default_param_type(default) {
+                    ty = hint;
+                }
+            }
+        }
+        if matches!(ty, Type::Unknown)
+            && param
+                .default
+                .as_ref()
+                .is_some_and(|d| matches!(d.kind, ExprKind::Literal(Literal::None)))
+        {
+            // CPython-compat compromise:
+            // unannotated `param=None` starts as Optional[Unknown] so `is None` checks
+            // and branch-local narrowing work during body type checking.
+            ty = Type::Option(Box::new(Type::Unknown));
+        }
         if matches!(ty, Type::Iterator(_)) {
             return Err(self.error(param.span, "Iterator[T] is only allowed as a return type"));
         }
@@ -45,6 +63,23 @@ impl<'a> TypeChecker<'a> {
             ParamKind::VarArgs => Type::List(Box::new(ty)),
             ParamKind::VarKeywords => Type::Dict(Box::new(Type::Str), Box::new(ty)),
         })
+    }
+
+    /// Infer a concrete parameter hint from a default literal.
+    ///
+    /// CPython allows unannotated defaults to drive runtime behavior. We use a
+    /// narrow subset of that idea to avoid unknown parameter types in generated
+    /// Rust signatures.
+    fn infer_default_param_type(default: &Expr) -> Option<Type> {
+        match &default.kind {
+            ExprKind::Literal(Literal::Bool(_)) => Some(Type::Bool),
+            ExprKind::Literal(Literal::Int(_)) => Some(Type::Int),
+            ExprKind::Literal(Literal::Float(_)) => Some(Type::Float),
+            ExprKind::Literal(Literal::Str(_)) => Some(Type::Str),
+            ExprKind::Literal(Literal::Bytes(_)) => Some(Type::Bytes),
+            // Keep `None` defaults unconstrained: they usually participate in Optional-like flows.
+            _ => None,
+        }
     }
 
     /// Resolve a type reference to a concrete type.

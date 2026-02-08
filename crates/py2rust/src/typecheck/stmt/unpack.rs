@@ -36,13 +36,18 @@ impl<'a> TypeChecker<'a> {
                         return Err(self.error(span, "Unable to infer type; add annotation"));
                     }
                     self.ensure_assignable(value_ty, &global_ty, span)?;
-                } else if let Some(existing) = self.lookup_var(name) {
-                    self.ensure_assignable(value_ty, &existing, span)?;
                 } else {
-                    if matches!(value_ty, Type::Unknown) {
-                        return Err(self.error(span, "Unable to infer type; add annotation"));
+                    // Tuple/list unpacking follows Python rebinding semantics: an existing
+                    // name target is rebound to the unpacked value type instead of requiring
+                    // assignability with an earlier unrelated binding type.
+                    if self.lookup_var(name).is_some() {
+                        self.insert_var(name, value_ty.clone(), span)?;
+                    } else {
+                        if matches!(value_ty, Type::Unknown) {
+                            return Err(self.error(span, "Unable to infer type; add annotation"));
+                        }
+                        self.insert_var(name, value_ty.clone(), span)?;
                     }
-                    self.insert_var(name, value_ty.clone(), span)?;
                 }
                 // Preserve top-level lambda inference when unpacking literal tuples/lists.
                 if value_expr.is_some_and(|expr| matches!(expr.kind, ExprKind::Lambda { .. })) {

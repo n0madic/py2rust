@@ -87,18 +87,24 @@ impl<'a> Codegen<'a> {
                             format!("{}::{}({})", class_name, attr, call_args)
                         }
                         MethodKind::Class => {
+                            let def_params = if method_def.params.is_empty() {
+                                &method_def.params[..]
+                            } else {
+                                &method_def.params[1..]
+                            };
                             let param_types: Vec<Type> = sig
                                 .params
                                 .iter()
+                                .skip(1)
                                 .map(|t| self.to_borrowed_param_type(t))
                                 .collect();
                             let full_args = self.resolve_call_args(
                                 args,
                                 keywords,
-                                &method_def.params,
+                                def_params,
                                 &param_types,
                                 (Some(class_name), attr),
-                                true,
+                                false,
                             )?;
                             let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
                             format!("{}::{}({})", class_name, attr, call_args)

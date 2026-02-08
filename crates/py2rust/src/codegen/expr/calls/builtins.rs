@@ -304,7 +304,16 @@ impl<'a> Codegen<'a> {
             }
             self.uses.hash_set = true;
             if args.is_empty() {
-                return Ok(Some("HashSet::new()".to_string()));
+                if let Some(Type::Set(inner)) = expr.ty.as_ref() {
+                    if !matches!(inner.as_ref(), Type::Unknown) {
+                        return Ok(Some(format!("HashSet::<{}>::new()", self.rust_type(inner))));
+                    }
+                }
+                // CPython-compat divergence:
+                // `set()` without contextual typing is emitted as `HashSet<PyRepr>`
+                // to keep generated Rust monomorphized.
+                self.uses.py_repr = true;
+                return Ok(Some("HashSet::<PyRepr>::new()".to_string()));
             }
             let arg_expr = self.gen_expr(&args[0])?;
             if matches!(args[0].ty.as_ref(), Some(Type::Set(_))) {

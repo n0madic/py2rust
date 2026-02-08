@@ -155,10 +155,12 @@ class Cat(Animal):
 dog = Dog("Rex")
 assert dog.name == "Rex", "dog.name should equal \"Rex\""
 assert dog.speak() == "Woof!", "dog.speak() should equal \"Woof!\""
+assert type(dog) is Dog, "type(dog) should be Dog"
 
 cat = Cat("Whiskers")
 assert cat.name == "Whiskers", "cat.name should equal \"Whiskers\""
 assert cat.speak() == "Meow!", "cat.speak() should equal \"Meow!\""
+assert type(cat) is Cat, "type(cat) should be Cat"
 
 # ===== SECTION: super().__init__() =====
 

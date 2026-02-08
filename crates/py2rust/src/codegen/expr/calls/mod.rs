@@ -94,14 +94,29 @@ impl<'a> Codegen<'a> {
                 return Ok(call);
             }
         }
-        let callable_ty = if let Some(ty) = func.ty.clone() {
-            Some(ty)
-        } else if let ExprKind::Name(name) = &func.kind {
-            self.local_var_type(name)
-                .cloned()
-                .or_else(|| self.ctx.globals.get(name).cloned())
-        } else {
-            None
+        let callable_ty = match func.ty.clone() {
+            Some(Type::Unknown) => {
+                // CPython-compat note:
+                // typecheck can later refine callable shape in scope without rewriting
+                // every cached expression node. Prefer scope lookup over stale Unknown.
+                if let ExprKind::Name(name) = &func.kind {
+                    self.local_var_type(name)
+                        .cloned()
+                        .or_else(|| self.ctx.globals.get(name).cloned())
+                } else {
+                    Some(Type::Unknown)
+                }
+            }
+            Some(ty) => Some(ty),
+            None => {
+                if let ExprKind::Name(name) = &func.kind {
+                    self.local_var_type(name)
+                        .cloned()
+                        .or_else(|| self.ctx.globals.get(name).cloned())
+                } else {
+                    None
+                }
+            }
         };
         if let Some(Type::Lambda {
             param_names,
@@ -134,6 +149,20 @@ impl<'a> Codegen<'a> {
                 .iter()
                 .any(|arg| matches!(arg.kind, ExprKind::Starred { .. }))
                 || keywords.iter().any(|kw| kw.name.is_none());
+            if has_unpacking {
+                return self.gen_lambda_call_with_unpacking(
+                    expr,
+                    func,
+                    args::LambdaUnpackCallMeta {
+                        param_names: &normalized_names,
+                        params,
+                        param_kinds: &normalized_kinds,
+                        has_defaults: &normalized_defaults,
+                    },
+                    args,
+                    keywords,
+                );
+            }
             if !has_unpacking {
                 if !has_keyword_shape && !keywords.is_empty() {
                     return Err(self.error(
@@ -265,7 +294,7 @@ impl<'a> Codegen<'a> {
                     .map(|item| item.expect("filled above"))
                     .collect::<Vec<_>>();
                 return Ok(format!(
-                    "{}({})",
+                    "({})({})",
                     self.gen_expr(func)?,
                     final_args.join(", ")
                 ));
@@ -303,10 +332,28 @@ impl<'a> Codegen<'a> {
                 rendered_args.push(rendered);
             }
             return Ok(format!(
-                "{}({})",
+                "({})({})",
                 self.gen_expr(func)?,
                 rendered_args.join(", ")
             ));
+        }
+        if matches!(callable_ty, Some(Type::Unknown)) {
+            let has_unpacking = args
+                .iter()
+                .any(|arg| matches!(arg.kind, ExprKind::Starred { .. }))
+                || keywords.iter().any(|kw| kw.name.is_none());
+            if has_unpacking || !keywords.is_empty() {
+                // CPython-compat divergence:
+                // CPython supports forwarding dynamic call targets with *args/**kwargs.
+                // Our current Rust backend cannot represent this call protocol for an
+                // unknown callable shape, so we emit a runtime placeholder instead of
+                // failing compilation. This keeps transpilation progressing for code
+                // paths that are not executed.
+                return Ok(
+                    "unimplemented!(\"dynamic callable unpacking is not supported yet\")"
+                        .to_string(),
+                );
+            }
         }
         if !keywords.is_empty() {
             return Err(self.error(
@@ -315,7 +362,7 @@ impl<'a> Codegen<'a> {
             ));
         }
         Ok(format!(
-            "{}({})",
+            "({})({})",
             self.gen_expr(func)?,
             self.gen_args(args)?
         ))

@@ -33,10 +33,11 @@ impl<'a> Codegen<'a> {
                             default = default_expr
                         ));
                     }
-                    self.uses.py_dict_get = true;
-                    return Ok(
-                        self.wrap_result(format!("py_dict_get(&{}, &{})", target_expr, key_expr))
-                    );
+                    return Ok(format!(
+                        "{target}.get(&{key}).cloned()",
+                        target = target_expr,
+                        key = key_expr
+                    ));
                 }
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
@@ -53,14 +54,13 @@ impl<'a> Codegen<'a> {
                                 default = default_expr
                             ));
                         }
-                        self.uses.py_dict_get = true;
-                        return Ok(self.wrap_result(format!(
-                            "{{ let {outer} = {lock}; let {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{key}) }}",
+                        return Ok(format!(
+                            "{{ let {outer} = {lock}; let {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned() }}",
                             outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name),
                             key = key_expr
-                        )));
+                        ));
                     }
                 }
                 let target_expr = self.gen_expr(value)?;
@@ -85,24 +85,23 @@ impl<'a> Codegen<'a> {
                         default = default_expr
                     ));
                 }
-                self.uses.py_dict_get = true;
                 let guard = self.new_tmp();
                 if !matches!(value.kind, ExprKind::Name(_)) {
                     let tmp = self.new_tmp();
-                    return Ok(self.wrap_result(format!(
-                        "{{ let {tmp} = {target}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{key}) }}",
+                    return Ok(format!(
+                        "{{ let {tmp} = {target}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned() }}",
                         tmp = tmp,
                         target = target_expr,
                         guard = guard,
                         key = key_expr
-                    )));
+                    ));
                 }
-                return Ok(self.wrap_result(format!(
-                    "{{ let {guard} = {target}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{key}) }}",
+                return Ok(format!(
+                    "{{ let {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned() }}",
                     guard = guard,
                     target = target_expr,
                     key = key_expr
-                )));
+                ));
             }
         }
         if attr == "pop" {
@@ -267,12 +266,12 @@ impl<'a> Codegen<'a> {
                 } else {
                     "keys().cloned()"
                 };
-                let out_tmp = self.new_tmp();
                 if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
                     let target_expr = self.gen_expr(value)?;
+                    // CPython compatibility compromise:
+                    // Emit a snapshot list instead of a live dict_keys view object.
                     return Ok(format!(
-                        "{{ let {out} = {target}.{iter}.collect::<Vec<_>>(); {out}.into_iter() }}",
-                        out = out_tmp,
+                        "Arc::new(Mutex::new({target}.{iter}.collect::<Vec<_>>()))",
                         target = target_expr,
                         iter = iter_call
                     ));
@@ -283,8 +282,7 @@ impl<'a> Codegen<'a> {
                     false,
                     |_tc, guard| {
                         format!(
-                            "let {out} = {guard}.{iter}.collect::<Vec<_>>(); {out}.into_iter()",
-                            out = out_tmp,
+                            "Arc::new(Mutex::new({guard}.{iter}.collect::<Vec<_>>()))",
                             guard = guard,
                             iter = iter_call
                         )
@@ -303,12 +301,12 @@ impl<'a> Codegen<'a> {
                 } else {
                     "values().cloned()"
                 };
-                let out_tmp = self.new_tmp();
                 if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
                     let target_expr = self.gen_expr(value)?;
+                    // CPython compatibility compromise:
+                    // Emit a snapshot list instead of a live dict_values view object.
                     return Ok(format!(
-                        "{{ let {out} = {target}.{iter}.collect::<Vec<_>>(); {out}.into_iter() }}",
-                        out = out_tmp,
+                        "Arc::new(Mutex::new({target}.{iter}.collect::<Vec<_>>()))",
                         target = target_expr,
                         iter = iter_call
                     ));
@@ -319,8 +317,7 @@ impl<'a> Codegen<'a> {
                     false,
                     |_tc, guard| {
                         format!(
-                            "let {out} = {guard}.{iter}.collect::<Vec<_>>(); {out}.into_iter()",
-                            out = out_tmp,
+                            "Arc::new(Mutex::new({guard}.{iter}.collect::<Vec<_>>()))",
                             guard = guard,
                             iter = iter_call
                         )

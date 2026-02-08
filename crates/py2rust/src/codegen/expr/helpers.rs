@@ -80,8 +80,33 @@ impl<'a> Codegen<'a> {
                 return self.gen_lambda_with_param_types(names, body, Some(inferred), ret_hint);
             }
         }
+        if let Some(Type::List(inner)) = expected {
+            if !matches!(inner.as_ref(), Type::Unknown) {
+                if let ExprKind::List(items) = &expr.kind {
+                    let mut hinted = expr.clone();
+                    hinted.ty = Some(Type::List(inner.clone()));
+                    return self.gen_list_expr(&hinted, items);
+                }
+            }
+        }
         if let Some(Type::Option(_)) = expected {
-            if matches!(expr.ty.as_ref(), Some(Type::Option(_))) {
+            let must_wrap_some = matches!(
+                expr.kind,
+                ExprKind::List(_)
+                    | ExprKind::Dict(_)
+                    | ExprKind::Set(_)
+                    | ExprKind::Tuple(_)
+                    | ExprKind::ListComp { .. }
+                    | ExprKind::SetComp { .. }
+                    | ExprKind::Literal(
+                        Literal::Bool(_)
+                            | Literal::Int(_)
+                            | Literal::Float(_)
+                            | Literal::Str(_)
+                            | Literal::Bytes(_)
+                    )
+            );
+            if matches!(expr.ty.as_ref(), Some(Type::Option(_))) && !must_wrap_some {
                 return self.gen_expr(expr);
             }
             if matches!(expr.kind, ExprKind::Literal(Literal::None)) {
@@ -92,6 +117,46 @@ impl<'a> Codegen<'a> {
             };
             let inner = self.gen_expr_with_expected(expr, Some(inner_ty.as_ref()))?;
             return Ok(format!("Some({})", inner));
+        }
+        if let Some(expected_ty) = expected {
+            let option_inner_ty = if let Some(Type::Option(inner)) = expr.ty.as_ref() {
+                Some(inner.as_ref().clone())
+            } else if let ExprKind::Name(name) = &expr.kind {
+                self.local_var_type(name)
+                    .cloned()
+                    .or_else(|| {
+                        if self.is_global(name) {
+                            self.ctx.globals.get(name).cloned()
+                        } else {
+                            None
+                        }
+                    })
+                    .and_then(|ty| {
+                        if let Type::Option(inner) = ty {
+                            Some(*inner)
+                        } else {
+                            None
+                        }
+                    })
+            } else {
+                None
+            };
+            if let Some(inner_ty) = option_inner_ty {
+                if !matches!(expected_ty, Type::Option(_))
+                    && (matches!(expected_ty, Type::Unknown)
+                        || matches!(inner_ty, Type::Unknown)
+                        || inner_ty == *expected_ty)
+                {
+                    // CPython-compat divergence:
+                    // when a non-Optional value is expected, we eagerly unwrap Option with
+                    // `.expect(...)` rather than propagating Python exceptions.
+                    let rendered = self.gen_expr(expr)?;
+                    return Ok(format!(
+                        "({}).as_ref().expect(\"optional value is None\").clone()",
+                        rendered
+                    ));
+                }
+            }
         }
         if let Some(Type::Float) = expected {
             if matches!(expr.ty.as_ref(), Some(Type::Int)) {
@@ -106,6 +171,19 @@ impl<'a> Codegen<'a> {
             if matches!(expr.ty.as_ref(), Some(Type::Bool)) {
                 return Ok(format!("({} as i64)", self.gen_expr(expr)?));
             }
+        }
+        if let Some(Type::Iterator(_)) = expected {
+            // Closures cannot use `impl Iterator` in parameter position, so
+            // iterator arguments are normalized through the concrete `PyIter<T>`
+            // wrapper when an iterator-typed parameter is expected.
+            self.uses.py_iter = true;
+            if matches!(expr.ty.as_ref(), Some(Type::Iterator(_))) {
+                return Ok(format!("py_iter({})", self.gen_expr(expr)?));
+            }
+            let iter_src = self.gen_iter_source(expr)?;
+            let iter_expr = iter_src.expr.clone();
+            let wrapped = iter_src.wrap(format!("py_iter({})", iter_expr));
+            return Ok(wrapped);
         }
         self.gen_expr(expr)
     }

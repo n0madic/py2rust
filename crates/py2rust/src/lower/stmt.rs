@@ -42,6 +42,8 @@ struct LoweredRuntimeMatchCase {
 /// - Nested function definitions are lowered to lambda assignments
 ///   This allows them to be type-checked like any other value
 ///   Example: `def f(): ...` becomes `f = lambda: ...` in HIR
+/// - Decorated nested functions are lowered as decorator-call expressions
+///   around the lowered lambda value, preserving CPython application order.
 /// - We distinguish between Let (new variable) and Assign (mutation)
 ///   This makes it easier to determine Rust's `let` vs bare assignment
 /// - We normalize assignment targets (name, attribute, index) into AssignTarget
@@ -58,12 +60,6 @@ impl<'a> Lowerer<'a> {
             // - Nested functions are local variables that happen to contain lambdas
             // - This matches Python's semantics where nested functions are closures
             ast::Stmt::FunctionDef(def) => {
-                // Decorators only allowed on top-level functions
-                if !def.decorator_list.is_empty() {
-                    return Err(
-                        self.error(def.range(), "Decorators are not supported inside functions")
-                    );
-                }
                 if !def.type_params.is_empty() {
                     return Err(self.error(def.range(), "Type parameters are not supported"));
                 }
@@ -130,12 +126,19 @@ impl<'a> Lowerer<'a> {
                 for stmt in &def.body {
                     body_stmts.push(self.lower_stmt(stmt)?);
                 }
+                if self.stmts_contain_yield(&body_stmts) {
+                    self.rewrite_nested_generator_body(
+                        Span::from(def.range()),
+                        def.name.as_str(),
+                        &mut body_stmts,
+                    )?;
+                }
                 let block = Expr {
                     kind: ExprKind::Block { stmts: body_stmts },
                     span: Span::from(def.range()),
                     ty: None,
                 };
-                let value = Expr {
+                let mut value = Expr {
                     kind: ExprKind::Lambda {
                         params,
                         param_kinds,
@@ -145,12 +148,43 @@ impl<'a> Lowerer<'a> {
                     span: Span::from(def.range()),
                     ty: None,
                 };
+                let has_decorators = !def.decorator_list.is_empty();
+                if has_decorators {
+                    // CPython semantics: apply decorators bottom-up:
+                    // `@d1 @d2 def f(...)` -> `f = d1(d2(f))`.
+                    let mut decorated = value;
+                    for decorator in def.decorator_list.iter().rev() {
+                        let lowered = match decorator {
+                            ast::Expr::Name(_) | ast::Expr::Call(_) => {
+                                self.lower_expr(decorator)?
+                            }
+                            _ => {
+                                // CPython-compat divergence:
+                                // We only lower simple decorator expressions here.
+                                return Err(
+                                    self.error(def.range(), "Only simple decorators are supported")
+                                );
+                            }
+                        };
+                        decorated = Expr {
+                            kind: ExprKind::Call {
+                                func: Box::new(lowered),
+                                args: vec![decorated],
+                                keywords: Vec::new(),
+                            },
+                            span: Span::from(def.range()),
+                            ty: None,
+                        };
+                    }
+                    value = decorated;
+                }
+                let ann = Some(TypeRef::Lambda {
+                    params: param_types,
+                    ret: Box::new(ret),
+                });
                 StmtKind::Let {
                     name: self.ident(def.name.as_str()),
-                    ann: Some(TypeRef::Lambda {
-                        params: param_types,
-                        ret: Box::new(ret),
-                    }),
+                    ann,
                     value,
                 }
             }
@@ -1426,5 +1460,413 @@ impl<'a> Lowerer<'a> {
             )),
             _ => Err(self.error(expr.range(), "Unsupported assignment target")),
         }
+    }
+
+    /// Return true when any statement in a list contains a `yield` expression.
+    fn stmts_contain_yield(&self, stmts: &[Stmt]) -> bool {
+        stmts.iter().any(|stmt| self.stmt_contains_yield(stmt))
+    }
+
+    /// Return true when a statement subtree contains a `yield` expression.
+    fn stmt_contains_yield(&self, stmt: &Stmt) -> bool {
+        match &stmt.kind {
+            StmtKind::Let { value, .. } => self.expr_contains_yield(value),
+            StmtKind::Assign { value, .. } => self.expr_contains_yield(value),
+            StmtKind::Delete { .. } => false,
+            StmtKind::Class { def } => {
+                def.methods
+                    .iter()
+                    .any(|method| self.stmts_contain_yield(&method.body))
+                    || def
+                        .class_attrs
+                        .iter()
+                        .any(|attr| self.expr_contains_yield(&attr.value))
+            }
+            StmtKind::Return { value } => value
+                .as_ref()
+                .is_some_and(|expr| self.expr_contains_yield(expr)),
+            StmtKind::If { test, body, orelse } => {
+                self.expr_contains_yield(test)
+                    || self.stmts_contain_yield(body)
+                    || self.stmts_contain_yield(orelse)
+            }
+            StmtKind::While { test, body } => {
+                self.expr_contains_yield(test) || self.stmts_contain_yield(body)
+            }
+            StmtKind::For { iter, body, .. } => {
+                self.expr_contains_yield(iter) || self.stmts_contain_yield(body)
+            }
+            StmtKind::Import { .. }
+            | StmtKind::ImportFrom { .. }
+            | StmtKind::Global { .. }
+            | StmtKind::Nonlocal { .. }
+            | StmtKind::Break
+            | StmtKind::Continue => false,
+            StmtKind::Expr(expr) => self.expr_contains_yield(expr),
+            StmtKind::Assert { test, msg } => {
+                self.expr_contains_yield(test)
+                    || msg
+                        .as_ref()
+                        .is_some_and(|expr| self.expr_contains_yield(expr))
+            }
+            StmtKind::Match { subject, cases } => {
+                self.expr_contains_yield(subject)
+                    || cases
+                        .iter()
+                        .any(|case| self.stmts_contain_yield(&case.body))
+            }
+            StmtKind::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                self.stmts_contain_yield(body)
+                    || handlers
+                        .iter()
+                        .any(|handler| self.stmts_contain_yield(&handler.body))
+                    || self.stmts_contain_yield(orelse)
+                    || self.stmts_contain_yield(finalbody)
+            }
+            StmtKind::Raise { exc, cause } => {
+                exc.as_ref()
+                    .is_some_and(|expr| self.expr_contains_yield(expr))
+                    || cause
+                        .as_ref()
+                        .is_some_and(|expr| self.expr_contains_yield(expr))
+            }
+        }
+    }
+
+    /// Return true when an expression subtree contains a `yield` expression.
+    fn expr_contains_yield(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Literal(_) | ExprKind::Name(_) => false,
+            ExprKind::Yield { .. } => true,
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
+                self.expr_contains_yield(func)
+                    || args.iter().any(|arg| self.expr_contains_yield(arg))
+                    || keywords
+                        .iter()
+                        .any(|kw| self.expr_contains_yield(&kw.value))
+            }
+            ExprKind::Starred { value } => self.expr_contains_yield(value),
+            ExprKind::Attr { value, .. } => self.expr_contains_yield(value),
+            ExprKind::Binary { left, right, .. } => {
+                self.expr_contains_yield(left) || self.expr_contains_yield(right)
+            }
+            ExprKind::Unary { expr, .. } => self.expr_contains_yield(expr),
+            ExprKind::Compare { left, right, .. } => {
+                self.expr_contains_yield(left) || self.expr_contains_yield(right)
+            }
+            ExprKind::CompareChain {
+                left, comparators, ..
+            } => {
+                self.expr_contains_yield(left)
+                    || comparators.iter().any(|cmp| self.expr_contains_yield(cmp))
+            }
+            ExprKind::BoolOp { values, .. } => {
+                values.iter().any(|value| self.expr_contains_yield(value))
+            }
+            ExprKind::List(values) | ExprKind::Tuple(values) | ExprKind::Set(values) => {
+                values.iter().any(|value| self.expr_contains_yield(value))
+            }
+            ExprKind::Dict(entries) => entries.iter().any(|entry| match entry {
+                DictEntry::Item { key, value } => {
+                    self.expr_contains_yield(key) || self.expr_contains_yield(value)
+                }
+                DictEntry::Unpack { value } => self.expr_contains_yield(value),
+            }),
+            ExprKind::Index { value, index } => {
+                self.expr_contains_yield(value) || self.expr_contains_yield(index)
+            }
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } => {
+                self.expr_contains_yield(value)
+                    || start
+                        .as_ref()
+                        .is_some_and(|expr| self.expr_contains_yield(expr))
+                    || end
+                        .as_ref()
+                        .is_some_and(|expr| self.expr_contains_yield(expr))
+                    || step
+                        .as_ref()
+                        .is_some_and(|expr| self.expr_contains_yield(expr))
+            }
+            ExprKind::ListComp {
+                elt,
+                iter,
+                ifs,
+                generators,
+                ..
+            }
+            | ExprKind::SetComp {
+                elt,
+                iter,
+                ifs,
+                generators,
+                ..
+            } => {
+                self.expr_contains_yield(elt)
+                    || self.expr_contains_yield(iter)
+                    || ifs.iter().any(|expr| self.expr_contains_yield(expr))
+                    || generators.iter().any(|clause| {
+                        self.expr_contains_yield(&clause.iter)
+                            || clause.ifs.iter().any(|expr| self.expr_contains_yield(expr))
+                    })
+            }
+            ExprKind::UnionCtor { inner, .. } => self.expr_contains_yield(inner),
+            ExprKind::Lambda { body, .. } => self.expr_contains_yield(body),
+            ExprKind::IfExpr { test, body, orelse } => {
+                self.expr_contains_yield(test)
+                    || self.expr_contains_yield(body)
+                    || self.expr_contains_yield(orelse)
+            }
+            ExprKind::Block { stmts } => self.stmts_contain_yield(stmts),
+        }
+    }
+
+    /// Rewrite nested generator-style `yield` statements to eager list building.
+    ///
+    /// This keeps nested function support pragmatic by translating:
+    /// - `yield x` statements into `__py_yields.append(x)`
+    /// - implicit generator return into `return __py_yields`
+    fn rewrite_nested_generator_body(
+        &self,
+        fn_span: Span,
+        fn_name: &str,
+        stmts: &mut Vec<Stmt>,
+    ) -> Result<(), CompileError> {
+        let acc_name = self.ident(&format!("__py_yields_{}", fn_name));
+        for stmt in stmts.iter_mut() {
+            self.rewrite_nested_generator_stmt(stmt, acc_name.as_str())?;
+        }
+        let init_stmt = Stmt {
+            kind: StmtKind::Let {
+                name: acc_name.clone(),
+                ann: None,
+                value: Expr {
+                    kind: ExprKind::List(Vec::new()),
+                    span: fn_span,
+                    ty: None,
+                },
+            },
+            span: fn_span,
+        };
+        let ret_stmt = Stmt {
+            kind: StmtKind::Return {
+                value: Some(Expr {
+                    kind: ExprKind::Name(acc_name),
+                    span: fn_span,
+                    ty: None,
+                }),
+            },
+            span: fn_span,
+        };
+        let original = std::mem::take(stmts);
+        let mut rewritten = Vec::with_capacity(original.len() + 2);
+        rewritten.push(init_stmt);
+        rewritten.extend(original);
+        rewritten.push(ret_stmt);
+        *stmts = rewritten;
+        Ok(())
+    }
+
+    /// Recursively rewrite standalone `yield` statements inside nested functions.
+    fn rewrite_nested_generator_stmt(
+        &self,
+        stmt: &mut Stmt,
+        acc_name: &str,
+    ) -> Result<(), CompileError> {
+        match &mut stmt.kind {
+            StmtKind::Expr(expr) => {
+                if let ExprKind::Yield { value } = &expr.kind {
+                    let yielded = value.as_deref().cloned().unwrap_or(Expr {
+                        kind: ExprKind::Literal(Literal::None),
+                        span: stmt.span,
+                        ty: None,
+                    });
+                    let acc_expr = Expr {
+                        kind: ExprKind::Name(acc_name.to_string()),
+                        span: stmt.span,
+                        ty: None,
+                    };
+                    let call = Expr {
+                        kind: ExprKind::Call {
+                            func: Box::new(Expr {
+                                kind: ExprKind::Attr {
+                                    value: Box::new(acc_expr),
+                                    attr: "append".to_string(),
+                                },
+                                span: stmt.span,
+                                ty: None,
+                            }),
+                            args: vec![yielded],
+                            keywords: Vec::new(),
+                        },
+                        span: stmt.span,
+                        ty: None,
+                    };
+                    stmt.kind = StmtKind::Expr(call);
+                    return Ok(());
+                }
+                if self.expr_contains_yield(expr) {
+                    return Err(CompileError::new(
+                        "Nested generator lowering supports `yield` only as a standalone statement",
+                        stmt.span,
+                        self.source,
+                        self.filename,
+                    ));
+                }
+            }
+            StmtKind::If { test, body, orelse } => {
+                if self.expr_contains_yield(test) {
+                    return Err(CompileError::new(
+                        "Nested generator lowering does not support `yield` in if conditions",
+                        stmt.span,
+                        self.source,
+                        self.filename,
+                    ));
+                }
+                for nested in body.iter_mut() {
+                    self.rewrite_nested_generator_stmt(nested, acc_name)?;
+                }
+                for nested in orelse.iter_mut() {
+                    self.rewrite_nested_generator_stmt(nested, acc_name)?;
+                }
+            }
+            StmtKind::While { test, body } => {
+                if self.expr_contains_yield(test) {
+                    return Err(CompileError::new(
+                        "Nested generator lowering does not support `yield` in while conditions",
+                        stmt.span,
+                        self.source,
+                        self.filename,
+                    ));
+                }
+                for nested in body.iter_mut() {
+                    self.rewrite_nested_generator_stmt(nested, acc_name)?;
+                }
+            }
+            StmtKind::For { iter, body, .. } => {
+                if self.expr_contains_yield(iter) {
+                    return Err(CompileError::new(
+                        "Nested generator lowering does not support `yield` in for iterators",
+                        stmt.span,
+                        self.source,
+                        self.filename,
+                    ));
+                }
+                for nested in body.iter_mut() {
+                    self.rewrite_nested_generator_stmt(nested, acc_name)?;
+                }
+            }
+            StmtKind::Match { subject, cases } => {
+                if self.expr_contains_yield(subject) {
+                    return Err(CompileError::new(
+                        "Nested generator lowering does not support `yield` in match subjects",
+                        stmt.span,
+                        self.source,
+                        self.filename,
+                    ));
+                }
+                for case in cases.iter_mut() {
+                    for nested in case.body.iter_mut() {
+                        self.rewrite_nested_generator_stmt(nested, acc_name)?;
+                    }
+                }
+            }
+            StmtKind::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                for nested in body.iter_mut() {
+                    self.rewrite_nested_generator_stmt(nested, acc_name)?;
+                }
+                for handler in handlers.iter_mut() {
+                    for nested in handler.body.iter_mut() {
+                        self.rewrite_nested_generator_stmt(nested, acc_name)?;
+                    }
+                }
+                for nested in orelse.iter_mut() {
+                    self.rewrite_nested_generator_stmt(nested, acc_name)?;
+                }
+                for nested in finalbody.iter_mut() {
+                    self.rewrite_nested_generator_stmt(nested, acc_name)?;
+                }
+            }
+            StmtKind::Let { value, .. } | StmtKind::Assign { value, .. } => {
+                if self.expr_contains_yield(value) {
+                    return Err(CompileError::new(
+                        "Nested generator lowering supports `yield` only as a standalone statement",
+                        stmt.span,
+                        self.source,
+                        self.filename,
+                    ));
+                }
+            }
+            StmtKind::Return { value } => {
+                if value
+                    .as_ref()
+                    .is_some_and(|expr| self.expr_contains_yield(expr))
+                {
+                    return Err(CompileError::new(
+                        "Nested generator lowering does not support `yield` in return expressions",
+                        stmt.span,
+                        self.source,
+                        self.filename,
+                    ));
+                }
+            }
+            StmtKind::Assert { test, msg } => {
+                if self.expr_contains_yield(test)
+                    || msg
+                        .as_ref()
+                        .is_some_and(|expr| self.expr_contains_yield(expr))
+                {
+                    return Err(CompileError::new(
+                        "Nested generator lowering does not support `yield` in assert statements",
+                        stmt.span,
+                        self.source,
+                        self.filename,
+                    ));
+                }
+            }
+            StmtKind::Raise { exc, cause } => {
+                if exc
+                    .as_ref()
+                    .is_some_and(|expr| self.expr_contains_yield(expr))
+                    || cause
+                        .as_ref()
+                        .is_some_and(|expr| self.expr_contains_yield(expr))
+                {
+                    return Err(CompileError::new(
+                        "Nested generator lowering does not support `yield` in raise expressions",
+                        stmt.span,
+                        self.source,
+                        self.filename,
+                    ));
+                }
+            }
+            StmtKind::Class { .. }
+            | StmtKind::Delete { .. }
+            | StmtKind::Import { .. }
+            | StmtKind::ImportFrom { .. }
+            | StmtKind::Global { .. }
+            | StmtKind::Nonlocal { .. }
+            | StmtKind::Break
+            | StmtKind::Continue => {}
+        }
+        Ok(())
     }
 }

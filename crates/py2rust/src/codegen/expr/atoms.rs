@@ -44,6 +44,9 @@ impl<'a> Codegen<'a> {
             return Ok("__NAME__.to_string()".to_string());
         }
         if let Some(override_expr) = self.name_override(name) {
+            if self.is_cell_local(name) || self.is_nonlocal_decl(name) {
+                return Ok(format!("{}.borrow().clone()", override_expr));
+            }
             return Ok(override_expr.to_string());
         }
         if self.is_cell_local(name) || self.is_nonlocal_decl(name) {
@@ -72,6 +75,16 @@ impl<'a> Codegen<'a> {
                 }
                 return Ok(format!("{}.clone()", self.global_lock_expr(global_name)));
             }
+            if let Some(override_name) = self.name_override(name) {
+                if self.ctx.classes.contains_key(override_name) {
+                    if let Some(global_name) = self.class_attr_global(override_name, attr) {
+                        if let Some(override_expr) = self.global_override(global_name) {
+                            return Ok(override_expr.to_string());
+                        }
+                        return Ok(format!("{}.clone()", self.global_lock_expr(global_name)));
+                    }
+                }
+            }
             if self.is_global(name)
                 && matches!(self.ctx.globals.get(name), Some(Type::Option(_)))
                 && matches!(value.ty.as_ref(), Some(Type::Custom(_)))
@@ -96,6 +109,9 @@ impl<'a> Codegen<'a> {
                                 Some(prop.getter.clone())
                             }
                         });
+                        let getter_fallible = self
+                            .deletable_property_backing_int_field(class_name, attr)
+                            .is_some();
                         let base = if let Some(override_expr) = self.name_override(name) {
                             // Narrowing overrides already yield an unwrapped inner value.
                             override_expr.to_string()
@@ -106,7 +122,11 @@ impl<'a> Codegen<'a> {
                             )
                         };
                         if let Some(getter) = getter {
-                            return Ok(format!("{}.{}()", base, getter));
+                            let call = format!("{}.{}()", base, getter);
+                            if getter_fallible {
+                                return Ok(self.wrap_result(call));
+                            }
+                            return Ok(call);
                         }
                         return Ok(format!("{}.{}", base, attr));
                     }
@@ -126,6 +146,9 @@ impl<'a> Codegen<'a> {
                                 Some(prop.getter.clone())
                             }
                         });
+                        let getter_fallible = self
+                            .deletable_property_backing_int_field(class_name, attr)
+                            .is_some();
                         let base = if let Some(override_expr) = self.name_override(name) {
                             // Narrowing overrides already yield an unwrapped inner value.
                             override_expr.to_string()
@@ -136,7 +159,11 @@ impl<'a> Codegen<'a> {
                             )
                         };
                         if let Some(getter) = getter {
-                            return Ok(format!("{}.{}()", base, getter));
+                            let call = format!("{}.{}()", base, getter);
+                            if getter_fallible {
+                                return Ok(self.wrap_result(call));
+                            }
+                            return Ok(call);
                         }
                         return Ok(format!("{}.{}", base, attr));
                     }
@@ -167,6 +194,9 @@ impl<'a> Codegen<'a> {
                         Some(prop.getter.clone())
                     }
                 });
+                let getter_fallible = self
+                    .deletable_property_backing_int_field(class_name, attr)
+                    .is_some();
                 if let ExprKind::Name(name) = &value.kind {
                     let base = if let Some(override_expr) = self.name_override(name) {
                         // Narrowing overrides already yield an unwrapped inner value.
@@ -178,19 +208,27 @@ impl<'a> Codegen<'a> {
                         )
                     };
                     if let Some(getter) = getter {
-                        return Ok(format!("{}.{}()", base, getter));
+                        let call = format!("{}.{}()", base, getter);
+                        if getter_fallible {
+                            return Ok(self.wrap_result(call));
+                        }
+                        return Ok(call);
                     }
                     return Ok(format!("{}.{}", base, attr));
                 }
                 let tmp = self.new_tmp();
                 let expr = self.gen_expr(value)?;
                 if let Some(getter) = getter {
-                    return Ok(format!(
+                    let call = format!(
                         "{{ let {tmp} = {expr}; {tmp}.as_ref().expect(\"optional value is None\").{getter}() }}",
                         tmp = tmp,
                         expr = expr,
                         getter = getter
-                    ));
+                    );
+                    if getter_fallible {
+                        return Ok(self.wrap_result(call));
+                    }
+                    return Ok(call);
                 }
                 return Ok(format!(
                     "{{ let {tmp} = {expr}; {tmp}.as_ref().expect(\"optional value is None\").{attr} }}",
@@ -217,8 +255,15 @@ impl<'a> Codegen<'a> {
                     Some(prop.getter.clone())
                 }
             });
+            let getter_fallible = self
+                .deletable_property_backing_int_field(class_name, attr)
+                .is_some();
             if let Some(getter) = getter {
-                return Ok(format!("{}.{}()", self.gen_expr(value)?, getter));
+                let call = format!("{}.{}()", self.gen_expr(value)?, getter);
+                if getter_fallible {
+                    return Ok(self.wrap_result(call));
+                }
+                return Ok(call);
             }
         }
         if attr == "__name__" {

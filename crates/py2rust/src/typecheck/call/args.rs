@@ -94,6 +94,37 @@ impl<'a> TypeChecker<'a> {
         span: Span,
         allow_self: bool,
     ) -> Result<(), CompileError> {
+        let mut unpack_scalar_hint = Type::Unknown;
+        for (idx, kind) in sig.param_kinds.iter().enumerate() {
+            let Some(param_ty) = sig.params.get(idx) else {
+                continue;
+            };
+            let candidate = match kind {
+                ParamKind::PositionalOnly
+                | ParamKind::PositionalOrKeyword
+                | ParamKind::KeywordOnly => param_ty.clone(),
+                ParamKind::VarArgs => match param_ty {
+                    Type::List(inner) => inner.as_ref().clone(),
+                    _ => Type::Unknown,
+                },
+                ParamKind::VarKeywords => match param_ty {
+                    Type::Dict(_, value) => value.as_ref().clone(),
+                    _ => Type::Unknown,
+                },
+            };
+            if matches!(candidate, Type::Unknown) {
+                continue;
+            }
+            unpack_scalar_hint =
+                if matches!(unpack_scalar_hint, Type::Unknown) || unpack_scalar_hint == candidate {
+                    candidate
+                } else {
+                    Type::Unknown
+                };
+            if matches!(unpack_scalar_hint, Type::Unknown) {
+                break;
+            }
+        }
         let mut seen_keywords = HashSet::new();
         let mut varkw_value_ty: Option<&Type> = None;
         for (idx, kind) in sig.param_kinds.iter().enumerate() {
@@ -106,8 +137,25 @@ impl<'a> TypeChecker<'a> {
 
         for arg in args.iter_mut() {
             if let ExprKind::Starred { value } = &mut arg.kind {
-                let iter_ty = self.check_expr(value, None)?;
+                let expected_iter = if matches!(unpack_scalar_hint, Type::Unknown) {
+                    None
+                } else {
+                    Some(Type::List(Box::new(unpack_scalar_hint.clone())))
+                };
+                let iter_ty = self.check_expr(value, expected_iter.as_ref())?;
                 let _ = self.iter_item_type(&iter_ty, span)?;
+                if let ExprKind::Name(name) = &value.kind {
+                    if !matches!(unpack_scalar_hint, Type::Unknown) {
+                        if let Some(Type::List(inner)) = self.lookup_var(name) {
+                            if matches!(inner.as_ref(), Type::Unknown) {
+                                self.set_var_type(
+                                    name,
+                                    Type::List(Box::new(unpack_scalar_hint.clone())),
+                                );
+                            }
+                        }
+                    }
+                }
             } else {
                 self.check_expr(arg, None)?;
             }
@@ -163,7 +211,15 @@ impl<'a> TypeChecker<'a> {
                     return Err(self.error(span, format!("Unknown keyword argument `{name}`")));
                 }
             } else {
-                let unpack_ty = self.check_expr(&mut kw.value, None)?;
+                let expected_unpack = if matches!(unpack_scalar_hint, Type::Unknown) {
+                    None
+                } else {
+                    Some(Type::Dict(
+                        Box::new(Type::Str),
+                        Box::new(unpack_scalar_hint.clone()),
+                    ))
+                };
+                let unpack_ty = self.check_expr(&mut kw.value, expected_unpack.as_ref())?;
                 match unpack_ty {
                     Type::Dict(key_ty, _) => {
                         if !matches!(key_ty.as_ref(), Type::Str | Type::Unknown) {
@@ -179,6 +235,23 @@ impl<'a> TypeChecker<'a> {
                             span,
                             "Call-site **kwargs unpacking expects a dict expression",
                         ));
+                    }
+                }
+                if let ExprKind::Name(name) = &kw.value.kind {
+                    if !matches!(unpack_scalar_hint, Type::Unknown) {
+                        if let Some(Type::Dict(key_ty, value_ty)) = self.lookup_var(name) {
+                            if matches!(key_ty.as_ref(), Type::Str | Type::Unknown)
+                                && matches!(value_ty.as_ref(), Type::Unknown)
+                            {
+                                self.set_var_type(
+                                    name,
+                                    Type::Dict(
+                                        Box::new(Type::Str),
+                                        Box::new(unpack_scalar_hint.clone()),
+                                    ),
+                                );
+                            }
+                        }
                     }
                 }
             }

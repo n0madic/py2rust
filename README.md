@@ -22,7 +22,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - String operations: indexing/slicing, `upper`, `lower`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `find`, `replace`, `split`, `join`, `count`, `title`, `capitalize`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`, `islower`
 - Classes with fields, methods, and class attributes
 - Single inheritance with method overrides and `super().__init__` calls
-- Decorators: `@property` (getter/setter), `@staticmethod`, `@classmethod`, and simple top-level function decorators
+- Decorators: `@property` (getter/setter), `@staticmethod`, `@classmethod`, and simple function decorators (top-level and nested)
 - Enum-like `Union` aliases via `A | B` type aliases
 - `match/case` for literals/singletons, capture and wildcard patterns, `|` patterns, guards, and list sequence/star patterns
 - `match/case` on union variants (class patterns) with `__match_args__` support
@@ -136,8 +136,8 @@ The generated Rust injects tiny helper functions only when needed:
 - Local classes are limited to direct function-body scope (no `if/for/while/try/match` nesting), and methods cannot capture outer function locals.
 - `global x` requires `x` to exist at module scope, and declaration order follows CPython rules (`global` must appear before first use in the function).
 - `__init__` is treated as a constructor; it must only assign `self` fields.
-- Class decorators and decorator calls are rejected (e.g. `@decorator()` or `@dataclass`).
-- Function decorators are limited to simple names on top-level functions.
+- Class decorators are rejected (e.g. `@dataclass`), and class-method decorators remain limited to the supported built-ins (`property`/`setter`/`deleter`, `staticmethod`, `classmethod`).
+- Function decorators support simple name/call decorator expressions on top-level and nested `def`.
 - Class-pattern `match` (e.g. `case Point(x, y):`) currently requires a union-typed subject.
 - Guards on class-pattern union matches are currently rejected.
 - `dict` indexing raises `KeyError` (propagated as `PyError`).

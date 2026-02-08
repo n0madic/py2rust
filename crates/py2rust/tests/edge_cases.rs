@@ -163,10 +163,11 @@ def make_empty() -> dict[str, int]:
 "#;
     let out =
         compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
-    // Empty dict should use IndexMap::new()
+    // Empty dict may require explicit key/value generic args in Rust when there is
+    // no contextual type information at the expression site.
     assert!(
-        out.rust.contains("IndexMap::new()"),
-        "Should use IndexMap::new() for empty dict"
+        out.rust.contains("IndexMap::new()") || out.rust.contains("IndexMap::<"),
+        "Should use IndexMap::new() (possibly with explicit generics) for empty dict"
     );
 }
 

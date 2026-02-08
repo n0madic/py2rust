@@ -126,7 +126,35 @@ impl<'a> Codegen<'a> {
     ) -> Result<String, CompileError> {
         self.uses.index_map = true;
         if items.is_empty() {
-            let base = "IndexMap::new()".to_string();
+            // Empty dict literals must still be monomorphized in Rust.
+            // Fall back to PyRepr storage when key/value types are unknown.
+            let (key_ty, val_ty) = match expr.ty.as_ref() {
+                Some(Type::Dict(key, val))
+                    if !matches!(key.as_ref(), Type::Unknown)
+                        && !matches!(val.as_ref(), Type::Unknown) =>
+                {
+                    (self.rust_type(key.as_ref()), self.rust_type(val.as_ref()))
+                }
+                Some(Type::Dict(key, val)) => {
+                    self.uses.py_repr = true;
+                    let key_ty = if matches!(key.as_ref(), Type::Unknown) {
+                        "PyRepr".to_string()
+                    } else {
+                        self.rust_type(key.as_ref())
+                    };
+                    let val_ty = if matches!(val.as_ref(), Type::Unknown) {
+                        "PyRepr".to_string()
+                    } else {
+                        self.rust_type(val.as_ref())
+                    };
+                    (key_ty, val_ty)
+                }
+                _ => {
+                    self.uses.py_repr = true;
+                    ("PyRepr".to_string(), "PyRepr".to_string())
+                }
+            };
+            let base = format!("IndexMap::<{}, {}>::new()", key_ty, val_ty);
             return Ok(self.wrap_dict_storage_expr(&base, storage));
         }
         let (expected_key, expected_val) = match expr.ty.as_ref() {
@@ -200,7 +228,16 @@ impl<'a> Codegen<'a> {
     ) -> Result<String, CompileError> {
         self.uses.hash_set = true;
         if items.is_empty() {
-            return Ok("HashSet::new()".to_string());
+            if let Some(Type::Set(inner)) = expr.ty.as_ref() {
+                if !matches!(inner.as_ref(), Type::Unknown) {
+                    return Ok(format!("HashSet::<{}>::new()", self.rust_type(inner)));
+                }
+            }
+            // CPython-compat divergence:
+            // Empty set literals without contextual typing are emitted as
+            // `HashSet<PyRepr>` so generated Rust remains concrete.
+            self.uses.py_repr = true;
+            return Ok("HashSet::<PyRepr>::new()".to_string());
         }
         let expected = match expr.ty.as_ref() {
             Some(Type::Set(inner)) => Some(inner.as_ref()),

@@ -661,6 +661,8 @@ def test_dicts() -> None:
     assert len(d) == 2
     assert d["a"] == 1
     assert d["b"] == 2
+    assert "a" in d
+    assert (1 in d) == False
 
     # Add new key
     d["c"] = 3
@@ -749,6 +751,10 @@ def test_sets() -> None:
     except KeyError:
         got_key_error = True
     assert got_key_error
+
+    copied_set: set[int] = values.copy()
+    assert copied_set == values
+    assert (copied_set is values) == False
 
     # Empty set infers element type from first add.
     inferred_set = set()

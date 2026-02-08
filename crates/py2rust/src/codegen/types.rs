@@ -32,7 +32,7 @@ impl<'a> Codegen<'a> {
     /// Render a type for closure parameters where `impl Trait` is not allowed.
     pub(crate) fn rust_type_for_closure_param(&mut self, ty: &Type) -> String {
         match ty {
-            Type::Lambda { .. } => self.rust_type_with_lambda_depth(ty, 1),
+            Type::Lambda { .. } | Type::Iterator(_) => self.rust_type_with_lambda_depth(ty, 1),
             _ => self.rust_type(ty),
         }
     }
@@ -49,17 +49,32 @@ impl<'a> Codegen<'a> {
             Type::Str => "String".to_string(),
             Type::Bytes => "Vec<i64>".to_string(),
             Type::None => "()".to_string(),
-            Type::List(inner) => format!(
-                "Arc<Mutex<Vec<{}>>>",
-                self.rust_type_with_lambda_depth(inner, lambda_depth)
-            ),
+            Type::List(inner) => {
+                if lambda_depth > 0 && matches!(inner.as_ref(), Type::Unknown) {
+                    self.uses.py_repr = true;
+                    "Arc<Mutex<Vec<PyRepr>>>".to_string()
+                } else {
+                    format!(
+                        "Arc<Mutex<Vec<{}>>>",
+                        self.rust_type_with_lambda_depth(inner, lambda_depth)
+                    )
+                }
+            }
             Type::Dict(k, v) => {
                 self.uses.index_map = true;
-                format!(
-                    "Arc<Mutex<IndexMap<{}, {}>>>",
-                    self.rust_type_with_lambda_depth(k, lambda_depth),
+                let key_ty = if lambda_depth > 0 && matches!(k.as_ref(), Type::Unknown) {
+                    self.uses.py_repr = true;
+                    "PyRepr".to_string()
+                } else {
+                    self.rust_type_with_lambda_depth(k, lambda_depth)
+                };
+                let val_ty = if lambda_depth > 0 && matches!(v.as_ref(), Type::Unknown) {
+                    self.uses.py_repr = true;
+                    "PyRepr".to_string()
+                } else {
                     self.rust_type_with_lambda_depth(v, lambda_depth)
-                )
+                };
+                format!("Arc<Mutex<IndexMap<{}, {}>>>", key_ty, val_ty)
             }
             Type::Tuple(items) => {
                 let parts: Vec<String> = items
@@ -74,10 +89,15 @@ impl<'a> Codegen<'a> {
             }
             Type::Set(inner) => {
                 self.uses.hash_set = true;
-                format!(
-                    "HashSet<{}>",
-                    self.rust_type_with_lambda_depth(inner, lambda_depth)
-                )
+                if lambda_depth > 0 && matches!(inner.as_ref(), Type::Unknown) {
+                    self.uses.py_repr = true;
+                    "HashSet<PyRepr>".to_string()
+                } else {
+                    format!(
+                        "HashSet<{}>",
+                        self.rust_type_with_lambda_depth(inner, lambda_depth)
+                    )
+                }
             }
             Type::Option(inner) => format!(
                 "Option<{}>",
@@ -93,10 +113,20 @@ impl<'a> Codegen<'a> {
                 }
             }
             Type::Union(name) => name.clone(),
-            Type::Iterator(inner) => format!(
-                "impl Iterator<Item = {}>",
-                self.rust_type_with_lambda_depth(inner, lambda_depth)
-            ),
+            Type::Iterator(inner) => {
+                if lambda_depth == 0 {
+                    format!(
+                        "impl Iterator<Item = {}>",
+                        self.rust_type_with_lambda_depth(inner, lambda_depth)
+                    )
+                } else {
+                    self.uses.py_iter = true;
+                    format!(
+                        "PyIter<{}>",
+                        self.rust_type_with_lambda_depth(inner, lambda_depth)
+                    )
+                }
+            }
             Type::Lambda { params, ret, .. } => {
                 let args: Vec<String> = params
                     .iter()

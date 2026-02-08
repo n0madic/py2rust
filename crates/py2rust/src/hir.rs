@@ -168,6 +168,7 @@ pub struct ImportFromBinding {
 /// - Try/Except: Exception handling is complex - see EXCEPTIONS.md for details.
 ///   Variables declared in try blocks are wrapped in Option<T> to be accessible
 ///   in else blocks without violating Rust's borrow checker.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum StmtKind {
     /// Variable declaration with optional type annotation.
@@ -404,6 +405,7 @@ pub struct CompClause {
 ///
 /// `Item` is a normal `key: value` pair, while `Unpack` preserves source-order
 /// `**mapping` entries so codegen can apply CPython override semantics.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum DictEntry {
     Item { key: Expr, value: Box<Expr> },

@@ -36,7 +36,10 @@ impl<'a> TypeChecker<'a> {
             && !stdlib_function_accepts_keywords
             && !self.ctx.functions.contains_key(name)
             && !self.ctx.classes.contains_key(name)
-            && !matches!(self.lookup_var(name), Some(Type::Lambda { .. }))
+            && !matches!(
+                self.lookup_var(name),
+                Some(Type::Lambda { .. }) | Some(Type::Unknown)
+            )
         {
             return Err(self.error(
                 span,
@@ -741,6 +744,73 @@ impl<'a> TypeChecker<'a> {
             {
                 let mut refined_params = params.clone();
                 let mut refined_ret = *ret.clone();
+                let is_unconstrained_lambda = |ty: &Type| {
+                    matches!(
+                        ty,
+                        Type::Lambda { params, ret, .. }
+                            if params.iter().all(|param_ty| matches!(param_ty, Type::Unknown))
+                                && matches!(ret.as_ref(), Type::Unknown)
+                    )
+                };
+
+                // CPython-compat compromise:
+                // Decorator-style wrappers often accept one unannotated callable and return
+                // a callable. When a call site expects a concrete callable shape, use that
+                // expectation to seed the wrapper's first unknown parameter so nested
+                // decorator bodies can type-check (for example, `func(*args, **kwargs)`).
+                let param0_dynamic_unpack_placeholder =
+                    refined_params.first().is_some_and(|param_ty| {
+                        matches!(
+                            param_ty,
+                            Type::Lambda {
+                                param_names,
+                                param_kinds,
+                                ret,
+                                ..
+                            } if matches!(param_names.as_slice(), [first, second] if first == "__args" && second == "__kwargs")
+                                && matches!(param_kinds.as_slice(), [ParamKind::VarArgs, ParamKind::VarKeywords])
+                                && matches!(ret.as_ref(), Type::Unknown)
+                        )
+                    });
+                if refined_params.len() == 1
+                    && args.len() == 1
+                    && keywords.is_empty()
+                    && (matches!(refined_params[0], Type::Unknown)
+                        || param0_dynamic_unpack_placeholder
+                        || is_unconstrained_lambda(&refined_params[0]))
+                {
+                    if let Some(expected_lambda @ Type::Lambda { .. }) = expected {
+                        if matches!(args[0].kind, ExprKind::Lambda { .. } | ExprKind::Name(_)) {
+                            let mut seeded = expected_lambda.clone();
+                            if let (
+                                Type::Lambda {
+                                    param_names,
+                                    param_kinds,
+                                    has_defaults,
+                                    ..
+                                },
+                                ExprKind::Lambda {
+                                    params,
+                                    param_kinds: arg_kinds,
+                                    has_defaults: arg_defaults,
+                                    ..
+                                },
+                            ) = (&mut seeded, &args[0].kind)
+                            {
+                                if param_names.len() != params.len() {
+                                    *param_names = params.clone();
+                                }
+                                if param_kinds.len() != arg_kinds.len() {
+                                    *param_kinds = arg_kinds.clone();
+                                }
+                                if has_defaults.len() != arg_defaults.len() {
+                                    *has_defaults = arg_defaults.clone();
+                                }
+                            }
+                            refined_params[0] = seeded;
+                        }
+                    }
+                }
 
                 let shape_complete = param_names.len() == params.len()
                     && param_kinds.len() == params.len()
@@ -750,7 +820,7 @@ impl<'a> TypeChecker<'a> {
                         param_names: param_names.clone(),
                         param_kinds: param_kinds.clone(),
                         has_defaults: has_defaults.clone(),
-                        params: params.clone(),
+                        params: refined_params.clone(),
                         ret: refined_ret.clone(),
                         span,
                         is_generator: false,
@@ -781,7 +851,9 @@ impl<'a> TypeChecker<'a> {
                             let Some(source) = maybe_source else {
                                 continue;
                             };
-                            if !matches!(refined_params[idx], Type::Unknown) {
+                            if !matches!(refined_params[idx], Type::Unknown)
+                                && !is_unconstrained_lambda(&refined_params[idx])
+                            {
                                 continue;
                             }
                             let source_ty = match source {
@@ -889,23 +961,96 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                self.set_var_type(
-                    name,
-                    Type::Lambda {
-                        param_names: param_names.clone(),
-                        params: refined_params,
-                        param_kinds: param_kinds.clone(),
-                        has_defaults: has_defaults.clone(),
-                        ret: Box::new(refined_ret.clone()),
-                    },
-                );
+                let refined_lambda = Type::Lambda {
+                    param_names: param_names.clone(),
+                    params: refined_params,
+                    param_kinds: param_kinds.clone(),
+                    has_defaults: has_defaults.clone(),
+                    ret: Box::new(refined_ret.clone()),
+                };
+                self.set_var_type(name, refined_lambda.clone());
+                // Persist the refined callable shape on this call target so codegen uses
+                // the same argument model as typecheck for subsequent lowering.
+                func.ty = Some(refined_lambda);
                 return Ok(refined_ret);
             }
             if matches!(var_ty, Type::Unknown) {
+                let has_unpacking = args
+                    .iter()
+                    .any(|arg| matches!(arg.kind, ExprKind::Starred { .. }))
+                    || keywords.iter().any(|kw| kw.name.is_none());
+                if has_unpacking {
+                    for arg in args.iter_mut() {
+                        if let ExprKind::Starred { value } = &mut arg.kind {
+                            let unpack_ty = self.check_expr(value, None)?;
+                            let _ = self.iter_item_type(&unpack_ty, span)?;
+                        } else {
+                            let _ = self.check_expr(arg, None)?;
+                        }
+                    }
+                    for kw in keywords.iter_mut() {
+                        if kw.name.is_some() {
+                            let _ = self.check_expr(&mut kw.value, None)?;
+                        } else {
+                            let unpack_ty = self.check_expr(&mut kw.value, None)?;
+                            match unpack_ty {
+                                Type::Dict(key, _)
+                                    if matches!(key.as_ref(), Type::Str | Type::Unknown) => {}
+                                Type::Unknown => {}
+                                _ => {
+                                    return Err(self.error(
+                                        span,
+                                        "Call-site **kwargs unpacking expects a dict expression",
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                    if let ExprKind::Name(func_name) = &func.kind {
+                        if matches!(self.lookup_var(func_name), Some(Type::Unknown)) {
+                            let mut param_names = Vec::new();
+                            let mut param_kinds = Vec::new();
+                            let mut has_defaults = Vec::new();
+                            let mut params = Vec::new();
+                            if args
+                                .iter()
+                                .any(|arg| matches!(arg.kind, ExprKind::Starred { .. }))
+                            {
+                                param_names.push("__args".to_string());
+                                param_kinds.push(ParamKind::VarArgs);
+                                has_defaults.push(false);
+                                params.push(Type::List(Box::new(Type::Unknown)));
+                            }
+                            if keywords.iter().any(|kw| kw.name.is_none()) {
+                                param_names.push("__kwargs".to_string());
+                                param_kinds.push(ParamKind::VarKeywords);
+                                has_defaults.push(false);
+                                params
+                                    .push(Type::Dict(Box::new(Type::Str), Box::new(Type::Unknown)));
+                            }
+                            if !params.is_empty() {
+                                self.set_var_type(
+                                    func_name,
+                                    Type::Lambda {
+                                        param_names,
+                                        params,
+                                        param_kinds,
+                                        has_defaults,
+                                        ret: Box::new(Type::Unknown),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    return Ok(Type::Unknown);
+                }
                 let mut param_tys = Vec::new();
                 for arg in args.iter_mut() {
                     let arg_ty = self.check_expr(arg, None)?;
                     param_tys.push(arg_ty);
+                }
+                for kw in keywords.iter_mut() {
+                    let _ = self.check_expr(&mut kw.value, None)?;
                 }
                 let inferred_ret = expected
                     .filter(|ty| !matches!(ty, Type::Unknown))
@@ -920,7 +1065,9 @@ impl<'a> TypeChecker<'a> {
                     has_defaults: vec![false; args.len()],
                     ret: Box::new(inferred_ret),
                 };
-                self.set_var_type(name, lambda);
+                self.set_var_type(name, lambda.clone());
+                // Keep inferred callable metadata on the expression node as well.
+                func.ty = Some(lambda);
                 return Ok(Type::Unknown);
             }
         }

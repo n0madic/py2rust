@@ -16,16 +16,6 @@ impl<'a> TypeChecker<'a> {
     ///
     /// Checks methods and validates iterator protocol if present.
     pub(super) fn check_class(&mut self, class: &mut ClassDef) -> Result<(), CompileError> {
-        for method in &mut class.methods {
-            let kind = class
-                .method_kinds
-                .get(&method.name)
-                .copied()
-                .unwrap_or(MethodKind::Instance);
-            let require_self = matches!(kind, MethodKind::Instance);
-            self.check_function(method, Some(class.name.as_str()), require_self)?;
-        }
-
         // Type check class attribute initializers.
         if !class.class_attrs.is_empty() {
             for attr in &mut class.class_attrs {
@@ -52,6 +42,18 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+        }
+
+        // Check methods after class attrs so classmethod/property bodies see refined
+        // class-attribute types from initializers (for example `cls.species`).
+        for method in &mut class.methods {
+            let kind = class
+                .method_kinds
+                .get(&method.name)
+                .copied()
+                .unwrap_or(MethodKind::Instance);
+            let require_self = matches!(kind, MethodKind::Instance);
+            self.check_function(method, Some(class.name.as_str()), require_self)?;
         }
 
         // Validate class-specific constraints

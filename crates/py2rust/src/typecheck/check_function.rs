@@ -628,7 +628,64 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        let params = self.resolve_params(&func.params)?;
+        let mut params = self.resolve_params(&func.params)?;
+        if let Some(scope) = self.scopes.last() {
+            for (idx, param) in func.params.iter().enumerate() {
+                let inferred = scope.get(&param.name).cloned();
+                if let Some(inferred) = inferred {
+                    if matches!(params.get(idx), Some(Type::Unknown))
+                        && !inferred.contains_unknown()
+                    {
+                        // Refine unannotated parameter types from in-body usage.
+                        // This keeps generated Rust signatures concrete while preserving
+                        // CPython-like flexibility for untyped source.
+                        if idx < params.len() {
+                            params[idx] = inferred;
+                        }
+                    } else if let Some(Type::Option(inner)) = params.get(idx) {
+                        if matches!(inner.as_ref(), Type::Unknown) && !inferred.contains_unknown() {
+                            // Refine Optional[Unknown] (from `param=None`) using in-body usage.
+                            // If inference already yields Optional[T], keep T; otherwise wrap T.
+                            let refined_inner = if let Type::Option(inferred_inner) = inferred {
+                                *inferred_inner
+                            } else {
+                                inferred
+                            };
+                            if idx < params.len() {
+                                params[idx] = Type::Option(Box::new(refined_inner));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // CPython-compat compromise:
+        // unannotated parameters with a `None` default are treated as Optional[T]
+        // after local inference of T. This keeps default binding semantics correct
+        // in generated Rust while preserving `is None` control-flow narrowing.
+        for (idx, param) in func.params.iter().enumerate() {
+            let has_none_default = param
+                .default
+                .as_ref()
+                .is_some_and(|d| matches!(d.kind, ExprKind::Literal(Literal::None)));
+            if !has_none_default {
+                continue;
+            }
+            let Some(current) = params.get(idx).cloned() else {
+                continue;
+            };
+            if matches!(current, Type::Option(_)) {
+                continue;
+            }
+            let inner = if matches!(current, Type::None) {
+                Type::Unknown
+            } else {
+                current
+            };
+            if idx < params.len() {
+                params[idx] = Type::Option(Box::new(inner));
+            }
+        }
         let ret = self.resolve_type_ref(&func.ret, func.span)?;
         let defaults = func.params.iter().filter(|p| p.default.is_some()).count();
         for (param, ty) in func.params.iter().zip(params.iter()) {

@@ -89,6 +89,10 @@ impl<'a> Codegen<'a> {
         match target {
             AssignTarget::Name(name) => {
                 if self.is_cell_local(name) || self.is_nonlocal_decl(name) {
+                    let cell_binding = self
+                        .name_override(name)
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| name.clone());
                     let expected = self.local_var_type(name).cloned();
                     if allow_let
                         && self.local_var_type(name).is_none()
@@ -124,14 +128,24 @@ impl<'a> Codegen<'a> {
 
                     // Assign through the RefCell, guarding against self-references.
                     let current = self.new_tmp();
-                    self.push_line(&format!("let {} = {}.borrow().clone();", current, name));
-                    let expected_is_optional_collection = matches!(
-                        expected.as_ref(),
-                        Some(Type::Option(inner))
-                            if matches!(inner.as_ref(), Type::List(_) | Type::Dict(_, _))
-                    );
-                    let expr = self.with_name_override(name, current, |this| {
-                        if !expected_is_optional_collection {
+                    self.push_line(&format!(
+                        "let {} = {}.borrow().clone();",
+                        current, cell_binding
+                    ));
+                    let expected_is_optional = matches!(expected.as_ref(), Some(Type::Option(_)));
+                    // When substituting the pre-read value (`current`) for self-references,
+                    // temporarily disable cell/nonlocal lookup for this name so the override
+                    // is treated as a plain value, not as another RefCell handle.
+                    let saved_cells = self.cell_locals.clone();
+                    if let Some(cells) = self.cell_locals.as_mut() {
+                        cells.remove(name);
+                    }
+                    let saved_nonlocals = self.nonlocal_decls.clone();
+                    if let Some(nonlocals) = self.nonlocal_decls.as_mut() {
+                        nonlocals.remove(name);
+                    }
+                    let expr_result = self.with_name_override(name, current, |this| {
+                        if !expected_is_optional {
                             if let Some(local_expr) = this.gen_list_assignment_expr(name, value)? {
                                 return Ok(local_expr);
                             }
@@ -141,17 +155,17 @@ impl<'a> Codegen<'a> {
                         }
                         let expr = this.gen_expr_with_expected(value, expected.as_ref())?;
                         Ok(this.maybe_clone_list_expr(expr, value, expected.as_ref()))
-                    })?;
-                    self.push_line(&format!("*{}.borrow_mut() = {};", name, expr));
+                    });
+                    self.cell_locals = saved_cells;
+                    self.nonlocal_decls = saved_nonlocals;
+                    let expr = expr_result?;
+                    self.push_line(&format!("*{}.borrow_mut() = {};", cell_binding, expr));
                     return Ok(());
                 }
                 // Global assignment uses OnceLock + Mutex for initialization and mutation.
                 if self.is_global(name) {
                     let expected = self.ctx.globals.get(name).cloned();
-                    if allow_let
-                        && self.current_function.is_none()
-                        && !self.initialized_globals.contains(name)
-                    {
+                    if allow_let && !self.initialized_globals.contains(name) {
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                         let expr = self.maybe_clone_list_expr(expr, value, expected.as_ref());
                         let expr = self.wrap_global_value(expr, value, expected.as_ref());
@@ -219,16 +233,67 @@ impl<'a> Codegen<'a> {
                     }
                 } else {
                     let expected = self.local_var_type(name).cloned();
-                    let expected_is_optional_collection = matches!(
-                        expected.as_ref(),
-                        Some(Type::Option(inner))
-                            if matches!(inner.as_ref(), Type::List(_) | Type::Dict(_, _))
-                    );
+                    if let (Some(current_ty), Some(new_ty)) = (expected.as_ref(), value.ty.as_ref())
+                    {
+                        if !matches!(current_ty, Type::Option(_))
+                            && Self::should_shadow_on_type_change(current_ty, new_ty)
+                        {
+                            // CPython allows re-binding a local name to an unrelated type.
+                            // Rust assignments cannot change binding types, so we model this
+                            // with an explicit shadowing `let` that keeps RHS evaluation
+                            // semantics while switching static type.
+                            let stale_empty_list_hint = matches!(current_ty, Type::List(_))
+                                && matches!(new_ty, Type::List(inner) if matches!(inner.as_ref(), Type::Unknown));
+                            if stale_empty_list_hint {
+                                if let ExprKind::List(items) = &value.kind {
+                                    if items.is_empty() {
+                                        // CPython-compat divergence:
+                                        // On list rebinding (`x = []`) after a prior typed
+                                        // list binding, we emit `Vec::new()` without an
+                                        // explicit element type and let subsequent list
+                                        // mutations infer the new Rust element type.
+                                        let expr = if self.is_local_list_name(name) {
+                                            "Vec::new()".to_string()
+                                        } else {
+                                            "Arc::new(Mutex::new(Vec::new()))".to_string()
+                                        };
+                                        let mut_kw = mut_kw_for_name(name, mut_counts);
+                                        self.push_line(&format!(
+                                            "let {}{} = {};",
+                                            mut_kw, name, expr
+                                        ));
+                                        self.set_local_var_type(
+                                            name,
+                                            Type::List(Box::new(Type::Unknown)),
+                                        );
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            if !stale_empty_list_hint {
+                                if let Some((expr, elem_ty)) =
+                                    self.gen_empty_list_with_hint(name, value)?
+                                {
+                                    let mut_kw = mut_kw_for_name(name, mut_counts);
+                                    self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                                    self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
+                                    return Ok(());
+                                }
+                            }
+                            let expr = self.gen_expr(value)?;
+                            let expr = self.maybe_clone_list_expr(expr, value, None);
+                            let mut_kw = mut_kw_for_name(name, mut_counts);
+                            self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                            self.set_local_var_type(name, new_ty.clone());
+                            return Ok(());
+                        }
+                    }
+                    let expected_is_optional = matches!(expected.as_ref(), Some(Type::Option(_)));
                     if !allow_let && self.emit_inplace_list_add_assign(name, value)? {
                         return Ok(());
                     }
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                    if !expected_is_optional_collection {
+                    if !expected_is_optional {
                         if let Some(local_expr) = self.gen_list_assignment_expr(name, value)? {
                             self.push_line(&format!("{} = {};", name, local_expr));
                             return Ok(());
@@ -284,10 +349,7 @@ impl<'a> Codegen<'a> {
                             .map(|info| &info.ty);
                         let expr = self.gen_expr_with_expected(value, expected)?;
                         let expr = self.maybe_clone_list_expr(expr, value, expected);
-                        if allow_let
-                            && self.current_function.is_none()
-                            && !self.initialized_globals.contains(&global_name)
-                        {
+                        if allow_let && !self.initialized_globals.contains(&global_name) {
                             let tmp = self.new_tmp();
                             let gname = self.global_name(&global_name);
                             self.push_line(&format!("let {} = {};", tmp, expr));
@@ -412,17 +474,13 @@ impl<'a> Codegen<'a> {
                             ));
                             self.push_line(&format!("{}[{}] = {};", inner, idx_tmp, val_expr));
                         } else if matches!(container.ty.as_ref(), Some(Type::Tuple(_))) {
-                            let idx_raw = self.gen_expr(index)?;
-                            self.uses.py_index = true;
-                            let len_tmp = self.new_tmp();
-                            let idx_tmp = self.new_tmp();
-                            self.push_line(&format!("let {} = {}.len();", len_tmp, guard));
+                            // Match CPython: tuple item assignment is a runtime TypeError.
                             self.push_line(&format!(
-                                "let {} = {};",
-                                idx_tmp,
-                                self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp))
+                                "{};",
+                                self.wrap_result(
+                                    "Err::<(), PyError>(PyError::TypeError(\"'tuple' object does not support item assignment\".into()))".to_string()
+                                )
                             ));
-                            self.push_line(&format!("{}[{}] = {};", guard, idx_tmp, val_expr));
                         }
                         self.indent -= 1;
                         self.push_line("}");
@@ -487,17 +545,13 @@ impl<'a> Codegen<'a> {
                     self.indent -= 1;
                     self.push_line("}");
                 } else if matches!(container.ty.as_ref(), Some(Type::Tuple(_))) {
-                    let idx_raw = self.gen_expr(index)?;
-                    self.uses.py_index = true;
-                    let len_tmp = self.new_tmp();
-                    let idx_tmp = self.new_tmp();
-                    self.push_line(&format!("let {} = {}.len();", len_tmp, cont_expr));
+                    // Match CPython: tuple item assignment is a runtime TypeError.
                     self.push_line(&format!(
-                        "let {} = {};",
-                        idx_tmp,
-                        self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp))
+                        "{};",
+                        self.wrap_result(
+                            "Err::<(), PyError>(PyError::TypeError(\"'tuple' object does not support item assignment\".into()))".to_string()
+                        )
                     ));
-                    self.push_line(&format!("{}[{}] = {};", cont_expr, idx_tmp, val_expr));
                 } else {
                     let idx_expr = self.gen_expr(index)?;
                     self.push_line(&format!("{}[{}] = {};", cont_expr, idx_expr, val_expr));
@@ -514,6 +568,100 @@ impl<'a> Codegen<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Decide whether local name rebinding should use `let` shadowing.
+    ///
+    /// This is only used for local variables to emulate Python's dynamic rebind
+    /// behavior when the static Rust type changes incompatibly.
+    fn should_shadow_on_type_change(current_ty: &Type, new_ty: &Type) -> bool {
+        fn family(ty: &Type) -> &'static str {
+            match ty {
+                Type::Int => "int",
+                Type::Float => "float",
+                Type::Bool => "bool",
+                Type::Str => "str",
+                Type::Bytes => "bytes",
+                Type::None => "none",
+                Type::List(_) => "list",
+                Type::Dict(_, _) => "dict",
+                Type::Tuple(_) => "tuple",
+                Type::Set(_) => "set",
+                Type::Option(_) => "option",
+                Type::Custom(_) => "custom",
+                Type::Union(_) => "union",
+                Type::Iterator(_) => "iter",
+                Type::Lambda { .. } => "lambda",
+                Type::Ref(_) => "ref",
+                Type::MutRef(_) => "mutref",
+                Type::Slice(_) => "slice",
+                Type::Result(_, _) => "result",
+                Type::Exception(_) => "exception",
+                Type::Module(_) => "module",
+                Type::StdlibFunction { .. } => "stdlibfn",
+                Type::Unknown => "unknown",
+            }
+        }
+
+        if family(current_ty) != family(new_ty) {
+            return true;
+        }
+        match (current_ty, new_ty) {
+            (Type::Unknown, Type::Unknown) => true,
+            (Type::Unknown, _) | (_, Type::Unknown) => true,
+            (Type::List(left), Type::List(right))
+            | (Type::Set(left), Type::Set(right))
+            | (Type::Option(left), Type::Option(right))
+            | (Type::Ref(left), Type::Ref(right))
+            | (Type::MutRef(left), Type::MutRef(right))
+            | (Type::Slice(left), Type::Slice(right)) => {
+                Self::should_shadow_on_type_change(left.as_ref(), right.as_ref())
+            }
+            (Type::Dict(left_k, left_v), Type::Dict(right_k, right_v)) => {
+                Self::should_shadow_on_type_change(left_k.as_ref(), right_k.as_ref())
+                    || Self::should_shadow_on_type_change(left_v.as_ref(), right_v.as_ref())
+            }
+            (Type::Tuple(left), Type::Tuple(right)) => {
+                left.len() != right.len()
+                    || left
+                        .iter()
+                        .zip(right.iter())
+                        .any(|(l, r)| Self::should_shadow_on_type_change(l, r))
+            }
+            (
+                Type::Lambda {
+                    params: lp,
+                    ret: lr,
+                    ..
+                },
+                Type::Lambda {
+                    params: rp,
+                    ret: rr,
+                    ..
+                },
+            ) => {
+                lp.len() != rp.len()
+                    || lp
+                        .iter()
+                        .zip(rp.iter())
+                        .any(|(l, r)| Self::should_shadow_on_type_change(l, r))
+                    || Self::should_shadow_on_type_change(lr.as_ref(), rr.as_ref())
+            }
+            (Type::Iterator(_), Type::Iterator(_)) => {
+                // CPython-compat divergence:
+                // Distinct iterator-producing expressions can lower to different
+                // concrete Rust closure/adapter types even with the same logical
+                // `Iterator[T]` shape. Shadowing keeps Python-style rebinding valid.
+                true
+            }
+            (Type::Result(l_ok, l_err), Type::Result(r_ok, r_err)) => {
+                Self::should_shadow_on_type_change(l_ok.as_ref(), r_ok.as_ref())
+                    || Self::should_shadow_on_type_change(l_err.as_ref(), r_err.as_ref())
+            }
+            (Type::Custom(left), Type::Custom(right)) => left != right,
+            (Type::Union(left), Type::Union(right)) => left != right,
+            _ => false,
+        }
     }
 
     /// Emit Python `del` for supported targets.
@@ -672,6 +820,45 @@ impl<'a> Codegen<'a> {
                         }
                         return Err(self
                             .error(span, format!("Property {class_name}.{attr} has no deleter")));
+                    }
+                    if self
+                        .ctx
+                        .classes
+                        .get(class_name)
+                        .is_some_and(|info| info.fields.contains_key(attr))
+                    {
+                        if self
+                            .ctx
+                            .classes
+                            .get(class_name)
+                            .and_then(|info| info.fields.get(attr))
+                            .is_some_and(|ty| matches!(ty, Type::Int))
+                        {
+                            // CPython-compat divergence:
+                            // deletable int fields use `i64::MIN` as an internal tombstone.
+                            if let ExprKind::Name(name) = &obj.kind {
+                                if self.is_global(name) {
+                                    let guard = self.new_tmp();
+                                    self.push_line("{");
+                                    self.indent += 1;
+                                    self.push_line(&format!(
+                                        "let mut {} = {};",
+                                        guard,
+                                        self.global_lock_expr(name)
+                                    ));
+                                    self.push_line(&format!("{}.{} = i64::MIN;", guard, attr));
+                                    self.indent -= 1;
+                                    self.push_line("}");
+                                    return Ok(());
+                                }
+                            }
+                            let obj_expr = self.gen_expr(obj)?;
+                            self.push_line(&format!("{}.{} = i64::MIN;", obj_expr, attr));
+                            return Ok(());
+                        }
+                        // Python deletes instance attributes at runtime. For non-int fields we
+                        // keep the fixed-field struct model and treat deletion as a no-op.
+                        return Ok(());
                     }
                 }
                 return Err(self.error(span, "del attribute requires a property with a deleter"));
@@ -1183,11 +1370,38 @@ impl<'a> Codegen<'a> {
             return Ok(None);
         }
         match &value.kind {
-            ExprKind::Dict(items) => Ok(Some(self.gen_dict_expr_with_storage(
-                value,
-                items,
-                DictStorage::Local,
-            )?)),
+            ExprKind::Dict(items) => {
+                if items.is_empty()
+                    && matches!(
+                        value.ty.as_ref(),
+                        Some(Type::Dict(key, val))
+                            if matches!(key.as_ref(), Type::Unknown)
+                                || matches!(val.as_ref(), Type::Unknown)
+                    )
+                {
+                    self.uses.index_map = true;
+                    if let Some((key_ty, val_ty)) = self.dict_kv_type_for_name(name) {
+                        if !matches!(key_ty, Type::Unknown) && !matches!(val_ty, Type::Unknown) {
+                            let key_ty = key_ty.clone();
+                            let val_ty = val_ty.clone();
+                            return Ok(Some(format!(
+                                "IndexMap::<{}, {}>::new()",
+                                self.rust_type(&key_ty),
+                                self.rust_type(&val_ty)
+                            )));
+                        }
+                    }
+                    // Unconstrained empty dicts need a concrete fallback to avoid
+                    // Rust E0282 in expressions that never reveal key/value types.
+                    self.uses.py_repr = true;
+                    return Ok(Some("IndexMap::<PyRepr, PyRepr>::new()".to_string()));
+                }
+                Ok(Some(self.gen_dict_expr_with_storage(
+                    value,
+                    items,
+                    DictStorage::Local,
+                )?))
+            }
             ExprKind::Call {
                 func,
                 args,

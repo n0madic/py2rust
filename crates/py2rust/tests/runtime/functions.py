@@ -704,6 +704,23 @@ def nested_variadic_forward() -> int:
 
 assert nested_variadic_forward() == 11, "nested wrapper should handle *args/**kwargs"
 
+# Test 12: Nested decorator application should work inside function scope.
+def nested_decorator_application() -> int:
+    def log_function(func):
+        def wrapper(*args: int, **kwargs: int) -> int:
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    @log_function
+    def add_pair(x: int, y: int) -> int:
+        return x + y
+
+    return add_pair(1, 2)
+
+
+assert nested_decorator_application() == 3, "nested decorated def should compile and run"
+
 # ===== SECTION: Keyword-Only Parameter Defaults =====
 
 # Test 1: Keyword-only with default after *args

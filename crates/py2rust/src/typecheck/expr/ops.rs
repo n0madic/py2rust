@@ -76,6 +76,32 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Keep unknown arithmetic permissive, preserving string concat special-case.
+        if matches!(left_ty, Type::Unknown) && matches!(right_ty, Type::Unknown) {
+            // CPython-compat divergence:
+            // Fully dynamic Unknown+Unknown arithmetic is defaulted to numeric
+            // inference so nested lambdas/closures can obtain concrete callable
+            // shapes for Rust codegen.
+            let inferred = match op {
+                BinOp::Div => Type::Float,
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Mod
+                | BinOp::Pow
+                | BinOp::FloorDiv
+                | BinOp::BitOr
+                | BinOp::BitAnd
+                | BinOp::BitXor
+                | BinOp::ShiftLeft
+                | BinOp::ShiftRight => Type::Int,
+            };
+            self.maybe_update_from_expr(left, &inferred);
+            self.maybe_update_from_expr(right, &inferred);
+            left_ty = inferred.clone();
+            right_ty = inferred.clone();
+            left.ty = Some(inferred.clone());
+            right.ty = Some(inferred.clone());
+        }
         if matches!(left_ty, Type::Unknown) || matches!(right_ty, Type::Unknown) {
             if matches!(op, BinOp::Add)
                 && (matches!(left_ty, Type::Str) || matches!(right_ty, Type::Str))
@@ -375,8 +401,10 @@ impl<'a> TypeChecker<'a> {
                 if matches!(elem_ty, Type::Unknown) {
                     return Ok(Type::Bool);
                 }
+                // Python allows heterogeneous membership tests (for example `1 in {"x": 1}`)
+                // and simply returns False when values cannot match.
                 if left_ty != elem_ty {
-                    return Err(self.error(span, "Membership requires matching element type"));
+                    return Ok(Type::Bool);
                 }
                 Ok(Type::Bool)
             }

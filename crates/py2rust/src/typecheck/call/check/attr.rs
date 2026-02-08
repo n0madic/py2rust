@@ -260,8 +260,9 @@ impl<'a> TypeChecker<'a> {
                     {
                         self.ensure_assignable(&default_ty, val_ty, span)?;
                     }
+                    return Ok(*val_ty.clone());
                 }
-                return Ok(*val_ty.clone());
+                return Ok(Type::Option(Box::new(*val_ty.clone())));
             }
             if attr == "clear" {
                 if !args.is_empty() {
@@ -315,13 +316,20 @@ impl<'a> TypeChecker<'a> {
                 if !args.is_empty() {
                     return Err(self.error(span, "dict.keys() expects no arguments"));
                 }
-                return Ok(Type::Iterator(Box::new(*key_ty.clone())));
+                // CPython compatibility compromise:
+                // We type dict.keys() as list[K] (snapshot) instead of a dynamic dict_keys view.
+                // This preserves repeatable iteration (`iter(keys_obj)` multiple times), which is
+                // required by compatibility tests in this compiler stage.
+                return Ok(Type::List(Box::new(*key_ty.clone())));
             }
             if attr == "values" {
                 if !args.is_empty() {
                     return Err(self.error(span, "dict.values() expects no arguments"));
                 }
-                return Ok(Type::Iterator(Box::new(*val_ty.clone())));
+                // CPython compatibility compromise:
+                // We type dict.values() as list[V] (snapshot) instead of a dynamic dict_values view.
+                // This keeps behavior predictable across repeated iteration.
+                return Ok(Type::List(Box::new(*val_ty.clone())));
             }
             if attr == "setdefault" {
                 if args.is_empty() || args.len() > 2 {

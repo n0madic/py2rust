@@ -38,6 +38,15 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Look up a dict key/value type hint for a name in the current scope.
+    pub(crate) fn dict_kv_type_for_name(&self, name: &str) -> Option<&(Type, Type)> {
+        if self.current_function.is_some() {
+            self.inferred_dict_kv.as_ref().and_then(|map| map.get(name))
+        } else {
+            self.main_dict_kv.get(name)
+        }
+    }
+
     /// Determine the storage strategy for a list variable by name.
     pub(crate) fn list_storage_for_name(&self, name: &str) -> ListStorage {
         if self.is_global(name) {
@@ -214,6 +223,115 @@ impl<'a> Codegen<'a> {
             .is_some_and(|names| names.contains(name))
     }
 
+    /// Return the backing field for a deletable int property when pattern-matched.
+    ///
+    /// Supported shape:
+    /// - getter body is a single `return self.<field>`
+    /// - deleter body contains `del self.<field>`
+    /// - `<field>` type is `int`
+    pub(crate) fn deletable_property_backing_int_field(
+        &self,
+        class_name: &str,
+        prop_name: &str,
+    ) -> Option<String> {
+        let class_def = self.class_defs.get(class_name)?;
+        let mut getter_name: Option<String> = None;
+        let mut deleter_name: Option<String> = None;
+        for prop in class_def.properties.iter().filter(|p| p.name == prop_name) {
+            if !prop.getter.is_empty() {
+                getter_name = Some(prop.getter.clone());
+            }
+            if let Some(deleter) = &prop.deleter {
+                deleter_name = Some(deleter.clone());
+            }
+        }
+        let getter_name = getter_name?;
+        let deleter_name = deleter_name?;
+        let getter = class_def.methods.iter().find(|m| m.name == getter_name)?;
+        let field = Self::getter_returns_self_field(getter)?;
+        let deleter = class_def.methods.iter().find(|m| m.name == deleter_name)?;
+        if !deleter
+            .body
+            .iter()
+            .any(|stmt| Self::stmt_deletes_self_field(stmt, field.as_str()))
+        {
+            return None;
+        }
+        let field_ty = self
+            .ctx
+            .classes
+            .get(class_name)
+            .and_then(|info| info.fields.get(&field))?;
+        if matches!(field_ty, Type::Int) {
+            Some(field)
+        } else {
+            None
+        }
+    }
+
+    fn getter_returns_self_field(func: &Function) -> Option<String> {
+        if func.body.len() != 1 {
+            return None;
+        }
+        let StmtKind::Return { value: Some(expr) } = &func.body[0].kind else {
+            return None;
+        };
+        let ExprKind::Attr { value, attr } = &expr.kind else {
+            return None;
+        };
+        if matches!(&value.kind, ExprKind::Name(name) if name == "self") {
+            Some(attr.clone())
+        } else {
+            None
+        }
+    }
+
+    fn stmt_deletes_self_field(stmt: &Stmt, field: &str) -> bool {
+        match &stmt.kind {
+            StmtKind::Delete { target } => {
+                if let AssignTarget::Attr { value, attr } = target.as_ref() {
+                    matches!(&value.kind, ExprKind::Name(name) if name == "self") && attr == field
+                } else {
+                    false
+                }
+            }
+            StmtKind::If { body, orelse, .. } => {
+                body.iter().any(|s| Self::stmt_deletes_self_field(s, field))
+                    || orelse
+                        .iter()
+                        .any(|s| Self::stmt_deletes_self_field(s, field))
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+                body.iter().any(|s| Self::stmt_deletes_self_field(s, field))
+            }
+            StmtKind::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                body.iter().any(|s| Self::stmt_deletes_self_field(s, field))
+                    || handlers.iter().any(|h| {
+                        h.body
+                            .iter()
+                            .any(|s| Self::stmt_deletes_self_field(s, field))
+                    })
+                    || orelse
+                        .iter()
+                        .any(|s| Self::stmt_deletes_self_field(s, field))
+                    || finalbody
+                        .iter()
+                        .any(|s| Self::stmt_deletes_self_field(s, field))
+            }
+            StmtKind::Match { cases, .. } => cases.iter().any(|c| {
+                c.body
+                    .iter()
+                    .any(|s| Self::stmt_deletes_self_field(s, field))
+            }),
+            _ => false,
+        }
+    }
+
     /// Check if a local name should be stored as Rc<RefCell<_>>.
     pub(crate) fn is_cell_local(&self, name: &str) -> bool {
         self.cell_locals
@@ -264,9 +382,22 @@ impl<'a> Codegen<'a> {
 
     /// Locate a method definition on a class by name.
     pub(crate) fn method_def(&self, class_name: &str, method_name: &str) -> Option<&Function> {
-        self.class_defs
-            .get(class_name)
-            .and_then(|def| def.methods.iter().find(|m| m.name == method_name))
+        // Method signatures in typecheck are inheritance-aware, so codegen lookup
+        // must walk base classes too when a method is inherited but not redefined.
+        let mut current = Some(class_name);
+        while let Some(name) = current {
+            if let Some(def) = self.class_defs.get(name) {
+                if let Some(method) = def.methods.iter().find(|m| m.name == method_name) {
+                    return Some(method);
+                }
+            }
+            current = self
+                .ctx
+                .classes
+                .get(name)
+                .and_then(|info| info.base.as_deref());
+        }
+        None
     }
 
     /// Check if a class is the same as or a subclass of another class.
@@ -602,6 +733,21 @@ pub(crate) fn mut_kw_for_name(name: &str, mut_counts: &HashMap<String, usize>) -
         return "";
     }
     if mut_counts.get(name).copied().unwrap_or(0) > 1 {
+        "mut "
+    } else {
+        ""
+    }
+}
+
+/// Check whether a function parameter needs `mut`.
+///
+/// Parameters have an implicit initial binding in Rust signatures, so any
+/// assignment in the function body requires `mut` (count >= 1).
+pub(crate) fn mut_kw_for_param(name: &str, mut_counts: &HashMap<String, usize>) -> &'static str {
+    if name == "_" {
+        return "";
+    }
+    if mut_counts.get(name).copied().unwrap_or(0) >= 1 {
         "mut "
     } else {
         ""

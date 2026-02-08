@@ -13,7 +13,11 @@ impl<'a> Codegen<'a> {
         _keywords: &[KeywordArg],
     ) -> Result<String, CompileError> {
         if attr == "append" {
-            if let Some(Type::List(_)) = value.ty.as_ref() {
+            if let Some(Type::List(inner)) = value.ty.as_ref() {
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "list.append() expects one argument"));
+                }
+                let item_expr = self.gen_expr_with_expected(&args[0], Some(inner.as_ref()))?;
                 let target = if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
                         format!(
@@ -21,7 +25,7 @@ impl<'a> Codegen<'a> {
                             self.global_lock_expr(name)
                         )
                     } else if self.is_local_list_name(name) {
-                        return Ok(format!("{}.push({})", name, self.gen_args(args)?));
+                        return Ok(format!("{}.push({})", name, item_expr));
                     } else {
                         format!(
                             "{}.lock().expect(\"list mutex poisoned\")",
@@ -34,7 +38,7 @@ impl<'a> Codegen<'a> {
                         self.gen_expr(value)?
                     )
                 };
-                return Ok(format!("{}.push({})", target, self.gen_args(args)?));
+                return Ok(format!("{}.push({})", target, item_expr));
             }
         }
         if attr == "extend" {

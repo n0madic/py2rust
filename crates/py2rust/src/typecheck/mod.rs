@@ -266,6 +266,7 @@ impl<'a> TypeChecker<'a> {
                 | "IndexError"
                 | "AttributeError"
                 | "ZeroDivisionError"
+                | "SyntaxError"
                 | "NameError"
                 | "AssertionError"
                 | "StopIteration"

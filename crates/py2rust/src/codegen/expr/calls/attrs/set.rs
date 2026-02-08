@@ -4,6 +4,42 @@ use super::super::super::*;
 use crate::container::registry::{find_container_method, ContainerId};
 
 impl<'a> Codegen<'a> {
+    /// Return true when the concrete Rust storage for this set uses `PyRepr`.
+    pub(crate) fn set_uses_pyrepr_storage(&self, value: &Expr, inner: &Type) -> bool {
+        if matches!(inner, Type::Unknown) {
+            return true;
+        }
+        if let ExprKind::Name(name) = &value.kind {
+            if let Some(Type::Set(local_inner)) = self.local_var_type(name) {
+                return matches!(local_inner.as_ref(), Type::Unknown);
+            }
+            if let Some(Type::Set(global_inner)) = self.ctx.globals.get(name) {
+                return matches!(global_inner.as_ref(), Type::Unknown);
+            }
+        }
+        false
+    }
+
+    /// Render one set item for method calls, preserving the receiver element type.
+    ///
+    /// CPython-compat divergence:
+    /// When a set still has `Unknown` element type at codegen time (for example,
+    /// `s = set(); s.add("x")` before full local refinement is materialized),
+    /// we store items as `PyRepr` to keep Rust types concrete and consistent.
+    fn gen_set_item_expr(
+        &mut self,
+        receiver: &Expr,
+        item: &Expr,
+        inner: &Type,
+    ) -> Result<String, CompileError> {
+        if self.set_uses_pyrepr_storage(receiver, inner) {
+            self.uses.py_repr = true;
+            let raw = self.gen_expr(item)?;
+            return Ok(format!("PyRepr(format!(\"{{:?}}\", {}))", raw));
+        }
+        self.gen_expr_with_expected(item, Some(inner))
+    }
+
     /// Lower set method calls.
     pub(super) fn gen_set_attr_call(
         &mut self,
@@ -29,19 +65,18 @@ impl<'a> Codegen<'a> {
         match attr {
             "add" => {
                 let target = self.resolve_mut_attr_target_expr(value)?;
-                Ok(format!("{}.insert({})", target, self.gen_args(args)?))
+                let item_expr = self.gen_set_item_expr(value, &args[0], inner.as_ref())?;
+                Ok(format!("{}.insert({})", target, item_expr))
             }
             "remove" => {
                 let target = self.resolve_mut_attr_target_expr(value)?;
-                Ok(format!("{}.remove(&{})", target, self.gen_args(args)?))
+                let item_expr = self.gen_set_item_expr(value, &args[0], inner.as_ref())?;
+                Ok(format!("{}.remove(&{})", target, item_expr))
             }
             "discard" => {
                 let target = self.resolve_mut_attr_target_expr(value)?;
-                Ok(format!(
-                    "{{ {}.remove(&{}); }}",
-                    target,
-                    self.gen_args(args)?
-                ))
+                let item_expr = self.gen_set_item_expr(value, &args[0], inner.as_ref())?;
+                Ok(format!("{{ {}.remove(&{}); }}", target, item_expr))
             }
             "clear" => self.with_attr_target_binding(value, true, |_tc, target| {
                 format!("{target}.clear()", target = target)
@@ -54,12 +89,22 @@ impl<'a> Codegen<'a> {
                 let target = self.resolve_mut_attr_target_expr(value)?;
                 let iter_src = self.gen_iter_source(&args[0])?;
                 let items_tmp = self.new_tmp();
-                let body = format!(
-                    "{{ let {items} = ({iter}).collect::<Vec<_>>(); {target}.extend({items}); }}",
-                    items = items_tmp,
-                    iter = iter_src.expr,
-                    target = target
-                );
+                let body = if self.set_uses_pyrepr_storage(value, inner.as_ref()) {
+                    self.uses.py_repr = true;
+                    format!(
+                        "{{ let {items} = ({iter}).map(|item| PyRepr(format!(\"{{:?}}\", item))).collect::<Vec<_>>(); {target}.extend({items}); }}",
+                        items = items_tmp,
+                        iter = iter_src.expr,
+                        target = target
+                    )
+                } else {
+                    format!(
+                        "{{ let {items} = ({iter}).collect::<Vec<_>>(); {target}.extend({items}); }}",
+                        items = items_tmp,
+                        iter = iter_src.expr,
+                        target = target
+                    )
+                };
                 Ok(iter_src.wrap(body))
             }
             "pop" => {

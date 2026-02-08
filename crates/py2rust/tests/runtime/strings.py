@@ -12,6 +12,10 @@ str_b: str = " World"
 str_c: str = str_a + str_b
 print(str_c)
 
+# Adjacent literals should concatenate at parse time.
+literal_concat: str = "Hello " "world!"
+assert literal_concat == "Hello world!", "adjacent string literals should concatenate"
+
 # Test string length
 length: int = len(s)
 print(length)

@@ -358,9 +358,8 @@ impl<'a> TypeChecker<'a> {
                     if matches!(e, Type::Unknown) || matches!(a, Type::Unknown) {
                         continue;
                     }
-                    if e != a {
-                        return Err(self.error(span, "Callable parameter type mismatch"));
-                    }
+                    self.ensure_assignable(a, e, span)
+                        .map_err(|_| self.error(span, "Callable parameter type mismatch"))?;
                 }
                 if !matches!(e_ret.as_ref(), Type::Unknown)
                     && !matches!(a_ret.as_ref(), Type::Unknown)

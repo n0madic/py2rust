@@ -422,8 +422,16 @@ impl<'a> Codegen<'a> {
                 };
                 let inner_ty = lookup_optional_inner(name)?;
                 match op {
-                    CmpOp::IsNot => Some((name.clone(), inner_ty, Type::None)),
-                    CmpOp::Is => Some((name.clone(), Type::None, inner_ty)),
+                    CmpOp::IsNot => Some((
+                        name.clone(),
+                        inner_ty.clone(),
+                        Type::Option(Box::new(inner_ty)),
+                    )),
+                    CmpOp::Is => Some((
+                        name.clone(),
+                        Type::Option(Box::new(inner_ty.clone())),
+                        inner_ty,
+                    )),
                     _ => None,
                 }
             };
@@ -707,6 +715,220 @@ impl<'a> Codegen<'a> {
                 } = &value.kind
                 {
                     if let ExprKind::Block { stmts } = &body.kind {
+                        fn target_mentions_name(target: &AssignTarget, name: &str) -> bool {
+                            match target {
+                                AssignTarget::Name(target_name) => target_name == name,
+                                AssignTarget::Attr { value, .. } => expr_mentions_name(value, name),
+                                AssignTarget::Index { value, index } => {
+                                    expr_mentions_name(value, name)
+                                        || expr_mentions_name(index, name)
+                                }
+                                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                                    items.iter().any(|item| target_mentions_name(item, name))
+                                }
+                                AssignTarget::Starred(inner) => target_mentions_name(inner, name),
+                            }
+                        }
+
+                        fn collect_target_bindings(
+                            target: &AssignTarget,
+                            out: &mut std::collections::HashSet<String>,
+                        ) {
+                            match target {
+                                AssignTarget::Name(name) => {
+                                    out.insert(name.clone());
+                                }
+                                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                                    for item in items {
+                                        collect_target_bindings(item, out);
+                                    }
+                                }
+                                AssignTarget::Starred(inner) => collect_target_bindings(inner, out),
+                                AssignTarget::Attr { .. } | AssignTarget::Index { .. } => {}
+                            }
+                        }
+
+                        fn collect_scope_decls(
+                            stmt: &Stmt,
+                            out: &mut std::collections::HashSet<String>,
+                        ) {
+                            match &stmt.kind {
+                                StmtKind::Global { names } | StmtKind::Nonlocal { names } => {
+                                    out.extend(names.iter().cloned());
+                                }
+                                StmtKind::If { body, orelse, .. } => {
+                                    for stmt in body {
+                                        collect_scope_decls(stmt, out);
+                                    }
+                                    for stmt in orelse {
+                                        collect_scope_decls(stmt, out);
+                                    }
+                                }
+                                StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+                                    for stmt in body {
+                                        collect_scope_decls(stmt, out);
+                                    }
+                                }
+                                StmtKind::Try {
+                                    body,
+                                    handlers,
+                                    orelse,
+                                    finalbody,
+                                } => {
+                                    for stmt in body {
+                                        collect_scope_decls(stmt, out);
+                                    }
+                                    for handler in handlers {
+                                        for stmt in &handler.body {
+                                            collect_scope_decls(stmt, out);
+                                        }
+                                    }
+                                    for stmt in orelse {
+                                        collect_scope_decls(stmt, out);
+                                    }
+                                    for stmt in finalbody {
+                                        collect_scope_decls(stmt, out);
+                                    }
+                                }
+                                StmtKind::Match { cases, .. } => {
+                                    for case in cases {
+                                        for stmt in &case.body {
+                                            collect_scope_decls(stmt, out);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        fn collect_stmt_local_bindings(
+                            stmt: &Stmt,
+                            out: &mut std::collections::HashSet<String>,
+                        ) {
+                            match &stmt.kind {
+                                StmtKind::Let { name, .. } => {
+                                    out.insert(name.clone());
+                                }
+                                StmtKind::Assign { target, .. } => {
+                                    collect_target_bindings(target, out);
+                                }
+                                StmtKind::For { target, body, .. } => {
+                                    match target {
+                                        ForTarget::Name(name) => {
+                                            out.insert(name.clone());
+                                        }
+                                        ForTarget::Tuple(names) => {
+                                            out.extend(names.iter().cloned());
+                                        }
+                                    }
+                                    for stmt in body {
+                                        collect_stmt_local_bindings(stmt, out);
+                                    }
+                                }
+                                StmtKind::If { body, orelse, .. } => {
+                                    for stmt in body {
+                                        collect_stmt_local_bindings(stmt, out);
+                                    }
+                                    for stmt in orelse {
+                                        collect_stmt_local_bindings(stmt, out);
+                                    }
+                                }
+                                StmtKind::While { body, .. } => {
+                                    for stmt in body {
+                                        collect_stmt_local_bindings(stmt, out);
+                                    }
+                                }
+                                StmtKind::Try {
+                                    body,
+                                    handlers,
+                                    orelse,
+                                    finalbody,
+                                } => {
+                                    for stmt in body {
+                                        collect_stmt_local_bindings(stmt, out);
+                                    }
+                                    for handler in handlers {
+                                        if let Some(name) = &handler.name {
+                                            out.insert(name.clone());
+                                        }
+                                        for stmt in &handler.body {
+                                            collect_stmt_local_bindings(stmt, out);
+                                        }
+                                    }
+                                    for stmt in orelse {
+                                        collect_stmt_local_bindings(stmt, out);
+                                    }
+                                    for stmt in finalbody {
+                                        collect_stmt_local_bindings(stmt, out);
+                                    }
+                                }
+                                StmtKind::Match { cases, .. } => {
+                                    for case in cases {
+                                        for binding in &case.bindings {
+                                            out.insert(binding.clone());
+                                        }
+                                        for stmt in &case.body {
+                                            collect_stmt_local_bindings(stmt, out);
+                                        }
+                                    }
+                                }
+                                StmtKind::Import { names } => {
+                                    for binding in names {
+                                        if let Some(alias) = &binding.alias {
+                                            out.insert(alias.clone());
+                                        } else {
+                                            let bound = binding
+                                                .module
+                                                .split('.')
+                                                .next()
+                                                .unwrap_or(binding.module.as_str())
+                                                .to_string();
+                                            out.insert(bound);
+                                        }
+                                    }
+                                }
+                                StmtKind::ImportFrom { names, .. } => {
+                                    for binding in names {
+                                        if let Some(alias) = &binding.alias {
+                                            out.insert(alias.clone());
+                                        } else {
+                                            out.insert(binding.name.clone());
+                                        }
+                                    }
+                                }
+                                StmtKind::Class { def } => {
+                                    out.insert(def.name.clone());
+                                }
+                                StmtKind::Delete { .. }
+                                | StmtKind::Return { .. }
+                                | StmtKind::Expr(_)
+                                | StmtKind::Assert { .. }
+                                | StmtKind::Raise { .. }
+                                | StmtKind::Global { .. }
+                                | StmtKind::Nonlocal { .. }
+                                | StmtKind::Break
+                                | StmtKind::Continue => {}
+                            }
+                        }
+
+                        fn lambda_locally_binds_name(body: &Expr, target: &str) -> bool {
+                            let ExprKind::Block { stmts } = &body.kind else {
+                                return false;
+                            };
+                            let mut scope_decls = std::collections::HashSet::new();
+                            for stmt in stmts {
+                                collect_scope_decls(stmt, &mut scope_decls);
+                            }
+                            if scope_decls.contains(target) {
+                                return false;
+                            }
+                            let mut local_bindings = std::collections::HashSet::new();
+                            for stmt in stmts {
+                                collect_stmt_local_bindings(stmt, &mut local_bindings);
+                            }
+                            local_bindings.contains(target)
+                        }
+
                         fn expr_mentions_name(expr: &Expr, target: &str) -> bool {
                             match &expr.kind {
                                 ExprKind::Name(name) => name == target,
@@ -785,7 +1007,18 @@ impl<'a> Codegen<'a> {
                                 ExprKind::UnionCtor { inner, .. } => {
                                     expr_mentions_name(inner, target)
                                 }
-                                ExprKind::Lambda { .. } => false,
+                                ExprKind::Lambda { params, body, .. } => {
+                                    if params.iter().any(|param| param == target) {
+                                        false
+                                    } else if lambda_locally_binds_name(body, target) {
+                                        // CPython scope rule: assignment in a nested function body
+                                        // marks the name as local to that nested function, so it is
+                                        // not a free variable for the outer function.
+                                        false
+                                    } else {
+                                        expr_mentions_name(body, target)
+                                    }
+                                }
                                 ExprKind::IfExpr { test, body, orelse } => {
                                     expr_mentions_name(test, target)
                                         || expr_mentions_name(body, target)
@@ -803,34 +1036,16 @@ impl<'a> Codegen<'a> {
                                 StmtKind::Let { value, .. } | StmtKind::Expr(value) => {
                                     expr_mentions_name(value, target)
                                 }
-                                StmtKind::Assign { value, .. } => expr_mentions_name(value, target),
+                                StmtKind::Assign {
+                                    target: assign_target,
+                                    value,
+                                } => {
+                                    expr_mentions_name(value, target)
+                                        || target_mentions_name(assign_target, target)
+                                }
                                 StmtKind::Delete {
                                     target: assign_target,
-                                } => {
-                                    fn target_mentions_name(
-                                        target: &AssignTarget,
-                                        name: &str,
-                                    ) -> bool {
-                                        match target {
-                                            AssignTarget::Name(target_name) => target_name == name,
-                                            AssignTarget::Attr { value, .. } => {
-                                                expr_mentions_name(value, name)
-                                            }
-                                            AssignTarget::Index { value, index } => {
-                                                expr_mentions_name(value, name)
-                                                    || expr_mentions_name(index, name)
-                                            }
-                                            AssignTarget::Tuple(items)
-                                            | AssignTarget::List(items) => items
-                                                .iter()
-                                                .any(|item| target_mentions_name(item, name)),
-                                            AssignTarget::Starred(inner) => {
-                                                target_mentions_name(inner, name)
-                                            }
-                                        }
-                                    }
-                                    target_mentions_name(assign_target, target)
-                                }
+                                } => target_mentions_name(assign_target, target),
                                 StmtKind::Return { value } => value
                                     .as_ref()
                                     .is_some_and(|expr| expr_mentions_name(expr, target)),
@@ -883,17 +1098,10 @@ impl<'a> Codegen<'a> {
                                             .as_ref()
                                             .is_some_and(|expr| expr_mentions_name(expr, target))
                                 }
-                                StmtKind::Class { def } => {
-                                    def.class_attrs
-                                        .iter()
-                                        .any(|attr| expr_mentions_name(&attr.value, target))
-                                        || def.methods.iter().any(|method| {
-                                            method
-                                                .body
-                                                .iter()
-                                                .any(|stmt| stmt_mentions_name(stmt, target))
-                                        })
-                                }
+                                StmtKind::Class { def } => def
+                                    .class_attrs
+                                    .iter()
+                                    .any(|attr| expr_mentions_name(&attr.value, target)),
                                 StmtKind::Import { .. }
                                 | StmtKind::ImportFrom { .. }
                                 | StmtKind::Global { .. }
@@ -903,41 +1111,6 @@ impl<'a> Codegen<'a> {
                             }
                         }
 
-                        fn contains_nonlocal_decl(stmt: &Stmt) -> bool {
-                            match &stmt.kind {
-                                StmtKind::Nonlocal { .. } => true,
-                                StmtKind::If { body, orelse, .. } => {
-                                    body.iter().any(contains_nonlocal_decl)
-                                        || orelse.iter().any(contains_nonlocal_decl)
-                                }
-                                StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
-                                    body.iter().any(contains_nonlocal_decl)
-                                }
-                                StmtKind::Match { cases, .. } => cases
-                                    .iter()
-                                    .any(|case| case.body.iter().any(contains_nonlocal_decl)),
-                                StmtKind::Try {
-                                    body,
-                                    handlers,
-                                    orelse,
-                                    finalbody,
-                                } => {
-                                    body.iter().any(contains_nonlocal_decl)
-                                        || handlers
-                                            .iter()
-                                            .any(|h| h.body.iter().any(contains_nonlocal_decl))
-                                        || orelse.iter().any(contains_nonlocal_decl)
-                                        || finalbody.iter().any(contains_nonlocal_decl)
-                                }
-                                StmtKind::Class { def } => def
-                                    .methods
-                                    .iter()
-                                    .any(|method| method.body.iter().any(contains_nonlocal_decl)),
-                                _ => false,
-                            }
-                        }
-
-                        let has_nonlocal_decl = stmts.iter().any(contains_nonlocal_decl);
                         let has_unknown_sig = matches!(
                             value.ty.as_ref(),
                             Some(Type::Lambda { params, ret, .. })
@@ -946,23 +1119,107 @@ impl<'a> Codegen<'a> {
                         );
                         let is_recursive_nested =
                             stmts.iter().any(|stmt| stmt_mentions_name(stmt, name));
+                        let mut local_bindings: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        for stmt in stmts {
+                            collect_stmt_local_bindings(stmt, &mut local_bindings);
+                        }
+                        let mut scope_decls: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        for stmt in stmts {
+                            collect_scope_decls(stmt, &mut scope_decls);
+                        }
+                        for passthrough in scope_decls {
+                            local_bindings.remove(&passthrough);
+                        }
+                        fn capture_clone_supported(ty: &Type) -> bool {
+                            match ty {
+                                Type::Lambda { .. } => false,
+                                Type::Iterator(_) => false,
+                                Type::Custom(class_name) if class_name == "__py_file" => false,
+                                Type::Option(inner)
+                                | Type::Ref(inner)
+                                | Type::MutRef(inner)
+                                | Type::Slice(inner) => capture_clone_supported(inner),
+                                Type::Tuple(items) => items.iter().all(capture_clone_supported),
+                                Type::Dict(key, value) => {
+                                    capture_clone_supported(key) && capture_clone_supported(value)
+                                }
+                                Type::Result(ok, err) => {
+                                    capture_clone_supported(ok) && capture_clone_supported(err)
+                                }
+                                _ => true,
+                            }
+                        }
+                        let mut captured_clones: Vec<String> = self
+                            .local_vars
+                            .as_ref()
+                            .map(|vars| {
+                                vars.iter()
+                                    .filter(|(candidate, _)| candidate.as_str() != name.as_str())
+                                    .filter(|(_, ty)| capture_clone_supported(ty))
+                                    .map(|(candidate, _)| candidate)
+                                    .filter(|candidate| {
+                                        !params.iter().any(|param| param == candidate.as_str())
+                                    })
+                                    .filter(|candidate| {
+                                        !local_bindings.contains(candidate.as_str())
+                                    })
+                                    .filter(|candidate| {
+                                        stmts.iter().any(|stmt| {
+                                            stmt_mentions_name(stmt, candidate.as_str())
+                                        })
+                                    })
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        captured_clones.sort();
                         // Nested def: inside a function, emit a closure to allow captures.
                         if self.current_function.is_some() && !is_recursive_nested {
+                            // CPython-compat divergence:
+                            // Nested defs are emitted as `move` closures. Clone captured
+                            // outer locals into dedicated capture temps and rewrite references
+                            // in the closure body, so the original outer binding remains
+                            // usable after closure creation.
+                            let mut capture_overrides: Vec<(String, String)> = Vec::new();
+                            for captured in &captured_clones {
+                                let cap_tmp = self.new_tmp();
+                                let capture_src =
+                                    self.name_override(captured).unwrap_or(captured.as_str());
+                                self.push_line(&format!(
+                                    "let {} = {}.clone();",
+                                    cap_tmp, capture_src
+                                ));
+                                capture_overrides.push((captured.clone(), cap_tmp));
+                            }
+                            for (name, replacement) in &capture_overrides {
+                                self.name_overrides
+                                    .push((name.clone(), replacement.clone()));
+                            }
                             let expected = if let Some(ann) = ann {
-                                let ty = self.resolve_type_ref(ann, stmt.span)?;
-                                Some(Self::normalize_lambda_expected_for_codegen(ty, param_kinds))
+                                let ann_ty = Self::normalize_lambda_expected_for_codegen(
+                                    self.resolve_type_ref(ann, stmt.span)?,
+                                    param_kinds,
+                                );
+                                if ann_ty.contains_unknown() {
+                                    if let Some(local_ty) = self.local_var_type(name).cloned() {
+                                        Some(local_ty)
+                                    } else {
+                                        Some(ann_ty)
+                                    }
+                                } else {
+                                    Some(ann_ty)
+                                }
                             } else {
                                 None
                             };
                             let _ = has_unknown_sig;
-                            let mut expr = self.gen_expr_with_expected(value, expected.as_ref())?;
-                            if has_nonlocal_decl {
-                                // `nonlocal` closures must borrow outer cells instead of moving them,
-                                // otherwise the outer binding is moved and becomes unusable afterwards.
-                                if let Some(stripped) = expr.strip_prefix("move ") {
-                                    expr = stripped.to_string();
-                                }
+                            let expr_result = self.gen_expr_with_expected(value, expected.as_ref());
+                            for _ in &capture_overrides {
+                                self.name_overrides.pop();
                             }
+                            let expr = expr_result?;
                             let mut_kw = mut_kw_for_name(name, mut_counts);
                             self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                             if let Some(ty) = value.ty.clone().or(expected) {
@@ -1015,7 +1272,16 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 let expected = if let Some(ann) = ann {
-                    Some(self.resolve_type_ref(ann, stmt.span)?)
+                    let ann_ty = self.resolve_type_ref(ann, stmt.span)?;
+                    if ann_ty.contains_unknown() {
+                        if let Some(local_ty) = self.local_var_type(name).cloned() {
+                            Some(local_ty)
+                        } else {
+                            Some(ann_ty)
+                        }
+                    } else {
+                        Some(ann_ty)
+                    }
                 } else {
                     None
                 };
@@ -1080,6 +1346,13 @@ impl<'a> Codegen<'a> {
                     } else {
                         ty
                     };
+                    // `impl Trait` cannot appear in `let` bindings. Keep callable/iterator
+                    // locals inferred from the RHS closure/iterator expression.
+                    if matches!(&ty, Type::Lambda { .. } | Type::Iterator(_)) {
+                        self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
+                        self.set_local_var_type(name, ty);
+                        return Ok(());
+                    }
                     // Choose a storage-aware type for lists/dicts; everything else uses rust_type().
                     let ty_str = match ty {
                         Type::List(_) => {
@@ -1115,6 +1388,35 @@ impl<'a> Codegen<'a> {
                 self.emit_delete_target(target, stmt.span)?;
             }
             StmtKind::Class { def } => {
+                // Local class declarations need runtime initialization for class attrs/defaults.
+                // CPython-compat divergence:
+                // local classes are lowered as globally emitted Rust items with one-time
+                // initialization through OnceLock-backed globals (no per-call redefinition).
+                let class_init_counts: HashMap<String, usize> = HashMap::new();
+                for method in &def.methods {
+                    for param in &method.params {
+                        if let Some(default) = &param.default {
+                            let name = self.default_global_name(
+                                Some(def.name.as_str()),
+                                method.name.as_str(),
+                                &param.name,
+                            );
+                            let target = AssignTarget::Name(name);
+                            self.emit_simple_assign(&target, default, &class_init_counts, true)?;
+                        }
+                    }
+                }
+                for attr in &def.class_attrs {
+                    let target = AssignTarget::Attr {
+                        value: Expr {
+                            kind: ExprKind::Name(def.name.clone()),
+                            span: attr.span,
+                            ty: Some(Type::Custom(def.name.clone())),
+                        },
+                        attr: attr.name.clone(),
+                    };
+                    self.emit_simple_assign(&target, &attr.value, &class_init_counts, true)?;
+                }
                 self.class_defs.insert(def.name.clone(), def.clone());
                 self.emit_class(def)?;
             }
@@ -1303,7 +1605,12 @@ impl<'a> Codegen<'a> {
 
                 // General for loop with iterator.
                 let IterSource { setup, expr } = self.gen_iter_source(iter)?;
-                // Keep list/dict lock guards alive for the duration of the loop body.
+                // Keep iterator setup temporaries/guards alive for loop execution only.
+                // CPython-compat divergence note:
+                // we scope setup explicitly so mutex guards drop after the loop, avoiding
+                // cross-statement lock retention in transpiled Rust.
+                self.push_line("{");
+                self.indent += 1;
                 for line in setup {
                     self.push_line(&format!("{};", line));
                 }
@@ -1318,6 +1625,8 @@ impl<'a> Codegen<'a> {
                     self.emit_stmt(stmt, mut_counts)?;
                 }
                 self.local_vars = saved_locals;
+                self.indent -= 1;
+                self.push_line("}");
                 self.indent -= 1;
                 self.push_line("}");
             }

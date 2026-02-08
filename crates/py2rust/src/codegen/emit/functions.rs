@@ -1,6 +1,6 @@
 // Function and main emission plus signature helpers.
 
-use super::super::util::collect_assign_counts;
+use super::super::util::{collect_assign_counts, mut_kw_for_param};
 use super::super::*;
 use std::collections::{HashMap, HashSet};
 
@@ -69,11 +69,67 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        // Seed refined callable types discovered by typecheck on call sites.
+        // This is especially important for nested decorator patterns where the
+        // declaration annotation may stay unknown, but a later call carries a
+        // concrete callable shape on `call.func.ty`.
+        let mut local_let_names: HashSet<String> = HashSet::new();
+        for stmt in &func.body {
+            if let StmtKind::Let { name, .. } = &stmt.kind {
+                local_let_names.insert(name.clone());
+            }
+        }
+        for stmt in &func.body {
+            let StmtKind::Let { value, .. } = &stmt.kind else {
+                continue;
+            };
+            let ExprKind::Call {
+                func: call_func, ..
+            } = &value.kind
+            else {
+                continue;
+            };
+            let ExprKind::Name(callee_name) = &call_func.kind else {
+                continue;
+            };
+            if !local_let_names.contains(callee_name) {
+                continue;
+            }
+            if let Some(ty @ Type::Lambda { .. }) = call_func.ty.clone() {
+                self.set_local_var_type(callee_name, ty);
+            }
+        }
+
         // Precompute nonlocal declarations and cell-backed locals for this scope.
         let param_names: Vec<String> = func.params.iter().map(|p| p.name.clone()).collect();
         let nonlocal_info = self.collect_nonlocal_info_for_stmts(&func.body, &param_names);
         self.nonlocal_decls = Some(nonlocal_info.nonlocal_decls);
         self.cell_locals = Some(nonlocal_info.cell_locals);
+
+        let classmethod_alias = class.and_then(|class_def| {
+            let kind = self
+                .ctx
+                .classes
+                .get(&class_def.name)
+                .and_then(|info| info.method_kinds.get(&func.name))
+                .copied()
+                .unwrap_or(MethodKind::Instance);
+            if matches!(kind, MethodKind::Class) {
+                func.params
+                    .first()
+                    .map(|cls_param| (cls_param.name.clone(), class_def.name.clone()))
+            } else {
+                None
+            }
+        });
+        if let Some((cls_name, class_name)) = &classmethod_alias {
+            // CPython-compat divergence:
+            // We do not model Python class objects as first-class runtime values for
+            // classmethod `cls` parameters. Instead, we alias `cls` to the concrete
+            // class name during codegen so class-attribute reads keep working.
+            self.name_overrides
+                .push((cls_name.clone(), class_name.clone()));
+        }
 
         let sig = if let Some(class) = class {
             self.method_signature(func, class)?
@@ -85,6 +141,8 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         // Precompute list element type hints for this function.
         self.inferred_list_elems = Some(self.collect_list_elem_types_for_stmts(&func.body));
+        // Precompute dict key/value hints for this function.
+        self.inferred_dict_kv = Some(self.collect_dict_kv_types_for_stmts(&func.body));
         // Precompute list storage strategy for this function's locals.
         self.local_list_storage =
             Some(self.collect_list_storage_for_stmts(&func.body, &HashSet::new()));
@@ -113,10 +171,14 @@ impl<'a> Codegen<'a> {
         // Clear current function.
         self.current_function = None;
         self.current_function_ret = None;
+        if classmethod_alias.is_some() {
+            self.name_overrides.pop();
+        }
         self.local_vars = None;
         self.nonlocal_decls = None;
         self.cell_locals = None;
         self.inferred_list_elems = None;
+        self.inferred_dict_kv = None;
         self.local_list_storage = None;
         self.local_dict_storage = None;
         Ok(())
@@ -186,13 +248,24 @@ impl<'a> Codegen<'a> {
     fn function_signature(&mut self, func: &Function) -> Result<String, CompileError> {
         // Clear borrowed params from previous function.
         self.borrowed_params.clear();
+        let mut_counts = collect_assign_counts(&func.body);
 
+        let inferred_param_types = self
+            .ctx
+            .functions
+            .get(&func.name)
+            .filter(|sig| sig.params.len() == func.params.len())
+            .map(|sig| sig.params.clone());
         let mut params = Vec::new();
         let mut generics: Vec<String> = Vec::new();
         let mut param_types: HashMap<String, String> = HashMap::new();
         let mut generic_idx = 0usize;
-        for param in &func.params {
-            let ty = self.resolve_decl_param_type(param)?;
+        for (idx, param) in func.params.iter().enumerate() {
+            let ty = inferred_param_types
+                .as_ref()
+                .and_then(|types| types.get(idx))
+                .cloned()
+                .unwrap_or(self.resolve_decl_param_type(param)?);
             let ty_str = if matches!(ty, Type::Unknown) {
                 let name = format!("T{}", generic_idx);
                 generic_idx += 1;
@@ -208,7 +281,8 @@ impl<'a> Codegen<'a> {
                 self.rust_type(&borrowed)
             };
             param_types.insert(param.name.clone(), ty_str.clone());
-            params.push(format!("{}: {}", param.name, ty_str));
+            let mut_kw = mut_kw_for_param(&param.name, &mut_counts);
+            params.push(format!("{}{}: {}", mut_kw, param.name, ty_str));
         }
 
         // Get the return type from context (already wrapped in Result if can_throw).
@@ -302,16 +376,26 @@ impl<'a> Codegen<'a> {
     ) -> Result<String, CompileError> {
         // Clear borrowed params from previous function.
         self.borrowed_params.clear();
+        let mut_counts = collect_assign_counts(&func.body);
 
         let mut params = Vec::new();
-        let kind = class
-            .method_kinds
-            .get(&func.name)
+        let kind = self
+            .ctx
+            .classes
+            .get(&class.name)
+            .and_then(|info| info.method_kinds.get(&func.name))
             .copied()
             .unwrap_or(MethodKind::Instance);
-        let mut iter = func.params.iter();
+        let inferred_param_types = self
+            .ctx
+            .classes
+            .get(&class.name)
+            .and_then(|info| info.methods.get(&func.name))
+            .filter(|sig| sig.params.len() == func.params.len())
+            .map(|sig| sig.params.clone());
+        let mut start_idx = 0usize;
         if matches!(kind, MethodKind::Instance) {
-            if let Some(self_param) = iter.next() {
+            if let Some(self_param) = func.params.first() {
                 let self_ty = self.resolve_type_ref(&self_param.ann, self_param.span)?;
                 let is_mut = self.method_is_mutating(func);
                 let receiver = if is_mut { "&mut self" } else { "&self" };
@@ -324,14 +408,19 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
-        } else if matches!(kind, MethodKind::Class) {
-            // For classmethods, consume the cls parameter and generate cls: ()
-            if let Some(cls_param) = iter.next() {
-                params.push(format!("{}: ()", cls_param.name));
-            }
+            start_idx = 1;
+        } else if matches!(kind, MethodKind::Class) && !func.params.is_empty() {
+            // CPython-compat divergence:
+            // We drop runtime `cls` parameters from emitted classmethod signatures and
+            // alias uses of `cls` to the concrete class symbol during body emission.
+            start_idx = 1;
         }
-        for param in iter {
-            let ty = self.resolve_decl_param_type(param)?;
+        for (idx, param) in func.params.iter().enumerate().skip(start_idx) {
+            let ty = inferred_param_types
+                .as_ref()
+                .and_then(|types| types.get(idx))
+                .cloned()
+                .unwrap_or(self.resolve_decl_param_type(param)?);
             let ty_str = if func.name == "__exit__" && matches!(ty, Type::Unknown) {
                 "i64".to_string()
             } else if matches!(ty, Type::Unknown) {
@@ -345,9 +434,16 @@ impl<'a> Codegen<'a> {
                 }
                 self.rust_type(&borrowed)
             };
-            params.push(format!("{}: {}", param.name, ty_str));
+            let mut_kw = mut_kw_for_param(&param.name, &mut_counts);
+            params.push(format!("{}{}: {}", mut_kw, param.name, ty_str));
         }
-        let ret_ty = self.resolve_type_ref(&func.ret, func.span)?;
+        let ret_ty = self
+            .ctx
+            .classes
+            .get(&class.name)
+            .and_then(|info| info.methods.get(&func.name))
+            .map(|sig| sig.ret.clone())
+            .unwrap_or(self.resolve_type_ref(&func.ret, func.span)?);
         let ret_str = if matches!(ret_ty, Type::Unknown) {
             "()".to_string()
         } else {
@@ -375,6 +471,13 @@ impl<'a> Codegen<'a> {
         fn stmt_mutates(stmt: &Stmt) -> bool {
             match &stmt.kind {
                 StmtKind::Assign { target, .. } => {
+                    matches!(
+                        target.as_ref(),
+                        AssignTarget::Attr { value, .. }
+                            if matches!(&value.kind, ExprKind::Name(n) if n == "self")
+                    )
+                }
+                StmtKind::Delete { target } => {
                     matches!(
                         target.as_ref(),
                         AssignTarget::Attr { value, .. }

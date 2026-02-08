@@ -74,6 +74,49 @@ impl<'a> TypeChecker<'a> {
                 has_defaults: vec![false],
                 ret: Box::new(Type::Float),
             }),
+            "bool" => Some(Type::Lambda {
+                param_names: vec!["value".to_string()],
+                params: vec![Type::Unknown],
+                param_kinds: vec![ParamKind::PositionalOrKeyword],
+                has_defaults: vec![false],
+                ret: Box::new(Type::Bool),
+            }),
+            "bytes" => Some(Type::Lambda {
+                param_names: vec!["value".to_string()],
+                params: vec![Type::Unknown],
+                param_kinds: vec![ParamKind::PositionalOrKeyword],
+                has_defaults: vec![false],
+                ret: Box::new(Type::Bytes),
+            }),
+            "list" => Some(Type::Lambda {
+                param_names: vec!["iterable".to_string()],
+                params: vec![Type::Unknown],
+                param_kinds: vec![ParamKind::PositionalOrKeyword],
+                has_defaults: vec![false],
+                ret: Box::new(Type::List(Box::new(Type::Unknown))),
+            }),
+            "tuple" => Some(Type::Lambda {
+                param_names: vec!["iterable".to_string()],
+                params: vec![Type::Unknown],
+                param_kinds: vec![ParamKind::PositionalOrKeyword],
+                has_defaults: vec![false],
+                // Dynamic tuple() values are currently list-backed in this compiler.
+                ret: Box::new(Type::List(Box::new(Type::Unknown))),
+            }),
+            "dict" => Some(Type::Lambda {
+                param_names: vec!["mapping".to_string()],
+                params: vec![Type::Unknown],
+                param_kinds: vec![ParamKind::PositionalOrKeyword],
+                has_defaults: vec![false],
+                ret: Box::new(Type::Dict(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+            }),
+            "set" => Some(Type::Lambda {
+                param_names: vec!["iterable".to_string()],
+                params: vec![Type::Unknown],
+                param_kinds: vec![ParamKind::PositionalOrKeyword],
+                has_defaults: vec![false],
+                ret: Box::new(Type::Set(Box::new(Type::Unknown))),
+            }),
             _ => None,
         };
         if let Some(ty) = builtin_ctor {
@@ -136,13 +179,19 @@ impl<'a> TypeChecker<'a> {
                         .get(class_name)
                         .and_then(|info| info.properties.get(attr))
                         .map(|prop| prop.ty.clone());
+                    let class_attr_ty = self
+                        .ctx
+                        .classes
+                        .get(class_name)
+                        .and_then(|info| info.class_attrs.get(attr))
+                        .map(|attr_info| attr_info.ty.clone());
                     let field_ty = self
                         .ctx
                         .classes
                         .get(class_name)
                         .and_then(|info| info.fields.get(attr))
                         .cloned();
-                    if let Some(ty) = prop_ty.or(field_ty) {
+                    if let Some(ty) = prop_ty.or(class_attr_ty).or(field_ty) {
                         // Infer unknown parameter types inside dunder methods.
                         self.set_var_type(name, Type::Custom(class_name.clone()));
                         return Ok(ty);
