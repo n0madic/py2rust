@@ -35,6 +35,17 @@ assert lines[0].startswith("Hello"), "lines[0].startswith(\"Hello\") should be T
 assert lines[1].startswith("Line 2"), "assertion failed: lines[1].startswith(\"Line 2\")"
 assert lines[2].startswith("Line 3"), "assertion failed: lines[2].startswith(\"Line 3\")"
 
+# Test 4.1: Iterate file object directly
+f = open("/tmp/test_aot_file.txt", "r")
+iter_lines: list[str] = []
+for line in f:
+    iter_lines.append(line)
+f.close()
+assert len(iter_lines) == 3, "len(iter_lines) should equal 3"
+assert iter_lines[0].startswith("Hello"), "iter_lines[0] should start with Hello"
+assert iter_lines[1].startswith("Line 2"), "iter_lines[1] should start with Line 2"
+assert iter_lines[2].startswith("Line 3"), "iter_lines[2] should start with Line 3"
+
 # Test 5: Context manager (with statement)
 with open("/tmp/test_aot_file.txt", "r") as f:
     content = f.read()

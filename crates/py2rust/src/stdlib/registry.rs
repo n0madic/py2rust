@@ -1487,6 +1487,88 @@ pub fn is_stdlib_runtime_type(type_name: &str) -> bool {
     )
 }
 
+/// Return all names importable via `from <module> import *` for registered stdlib modules.
+pub fn importable_members(module: StdlibModuleId) -> &'static [&'static str] {
+    match module {
+        StdlibModuleId::Os => &[
+            "remove", "getcwd", "chdir", "mkdir", "listdir", "rmdir", "rename", "replace",
+            "makedirs", "getenv", "path", "environ", "name",
+        ],
+        StdlibModuleId::OsPath => &[
+            "join", "exists", "basename", "dirname", "split", "isdir", "isfile", "abspath",
+        ],
+        StdlibModuleId::Sys => &["intern", "exit", "argv"],
+        StdlibModuleId::Re => &["search", "match", "sub"],
+        StdlibModuleId::Json => &["dumps", "loads", "dump", "load"],
+        StdlibModuleId::Math => &[
+            "sqrt",
+            "sin",
+            "cos",
+            "tan",
+            "ceil",
+            "floor",
+            "factorial",
+            "log",
+            "log2",
+            "log10",
+            "exp",
+            "asin",
+            "acos",
+            "atan",
+            "sinh",
+            "cosh",
+            "tanh",
+            "fabs",
+            "degrees",
+            "radians",
+            "trunc",
+            "isnan",
+            "isinf",
+            "isfinite",
+            "atan2",
+            "fmod",
+            "copysign",
+            "hypot",
+            "pow",
+            "gcd",
+            "lcm",
+            "comb",
+            "perm",
+            "pi",
+            "e",
+            "tau",
+            "inf",
+            "nan",
+        ],
+        StdlibModuleId::Time => &[
+            "time",
+            "time_ns",
+            "monotonic",
+            "monotonic_ns",
+            "perf_counter",
+            "perf_counter_ns",
+            "process_time",
+            "process_time_ns",
+            "sleep",
+            "localtime",
+            "gmtime",
+            "strftime",
+            "strptime",
+        ],
+        StdlibModuleId::Subprocess => &["run"],
+        StdlibModuleId::Urllib => &["parse", "request"],
+        StdlibModuleId::UrllibParse => &[
+            "urlparse",
+            "quote",
+            "unquote",
+            "urljoin",
+            "urlencode",
+            "parse_qs",
+        ],
+        StdlibModuleId::UrllibRequest => &["urlopen"],
+    }
+}
+
 /// Resolve an importable module member to a stable method id.
 pub fn find_imported_member(module: StdlibModuleId, member: &str) -> Option<StdlibMethodId> {
     find_stdlib_method(module, member).map(|spec| spec.method_id)

@@ -2891,6 +2891,27 @@ impl<'a> Codegen<'a> {
         if self.uses.py_file {
             self.push_block(HELPER_PY_FILE);
         }
+        if self.uses.py_input {
+            self.push_line("fn py_input(prompt: Option<&str>) -> String {");
+            self.indent += 1;
+            self.push_line("use std::io::{self, Write};");
+            self.push_line("if let Some(prompt) = prompt {");
+            self.indent += 1;
+            self.push_line("print!(\"{}\", prompt);");
+            self.push_line("io::stdout().flush().expect(\"stdout flush failed\");");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("let mut line = String::new();");
+            self.push_line("io::stdin().read_line(&mut line).expect(\"stdin read failed\");");
+            self.push_line("while matches!(line.chars().last(), Some('\\n' | '\\r')) {");
+            self.indent += 1;
+            self.push_line("line.pop();");
+            self.indent -= 1;
+            self.push_line("}");
+            self.push_line("line");
+            self.indent -= 1;
+            self.push_line("}");
+        }
         if self.uses.py_os_remove {
             self.push_block(HELPER_PY_OS_REMOVE);
         }

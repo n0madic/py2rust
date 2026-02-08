@@ -17,15 +17,12 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Type check a variable reference expression.
-    ///
-    /// Returns the inferred type and whether the original node should be
-    /// rewritten to `None` because the name cannot be resolved.
     pub(super) fn check_name_expr(
         &mut self,
         name: &mut String,
         expected: Option<&Type>,
         span: Span,
-    ) -> Result<(Type, bool), CompileError> {
+    ) -> Result<Type, CompileError> {
         // Track global/nonlocal usage for declaration-order validation.
         self.note_global_use(name, span);
         self.note_nonlocal_use(name, span);
@@ -40,18 +37,15 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            return Ok((ty, false));
+            return Ok(ty);
         }
 
         if let Some(sig) = self.ctx.functions.get(name) {
             // Function reference used as a value.
-            return Ok((
-                Type::Lambda {
-                    params: sig.params.clone(),
-                    ret: Box::new(sig.ret.clone()),
-                },
-                false,
-            ));
+            return Ok(Type::Lambda {
+                params: sig.params.clone(),
+                ret: Box::new(sig.ret.clone()),
+            });
         }
 
         // Built-in type constructors are handled as lambda values.
@@ -71,15 +65,14 @@ impl<'a> TypeChecker<'a> {
             _ => None,
         };
         if let Some(ty) = builtin_ctor {
-            return Ok((ty, false));
+            return Ok(ty);
         }
 
         if self.ctx.classes.contains_key(name) {
-            return Ok((Type::Custom(name.clone()), false));
+            return Ok(Type::Custom(name.clone()));
         }
 
-        // Unknown name: rewrite to None to avoid repeated downstream errors.
-        Ok((Type::None, true))
+        Err(self.error(span, format!("NameError: name '{name}' is not defined")))
     }
 
     /// Type check `obj.attr` access.

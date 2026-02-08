@@ -101,6 +101,7 @@ impl<'a> Codegen<'a> {
                 | StmtKind::ImportFrom { .. }
                 | StmtKind::Global { .. }
                 | StmtKind::Nonlocal { .. }
+                | StmtKind::Delete { .. }
                 | StmtKind::Break
                 | StmtKind::Continue => {}
             },
@@ -173,6 +174,7 @@ impl<'a> Codegen<'a> {
             | StmtKind::Raise { .. }
             | StmtKind::Import { .. }
             | StmtKind::ImportFrom { .. }
+            | StmtKind::Delete { .. }
             | StmtKind::Break
             | StmtKind::Continue => {}
         });
@@ -239,6 +241,97 @@ impl<'a> Codegen<'a> {
                         used,
                     );
                 }
+                StmtKind::Delete { target } => match target {
+                    AssignTarget::Attr { value, .. } => {
+                        self.collect_used_globals_in_expr(
+                            value,
+                            locals,
+                            outers,
+                            globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                    AssignTarget::Index { value, index } => {
+                        self.collect_used_globals_in_expr(
+                            value,
+                            locals,
+                            outers,
+                            globals,
+                            module_vars,
+                            used,
+                        );
+                        self.collect_used_globals_in_expr(
+                            index,
+                            locals,
+                            outers,
+                            globals,
+                            module_vars,
+                            used,
+                        );
+                    }
+                    AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                        for item in items {
+                            if let AssignTarget::Attr { value, .. } = item {
+                                self.collect_used_globals_in_expr(
+                                    value,
+                                    locals,
+                                    outers,
+                                    globals,
+                                    module_vars,
+                                    used,
+                                );
+                            } else if let AssignTarget::Index { value, index } = item {
+                                self.collect_used_globals_in_expr(
+                                    value,
+                                    locals,
+                                    outers,
+                                    globals,
+                                    module_vars,
+                                    used,
+                                );
+                                self.collect_used_globals_in_expr(
+                                    index,
+                                    locals,
+                                    outers,
+                                    globals,
+                                    module_vars,
+                                    used,
+                                );
+                            }
+                        }
+                    }
+                    AssignTarget::Starred(inner) => {
+                        if let AssignTarget::Attr { value, .. } = inner.as_ref() {
+                            self.collect_used_globals_in_expr(
+                                value,
+                                locals,
+                                outers,
+                                globals,
+                                module_vars,
+                                used,
+                            );
+                        } else if let AssignTarget::Index { value, index } = inner.as_ref() {
+                            self.collect_used_globals_in_expr(
+                                value,
+                                locals,
+                                outers,
+                                globals,
+                                module_vars,
+                                used,
+                            );
+                            self.collect_used_globals_in_expr(
+                                index,
+                                locals,
+                                outers,
+                                globals,
+                                module_vars,
+                                used,
+                            );
+                        }
+                    }
+                    AssignTarget::Name(_) => {}
+                },
                 StmtKind::Return { value } => {
                     if let Some(expr) = value {
                         self.collect_used_globals_in_expr(

@@ -343,6 +343,7 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
                             | "sort"
                             | "add"
                             | "remove"
+                            | "setdefault"
                             // File methods advance cursor or flush state and need mutable bindings.
                             | "read"
                             | "readline"
@@ -494,6 +495,10 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
             StmtKind::Assign { target, value } => {
                 record_target(target, counts);
                 visit_expr(value, counts);
+            }
+            StmtKind::Delete { target } => {
+                // `del x[i]`, `del d[k]`, and `del obj.prop` mutate the receiver.
+                record_target(target, counts);
             }
             StmtKind::If { test, body, orelse } => {
                 visit_expr(test, counts);

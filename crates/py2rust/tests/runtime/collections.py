@@ -1,3 +1,20 @@
+# Del-property coverage uses a top-level class because nested classes are out of
+# scope for the supported Python subset.
+class DeleteProp:
+    _value: int
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    @property
+    def value(self) -> int:
+        return self._value
+
+    @value.deleter
+    def value(self) -> None:
+        self._value = -1
+
+
 # List operations
 def test_lists() -> None:
     # Creation and indexing (including negative indices)
@@ -766,6 +783,54 @@ def test_for_tuple_unpacking() -> None:
             filtered_sum = filtered_sum + bb
     assert filtered_sum == 18  # 4+6+8
 
+
+def test_methods_and_delete() -> None:
+    # list.remove() first-match semantics.
+    global_vals: list[int] = [5, 6, 7, 6]
+    global_vals.remove(6)
+    assert global_vals == [5, 7, 6]
+
+    # dict.keys(), dict.values(), dict.setdefault() on top-level values.
+    global_dict: dict[str, int] = {"one": 1}
+    assert list(global_dict.keys()) == ["one"]
+    assert list(global_dict.values()) == [1]
+    inserted: int = global_dict.setdefault("two", 2)
+    assert inserted == 2
+    assert global_dict["two"] == 2
+    existing: int = global_dict.setdefault("two", 99)
+    assert existing == 2
+    assert global_dict["two"] == 2
+
+    # Local-storage path for the same methods.
+    def local_ops() -> None:
+        local_vals: list[int] = [1, 2, 2, 3]
+        local_vals.remove(2)
+        assert local_vals == [1, 2, 3]
+
+        local_dict: dict[str, int] = {"x": 10}
+        assert list(local_dict.keys()) == ["x"]
+        assert list(local_dict.values()) == [10]
+        got_local: int = local_dict.setdefault("y", 20)
+        assert got_local == 20
+        assert local_dict["y"] == 20
+
+    local_ops()
+
+    # del list[idx] / del dict[key].
+    nums: list[int] = [10, 20, 30]
+    del nums[1]
+    assert nums == [10, 30]
+
+    named: dict[str, int] = {"a": 1, "b": 2}
+    del named["a"]
+    assert "a" not in named
+    assert len(named) == 1
+
+    # del property with @<prop>.deleter.
+    prop = DeleteProp(42)
+    del prop.value
+    assert prop.value == -1
+
 # Run all tests
 test_lists()
 test_strings()
@@ -774,5 +839,6 @@ test_printing()
 test_dicts()
 test_sets()
 test_for_tuple_unpacking()
+test_methods_and_delete()
 
 print("All collection tests passed!")

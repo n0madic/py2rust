@@ -129,6 +129,7 @@ pub struct PropertyDef {
     pub name: String,
     pub getter: String,
     pub setter: Option<String>,
+    pub deleter: Option<String>,
     pub span: Span,
 }
 
@@ -181,6 +182,11 @@ pub enum StmtKind {
     Assign {
         target: AssignTarget,
         value: Expr,
+    },
+    /// Delete from a mutable container/attribute.
+    /// Supported forms are validated later (e.g., `del list[idx]`, `del dict[key]`, `del obj.attr`).
+    Delete {
+        target: AssignTarget,
     },
     Return {
         value: Option<Expr>,
@@ -277,12 +283,12 @@ pub struct MatchCase {
 
 /// Exception handler (except clause).
 ///
-/// - exc_type: The exception class to catch (None means catch-all)
+/// - exc_types: The exception class names to catch (None means catch-all)
 /// - name: Variable binding for the exception object (if provided)
 /// - body: Handler body statements
 #[derive(Debug, Clone)]
 pub struct ExceptHandler {
-    pub exc_type: Option<String>,
+    pub exc_types: Option<Vec<String>>,
     pub name: Option<String>,
     pub body: Vec<Stmt>,
     pub span: Span,

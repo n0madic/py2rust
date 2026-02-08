@@ -392,9 +392,27 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             fn collect_names_in_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
+                fn collect_names_in_target(target: &AssignTarget, out: &mut HashSet<String>) {
+                    match target {
+                        AssignTarget::Attr { value, .. } => collect_names(value, out),
+                        AssignTarget::Index { value, index } => {
+                            collect_names(value, out);
+                            collect_names(index, out);
+                        }
+                        AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                            for item in items {
+                                collect_names_in_target(item, out);
+                            }
+                        }
+                        AssignTarget::Starred(inner) => collect_names_in_target(inner, out),
+                        AssignTarget::Name(_) => {}
+                    }
+                }
+
                 match &stmt.kind {
                     StmtKind::Let { value, .. } => collect_names(value, out),
                     StmtKind::Assign { value, .. } => collect_names(value, out),
+                    StmtKind::Delete { target } => collect_names_in_target(target, out),
                     StmtKind::Return { value } => {
                         if let Some(expr) = value {
                             collect_names(expr, out);
@@ -473,9 +491,27 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             fn visit_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
+                fn visit_target_exprs(target: &AssignTarget, out: &mut HashSet<String>) {
+                    match target {
+                        AssignTarget::Attr { value, .. } => visit_expr(value, out),
+                        AssignTarget::Index { value, index } => {
+                            visit_expr(value, out);
+                            visit_expr(index, out);
+                        }
+                        AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                            for item in items {
+                                visit_target_exprs(item, out);
+                            }
+                        }
+                        AssignTarget::Starred(inner) => visit_target_exprs(inner, out),
+                        AssignTarget::Name(_) => {}
+                    }
+                }
+
                 match &stmt.kind {
                     StmtKind::Let { value, .. } => visit_expr(value, out),
                     StmtKind::Assign { value, .. } => visit_expr(value, out),
+                    StmtKind::Delete { target } => visit_target_exprs(target, out),
                     StmtKind::Return { value } => {
                         if let Some(expr) = value {
                             visit_expr(expr, out);

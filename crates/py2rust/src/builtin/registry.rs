@@ -28,6 +28,7 @@ pub enum BuiltinId {
     Hash,
     Hex,
     Id,
+    Input,
     Int,
     IsInstance,
     Iter,
@@ -71,7 +72,7 @@ const PRINT_KEYWORDS: &[&str] = &["sep", "end"];
 const SORTED_KEYWORDS: &[&str] = &["key", "reverse"];
 const KEY_ONLY_KEYWORDS: &[&str] = &["key"];
 
-const BUILTIN_SPECS: [BuiltinSpec; 43] = [
+const BUILTIN_SPECS: [BuiltinSpec; 44] = [
     BuiltinSpec {
         id: BuiltinId::Abs,
         name: "abs",
@@ -209,6 +210,14 @@ const BUILTIN_SPECS: [BuiltinSpec; 43] = [
         },
     },
     BuiltinSpec {
+        id: BuiltinId::Input,
+        name: "input",
+        shape: CallShape {
+            arity: AritySpec::Range { min: 0, max: 1 },
+            keywords: KeywordPolicy::None,
+        },
+    },
+    BuiltinSpec {
         id: BuiltinId::Int,
         name: "int",
         shape: CallShape {
@@ -252,7 +261,8 @@ const BUILTIN_SPECS: [BuiltinSpec; 43] = [
         id: BuiltinId::Map,
         name: "map",
         shape: CallShape {
-            arity: AritySpec::Exact(2),
+            // Support tutorial-compatible two-iterable map(func, it1, it2).
+            arity: AritySpec::Range { min: 2, max: 3 },
             keywords: KeywordPolicy::None,
         },
     },

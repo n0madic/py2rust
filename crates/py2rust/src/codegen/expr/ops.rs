@@ -220,21 +220,25 @@ impl<'a> Codegen<'a> {
             let right_is_zero_literal = matches!(&right.kind, ExprKind::Literal(Literal::Int(0)))
                 || matches!(&right.kind, ExprKind::Literal(Literal::Float(v)) if *v == 0.0);
             let needs_zero_guard = right_is_zero_literal || self.current_function.is_some();
+            let lhs_tmp = self.new_tmp();
+            let rhs_tmp = self.new_tmp();
+            let rem_tmp = self.new_tmp();
             if needs_zero_guard {
                 self.uses.py_error = true;
-                let rhs_tmp = self.new_tmp();
                 let guarded = if is_float {
                     format!(
-                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0.0f64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".into())) }} else {{ Ok({left_expr} % {rhs_tmp}) }} }}"
+                        "{{ let {lhs_tmp} = {left_expr}; let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0.0f64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".into())) }} else {{ let {rem_tmp} = {lhs_tmp} % {rhs_tmp}; Ok((({rem_tmp} + {rhs_tmp}) % {rhs_tmp})) }} }}"
                     )
                 } else {
                     format!(
-                        "{{ let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0i64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".into())) }} else {{ Ok({left_expr} % {rhs_tmp}) }} }}"
+                        "{{ let {lhs_tmp} = {left_expr}; let {rhs_tmp} = {right_expr}; if {rhs_tmp} == 0i64 {{ Err(PyError::ZeroDivisionError(\"division by zero\".into())) }} else {{ let {rem_tmp} = {lhs_tmp} % {rhs_tmp}; Ok((({rem_tmp} + {rhs_tmp}) % {rhs_tmp})) }} }}"
                     )
                 };
                 return Ok(self.wrap_result(guarded));
             }
-            return Ok(format!("({} % {})", left_expr, right_expr));
+            return Ok(format!(
+                "{{ let {lhs_tmp} = {left_expr}; let {rhs_tmp} = {right_expr}; let {rem_tmp} = {lhs_tmp} % {rhs_tmp}; (({rem_tmp} + {rhs_tmp}) % {rhs_tmp}) }}"
+            ));
         }
         if matches!(op, BinOp::Pow) {
             let is_float = matches!(expr.ty.as_ref(), Some(Type::Float));
@@ -779,6 +783,28 @@ impl<'a> Codegen<'a> {
                         right_items.len(),
                     );
                 }
+            }
+        }
+        if let (Some(Type::Set(_)), Some(Type::Set(_))) = (left.ty.as_ref(), right.ty.as_ref()) {
+            if matches!(op, CmpOp::Lt | CmpOp::LtEq | CmpOp::Gt | CmpOp::GtEq) {
+                let left_expr = self.gen_expr(left)?;
+                let right_expr = self.gen_expr(right)?;
+                let left_tmp = self.new_tmp();
+                let right_tmp = self.new_tmp();
+                let cond = match op {
+                    CmpOp::LtEq => format!("{left_tmp}.is_subset({right_tmp})"),
+                    CmpOp::Lt => {
+                        format!("{left_tmp}.is_subset({right_tmp}) && {left_tmp} != {right_tmp}")
+                    }
+                    CmpOp::GtEq => format!("{left_tmp}.is_superset({right_tmp})"),
+                    CmpOp::Gt => {
+                        format!("{left_tmp}.is_superset({right_tmp}) && {left_tmp} != {right_tmp}")
+                    }
+                    _ => unreachable!("set ordering handled only for subset/superset operators"),
+                };
+                return Ok(format!(
+                    "{{ let {left_tmp} = &({left_expr}); let {right_tmp} = &({right_expr}); {cond} }}"
+                ));
             }
         }
         let op_str = match op {

@@ -297,16 +297,21 @@ from os import unknown
 }
 
 #[test]
-fn rejects_from_os_import_wildcard() {
+fn supports_from_os_import_wildcard() {
     let source = r#"
 from os import *
 "#;
+    expect_success(source);
+}
+
+#[test]
+fn rejects_unknown_name_at_compile_time() {
+    let source = r#"
+value: int = missing_name
+"#;
     let error = expect_error(source);
-    assert!(
-        error.contains("from os import * is not supported"),
-        "Error: {}",
-        error
-    );
+    assert!(error.contains("NameError"), "Error: {}", error);
+    assert!(error.contains("missing_name"), "Error: {}", error);
 }
 
 #[test]

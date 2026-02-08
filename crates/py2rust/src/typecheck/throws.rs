@@ -142,9 +142,14 @@ impl ThrowAnalyzer {
                 } => {
                     // Check if try body has raises
                     if self.has_uncaught_raise(body) {
-                        // Check if any handler catches all exceptions
-                        // Only `except:` (no type) catches everything
-                        let catches_all = handlers.iter().any(|h| h.exc_type.is_none());
+                        // Check if any handler catches all exceptions.
+                        // `except:` and `except (..., Exception, ...)` both catch all.
+                        let catches_all = handlers.iter().any(|h| {
+                            h.exc_types.is_none()
+                                || h.exc_types.as_ref().is_some_and(|types| {
+                                    types.iter().any(|ty| ty.as_str() == "Exception")
+                                })
+                        });
                         if !catches_all {
                             // Handlers don't catch all, so raises propagate
                             return true;
@@ -318,8 +323,13 @@ impl ThrowAnalyzer {
                 } => {
                     // Check if try body has throwing calls
                     if self.has_uncaught_throwing_call(body) {
-                        // Only except: catches all
-                        let catches_all = handlers.iter().any(|h| h.exc_type.is_none());
+                        // `except:` and `except (..., Exception, ...)` both catch all.
+                        let catches_all = handlers.iter().any(|h| {
+                            h.exc_types.is_none()
+                                || h.exc_types.as_ref().is_some_and(|types| {
+                                    types.iter().any(|ty| ty.as_str() == "Exception")
+                                })
+                        });
                         if !catches_all {
                             // Handlers don't catch all, so throws propagate
                             return true;

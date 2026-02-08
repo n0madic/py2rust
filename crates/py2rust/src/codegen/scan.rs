@@ -96,6 +96,23 @@ impl<'a> Codegen<'a> {
     /// simple string literal comparisons.
     pub(crate) fn analyze_name_compare_only(&self, program: &Program) -> bool {
         let mut ok = true;
+        fn visit_assign_target(target: &AssignTarget, ok: &mut bool) {
+            match target {
+                AssignTarget::Attr { value, .. } => visit_expr(value, ok),
+                AssignTarget::Index { value, index } => {
+                    visit_expr(value, ok);
+                    visit_expr(index, ok);
+                }
+                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                    for item in items {
+                        visit_assign_target(item, ok);
+                    }
+                }
+                AssignTarget::Starred(inner) => visit_assign_target(inner, ok),
+                AssignTarget::Name(_) => {}
+            }
+        }
+
         fn visit_stmt(stmt: &Stmt, ok: &mut bool) {
             if !*ok {
                 return;
@@ -103,6 +120,7 @@ impl<'a> Codegen<'a> {
             match &stmt.kind {
                 StmtKind::Let { value, .. } => visit_expr(value, ok),
                 StmtKind::Assign { value, .. } => visit_expr(value, ok),
+                StmtKind::Delete { target } => visit_assign_target(target, ok),
                 StmtKind::Return { value } => {
                     if let Some(expr) = value {
                         visit_expr(expr, ok);
@@ -351,6 +369,7 @@ impl<'a> Codegen<'a> {
         match &stmt.kind {
             StmtKind::Let { value, .. } => self.scan_expr(value)?,
             StmtKind::Assign { value, .. } => self.scan_expr(value)?,
+            StmtKind::Delete { target } => self.scan_assign_target_exprs(target)?,
             StmtKind::Return { value } => {
                 if let Some(expr) = value {
                     self.scan_expr(expr)?;
@@ -429,6 +448,25 @@ impl<'a> Codegen<'a> {
             | StmtKind::Global { .. }
             | StmtKind::Nonlocal { .. } => {}
             StmtKind::Break | StmtKind::Continue => {}
+        }
+        Ok(())
+    }
+
+    /// Scan expressions embedded inside assignment-style targets.
+    fn scan_assign_target_exprs(&mut self, target: &AssignTarget) -> Result<(), CompileError> {
+        match target {
+            AssignTarget::Attr { value, .. } => self.scan_expr(value)?,
+            AssignTarget::Index { value, index } => {
+                self.scan_expr(value)?;
+                self.scan_expr(index)?;
+            }
+            AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                for item in items {
+                    self.scan_assign_target_exprs(item)?;
+                }
+            }
+            AssignTarget::Starred(inner) => self.scan_assign_target_exprs(inner)?,
+            AssignTarget::Name(_) => {}
         }
         Ok(())
     }

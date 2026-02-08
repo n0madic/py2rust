@@ -27,4 +27,11 @@ import os as o
 
 o.remove("/tmp/test_aot_import_alias.txt")
 
+# Test 4: from math import *
+from math import *
+
+assert sqrt(16.0) == 4.0, "sqrt(16.0) should equal 4.0"
+assert ceil(3.2) == 4, "ceil(3.2) should equal 4"
+assert floor(3.8) == 3, "floor(3.8) should equal 3"
+
 print("All import tests passed!")

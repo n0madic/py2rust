@@ -60,6 +60,7 @@ pub(crate) struct Uses {
     pub(crate) py_str_slice_step: bool,
     pub(crate) py_list_slice_step: bool,
     pub(crate) py_file: bool,
+    pub(crate) py_input: bool,
     pub(crate) py_os_remove: bool,
     pub(crate) py_os_getcwd: bool,
     pub(crate) py_os_chdir: bool,

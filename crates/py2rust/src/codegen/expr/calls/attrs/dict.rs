@@ -256,6 +256,129 @@ impl<'a> Codegen<'a> {
                 );
             }
         }
+        if attr == "keys" {
+            if let Some(Type::Dict(key_ty, _)) = value.ty.as_ref() {
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "dict.keys() expects no arguments"));
+                }
+                self.uses.index_map = true;
+                let iter_call = if self.is_copy_type(key_ty) {
+                    "keys().copied()"
+                } else {
+                    "keys().cloned()"
+                };
+                let out_tmp = self.new_tmp();
+                if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                    let target_expr = self.gen_expr(value)?;
+                    return Ok(format!(
+                        "{{ let {out} = {target}.{iter}.collect::<Vec<_>>(); {out}.into_iter() }}",
+                        out = out_tmp,
+                        target = target_expr,
+                        iter = iter_call
+                    ));
+                }
+                return self.with_locked_attr_target(
+                    value,
+                    "dict mutex poisoned",
+                    false,
+                    |_tc, guard| {
+                        format!(
+                            "let {out} = {guard}.{iter}.collect::<Vec<_>>(); {out}.into_iter()",
+                            out = out_tmp,
+                            guard = guard,
+                            iter = iter_call
+                        )
+                    },
+                );
+            }
+        }
+        if attr == "values" {
+            if let Some(Type::Dict(_, val_ty)) = value.ty.as_ref() {
+                if !args.is_empty() {
+                    return Err(self.error(value.span, "dict.values() expects no arguments"));
+                }
+                self.uses.index_map = true;
+                let iter_call = if self.is_copy_type(val_ty) {
+                    "values().copied()"
+                } else {
+                    "values().cloned()"
+                };
+                let out_tmp = self.new_tmp();
+                if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                    let target_expr = self.gen_expr(value)?;
+                    return Ok(format!(
+                        "{{ let {out} = {target}.{iter}.collect::<Vec<_>>(); {out}.into_iter() }}",
+                        out = out_tmp,
+                        target = target_expr,
+                        iter = iter_call
+                    ));
+                }
+                return self.with_locked_attr_target(
+                    value,
+                    "dict mutex poisoned",
+                    false,
+                    |_tc, guard| {
+                        format!(
+                            "let {out} = {guard}.{iter}.collect::<Vec<_>>(); {out}.into_iter()",
+                            out = out_tmp,
+                            guard = guard,
+                            iter = iter_call
+                        )
+                    },
+                );
+            }
+        }
+        if attr == "setdefault" {
+            if let Some(Type::Dict(_, val_ty)) = value.ty.as_ref() {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(
+                        self.error(value.span, "dict.setdefault() expects one or two arguments")
+                    );
+                }
+                self.uses.index_map = true;
+                let key_expr = self.gen_expr(&args[0])?;
+                let default_expr = if args.len() == 2 {
+                    self.gen_expr(&args[1])?
+                } else if matches!(val_ty.as_ref(), Type::Option(_)) {
+                    "None".to_string()
+                } else if matches!(val_ty.as_ref(), Type::None) {
+                    "()".to_string()
+                } else {
+                    return Err(self.error(
+                        value.span,
+                        "dict.setdefault() without default is only supported for Optional/None dict values",
+                    ));
+                };
+                let key_tmp = self.new_tmp();
+                let default_tmp = self.new_tmp();
+                if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
+                    let target_expr = self.gen_expr(value)?;
+                    return Ok(format!(
+                        "{{ let {key} = {key_expr}; let {default} = {default_expr}; {target}.entry({key}).or_insert({default}).clone() }}",
+                        key = key_tmp,
+                        key_expr = key_expr,
+                        default = default_tmp,
+                        default_expr = default_expr,
+                        target = target_expr
+                    ));
+                }
+                return self.with_locked_attr_target(
+                    value,
+                    "dict mutex poisoned",
+                    true,
+                    |_tc, guard| {
+                        format!(
+                            "let {key} = {key_expr}; let {default} = {default_expr}; {guard}.entry({key}).or_insert({default}).clone()",
+                            key = key_tmp,
+                            key_expr = key_expr,
+                            default = default_tmp,
+                            default_expr = default_expr,
+                            guard = guard
+                        )
+                    },
+                );
+            }
+        }
         Err(self.error(
             value.span,
             format!("Internal error: unsupported dict method `{attr}`"),

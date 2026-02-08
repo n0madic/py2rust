@@ -157,6 +157,13 @@ impl<'a> Lowerer<'a> {
                 let value = self.lower_expr(&def.value)?;
                 StmtKind::Assign { target, value }
             }
+            ast::Stmt::Delete(def) => {
+                if def.targets.len() != 1 {
+                    return Err(self.error(def.range(), "Only single-target del is supported"));
+                }
+                let target = self.lower_assign_target(&def.targets[0])?;
+                StmtKind::Delete { target }
+            }
             ast::Stmt::Return(def) => {
                 let value = match &def.value {
                     Some(expr) => Some(self.lower_expr(expr)?),
@@ -409,14 +416,6 @@ impl<'a> Lowerer<'a> {
                 let mut names = Vec::new();
                 for alias in &import.names {
                     let name = self.ident(alias.name.as_str());
-                    if name == "*" {
-                        if module_name == "os" {
-                            return Err(
-                                self.error(stmt.range(), "from os import * is not supported")
-                            );
-                        }
-                        return Err(self.error(stmt.range(), "from import * is not supported"));
-                    }
                     let alias = alias.asname.as_ref().map(|id| self.ident(id.as_str()));
                     names.push(ImportFromBinding { name, alias });
                 }
@@ -662,7 +661,7 @@ impl<'a> Lowerer<'a> {
             kind: StmtKind::Try {
                 body: nested_body,
                 handlers: vec![ExceptHandler {
-                    exc_type: None,
+                    exc_types: None,
                     name: None,
                     body: vec![reraises_if_not_suppressed],
                     span: item_span,
@@ -1146,11 +1145,28 @@ impl<'a> Lowerer<'a> {
     ) -> Result<ExceptHandler, CompileError> {
         match handler {
             ast::ExceptHandler::ExceptHandler(eh) => {
-                let exc_type = match eh.type_.as_deref() {
-                    Some(ast::Expr::Name(name)) => Some(self.ident(name.id.as_str())),
+                let exc_types = match eh.type_.as_deref() {
+                    Some(ast::Expr::Name(name)) => Some(vec![self.ident(name.id.as_str())]),
+                    Some(ast::Expr::Tuple(tuple)) => {
+                        if tuple.elts.is_empty() {
+                            return Err(self
+                                .error(handler.range(), "Exception type tuple must not be empty"));
+                        }
+                        let mut names = Vec::with_capacity(tuple.elts.len());
+                        for elt in &tuple.elts {
+                            let ast::Expr::Name(name) = elt else {
+                                return Err(self.error(
+                                    handler.range(),
+                                    "Exception type tuple entries must be simple names",
+                                ));
+                            };
+                            names.push(self.ident(name.id.as_str()));
+                        }
+                        Some(names)
+                    }
                     Some(_) => {
                         return Err(
-                            self.error(handler.range(), "Exception type must be a simple name")
+                            self.error(handler.range(), "Exception type must be a name or tuple")
                         )
                     }
                     None => None,
@@ -1164,7 +1180,7 @@ impl<'a> Lowerer<'a> {
                     .collect::<Result<_, _>>()?;
 
                 Ok(ExceptHandler {
-                    exc_type,
+                    exc_types,
                     name,
                     body,
                     span: Span::from(handler.range()),

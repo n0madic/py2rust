@@ -119,16 +119,25 @@ impl<'a> TypeChecker<'a> {
         handler: &mut ExceptHandler,
         expected_return: Option<&TypeRef>,
     ) -> Result<(), CompileError> {
-        if let Some(exc_type_name) = &handler.exc_type {
-            self.validate_exception_name(exc_type_name, handler.span)?;
+        if let Some(exc_types) = &handler.exc_types {
+            for exc_type_name in exc_types {
+                self.validate_exception_name(exc_type_name, handler.span)?;
+            }
         }
 
         // Bind exception to name if present.
         if let Some(name) = &handler.name {
             // Specific handlers bind the payload message (`String`).
             // Catch-all handlers bind the full `PyError` object for re-raise flows.
-            let bound_ty = match handler.exc_type.as_deref() {
-                Some("Exception") | None => Type::Exception("PyError".to_string()),
+            let bound_ty = match &handler.exc_types {
+                None => Type::Exception("PyError".to_string()),
+                Some(exc_types)
+                    if exc_types
+                        .iter()
+                        .any(|exc_type| exc_type.as_str() == "Exception") =>
+                {
+                    Type::Exception("PyError".to_string())
+                }
                 Some(_) => Type::Str,
             };
             self.insert_var(name, bound_ty, handler.span)?;

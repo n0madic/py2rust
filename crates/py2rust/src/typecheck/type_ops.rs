@@ -43,6 +43,10 @@ impl<'a> TypeChecker<'a> {
             Type::Iterator(inner) => Ok(*inner.clone()),
             Type::Unknown => Ok(Type::Unknown),
             Type::Custom(class_name) => {
+                if class_name == "__py_file" {
+                    // File objects iterate over lines as strings.
+                    return Ok(Type::Str);
+                }
                 let class_info = self
                     .ctx
                     .classes

@@ -31,6 +31,9 @@ impl<'a> Codegen<'a> {
                     }
                     self.collect_list_elem_types_in_expr(value, inferred);
                 }
+                StmtKind::Delete { target } => {
+                    self.collect_list_elem_types_in_target(target, inferred);
+                }
                 StmtKind::Return { value } => {
                     if let Some(expr) = value {
                         self.collect_list_elem_types_in_expr(expr, inferred);
@@ -101,6 +104,32 @@ impl<'a> Codegen<'a> {
             if !matches!(inner.as_ref(), Type::Unknown) && !inferred.contains_key(name) {
                 inferred.insert(name.to_string(), (*inner.as_ref()).clone());
             }
+        }
+    }
+
+    /// Collect list-type hints from assignment-like targets that carry expressions.
+    fn collect_list_elem_types_in_target(
+        &self,
+        target: &AssignTarget,
+        inferred: &mut HashMap<String, Type>,
+    ) {
+        match target {
+            AssignTarget::Attr { value, .. } => {
+                self.collect_list_elem_types_in_expr(value, inferred)
+            }
+            AssignTarget::Index { value, index } => {
+                self.collect_list_elem_types_in_expr(value, inferred);
+                self.collect_list_elem_types_in_expr(index, inferred);
+            }
+            AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                for item in items {
+                    self.collect_list_elem_types_in_target(item, inferred);
+                }
+            }
+            AssignTarget::Starred(inner) => {
+                self.collect_list_elem_types_in_target(inner, inferred);
+            }
+            AssignTarget::Name(_) => {}
         }
     }
 

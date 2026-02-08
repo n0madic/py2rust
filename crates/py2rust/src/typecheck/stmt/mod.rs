@@ -1,7 +1,7 @@
 use super::*;
 use crate::hir_visit::StmtVisitorMut;
 use crate::stdlib::registry::{
-    find_imported_member, find_stdlib_attribute, method_spec, resolve_module,
+    find_imported_member, find_stdlib_attribute, importable_members, method_spec, resolve_module,
 };
 
 mod exceptions;
@@ -54,6 +54,12 @@ impl<'tc, 'a, 'e> StmtVisitorMut<Result<(), CompileError>> for CheckStmtVisitor<
         self.check_and_rewrite(StmtKind::Assign {
             target: target.clone(),
             value: value.clone(),
+        })
+    }
+
+    fn visit_delete_mut(&mut self, target: &mut AssignTarget) -> Result<(), CompileError> {
+        self.check_and_rewrite(StmtKind::Delete {
+            target: target.clone(),
         })
     }
 
@@ -544,6 +550,57 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            StmtKind::Delete { target } => match target {
+                AssignTarget::Index {
+                    value: container,
+                    index,
+                } => {
+                    let container_ty = self.check_expr(container, None)?;
+                    let index_ty = self.check_expr(index, None)?;
+                    match container_ty {
+                        Type::List(_) => {
+                            self.ensure_assignable(&index_ty, &Type::Int, stmt.span)?;
+                        }
+                        Type::Dict(key_ty, _) => {
+                            self.ensure_assignable(&index_ty, &key_ty, stmt.span)?;
+                        }
+                        _ => return Err(self.error(stmt.span, "del index requires list or dict")),
+                    }
+                }
+                AssignTarget::Attr { value: obj, attr } => {
+                    let obj_ty = self.check_expr(obj, None)?;
+                    let Type::Custom(class_name) = obj_ty else {
+                        return Err(self.error(
+                            stmt.span,
+                            "del attribute is only allowed on class instances",
+                        ));
+                    };
+                    let class_info = self.ctx.classes.get(&class_name).ok_or_else(|| {
+                        self.error(stmt.span, format!("Unknown class: {class_name}"))
+                    })?;
+                    let prop = class_info.properties.get(attr).ok_or_else(|| {
+                        self.error(
+                            stmt.span,
+                            format!("Unknown property {class_name}.{attr} for del"),
+                        )
+                    })?;
+                    if prop.deleter.is_none() {
+                        return Err(self.error(
+                            stmt.span,
+                            format!("Property {class_name}.{attr} has no deleter"),
+                        ));
+                    }
+                }
+                AssignTarget::Name(_) => {
+                    return Err(self.error(
+                        stmt.span,
+                        "del name is not supported; only index/attribute deletion is supported",
+                    ))
+                }
+                AssignTarget::Tuple(_) | AssignTarget::List(_) | AssignTarget::Starred(_) => {
+                    return Err(self.error(stmt.span, "del unpacking targets are not supported"))
+                }
+            },
             StmtKind::Return { value } => {
                 let ret_ann = expected_ret
                     .ok_or_else(|| self.error(stmt.span, "Return outside of function"))?;
@@ -831,7 +888,26 @@ impl<'a> TypeChecker<'a> {
             StmtKind::ImportFrom { module, names } => {
                 if module != "typing" {
                     if let Some(module_id) = resolve_module(module.as_str()) {
-                        for binding in names {
+                        let has_star = names.iter().any(|binding| binding.name == "*");
+                        if has_star {
+                            if names.len() != 1 || names[0].alias.is_some() {
+                                return Err(self.error(
+                                    stmt.span,
+                                    "from <stdlib> import * does not support aliases or extra names",
+                                ));
+                            }
+                            let expanded: Vec<ImportFromBinding> = importable_members(module_id)
+                                .iter()
+                                .map(|name| ImportFromBinding {
+                                    name: (*name).to_string(),
+                                    alias: None,
+                                })
+                                .collect();
+                            // Rewrite `*` to explicit names so later phases remain simple.
+                            *names = expanded;
+                        }
+
+                        for binding in names.iter() {
                             let bound_name =
                                 binding.alias.as_deref().unwrap_or(binding.name.as_str());
                             if let Some(method_id) =
@@ -866,7 +942,13 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         // User-module from-imports are rewritten by the import resolver.
                         // Keep unresolved names permissive to avoid false negatives.
-                        for binding in names {
+                        for binding in names.iter() {
+                            if binding.name == "*" {
+                                return Err(self.error(
+                                    stmt.span,
+                                    format!("from {module} import * is only supported for stdlib modules"),
+                                ));
+                            }
                             let bound_name =
                                 binding.alias.as_deref().unwrap_or(binding.name.as_str());
                             self.insert_var(bound_name, Type::Unknown, stmt.span)?;

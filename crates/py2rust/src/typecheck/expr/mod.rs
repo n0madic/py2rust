@@ -10,7 +10,6 @@ struct CheckExprVisitor<'tc, 'a, 'e> {
     tc: &'tc mut TypeChecker<'a>,
     expected: Option<&'e Type>,
     span: Span,
-    replace_with_none: bool,
 }
 
 impl<'tc, 'a, 'e> ExprVisitorMut<Result<Type, CompileError>> for CheckExprVisitor<'tc, 'a, 'e> {
@@ -19,9 +18,7 @@ impl<'tc, 'a, 'e> ExprVisitorMut<Result<Type, CompileError>> for CheckExprVisito
     }
 
     fn visit_name_mut(&mut self, name: &mut String) -> Result<Type, CompileError> {
-        let (ty, should_replace) = self.tc.check_name_expr(name, self.expected, self.span)?;
-        self.replace_with_none = should_replace;
-        Ok(ty)
+        self.tc.check_name_expr(name, self.expected, self.span)
     }
 
     fn visit_yield_mut(&mut self, value: &mut Option<Box<Expr>>) -> Result<Type, CompileError> {
@@ -205,14 +202,8 @@ impl<'a> TypeChecker<'a> {
             tc: self,
             expected,
             span: expr.span,
-            replace_with_none: false,
         };
         let ty = expr.accept_mut(&mut visitor)?;
-
-        if visitor.replace_with_none {
-            // Replace unresolved names to reduce cascading diagnostics downstream.
-            expr.kind = ExprKind::Literal(Literal::None);
-        }
         expr.ty = Some(ty.clone());
         Ok(ty)
     }

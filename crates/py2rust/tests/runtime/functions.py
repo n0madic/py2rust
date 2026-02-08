@@ -18,6 +18,10 @@ assert result2 == 12, "multiply(3, 4) should be 12"
 final: int = result1 + result2
 assert final == 42, "30 + 12 should be 42"
 
+# map() with two iterables.
+mapped_max: list[int] = list(map(max, [1, 2, 3], [4, 2, 1]))
+assert mapped_max == [4, 2, 3], "list(map(max, ...)) should equal [4, 2, 3]"
+
 # Test function composition
 fx: int = add(5, 3)
 fy: int = multiply(fx, 2)

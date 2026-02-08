@@ -53,7 +53,7 @@ impl ContainerMethodSpec {
 
 const NO_KW: KeywordPolicy = KeywordPolicy::None;
 
-const CONTAINER_METHOD_SPECS: [ContainerMethodSpec; 22] = [
+const CONTAINER_METHOD_SPECS: [ContainerMethodSpec; 26] = [
     // list
     ContainerMethodSpec {
         container: ContainerId::List,
@@ -135,6 +135,14 @@ const CONTAINER_METHOD_SPECS: [ContainerMethodSpec; 22] = [
             keywords: NO_KW,
         },
     },
+    ContainerMethodSpec {
+        container: ContainerId::List,
+        name: "remove",
+        shape: CallShape {
+            arity: AritySpec::Exact(1),
+            keywords: NO_KW,
+        },
+    },
     // dict
     ContainerMethodSpec {
         container: ContainerId::Dict,
@@ -173,6 +181,30 @@ const CONTAINER_METHOD_SPECS: [ContainerMethodSpec; 22] = [
         name: "update",
         shape: CallShape {
             arity: AritySpec::Exact(1),
+            keywords: NO_KW,
+        },
+    },
+    ContainerMethodSpec {
+        container: ContainerId::Dict,
+        name: "keys",
+        shape: CallShape {
+            arity: AritySpec::Exact(0),
+            keywords: NO_KW,
+        },
+    },
+    ContainerMethodSpec {
+        container: ContainerId::Dict,
+        name: "values",
+        shape: CallShape {
+            arity: AritySpec::Exact(0),
+            keywords: NO_KW,
+        },
+    },
+    ContainerMethodSpec {
+        container: ContainerId::Dict,
+        name: "setdefault",
+        shape: CallShape {
+            arity: AritySpec::Range { min: 1, max: 2 },
             keywords: NO_KW,
         },
     },

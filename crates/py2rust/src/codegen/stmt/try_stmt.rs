@@ -193,22 +193,40 @@ impl<'a> Codegen<'a> {
                 if emitted_catch_all {
                     break;
                 }
-                match handler.exc_type.as_deref() {
-                    None | Some("Exception") => {
-                        self.emit_except_handler(handler, mut_counts)?;
+                match handler.exc_types.as_ref() {
+                    None => {
+                        self.emit_except_handler(handler, None, mut_counts)?;
                         emitted_catch_all = true;
                     }
-                    Some(exc_type) => {
-                        let variant =
-                            self.resolve_exception_variant_name(exc_type)
+                    Some(exc_types)
+                        if exc_types
+                            .iter()
+                            .any(|exc_type| exc_type.as_str() == "Exception") =>
+                    {
+                        self.emit_except_handler(handler, None, mut_counts)?;
+                        emitted_catch_all = true;
+                    }
+                    Some(exc_types) => {
+                        let mut fresh_variants = Vec::new();
+                        let mut seen_in_handler = HashSet::new();
+                        for exc_type in exc_types {
+                            let variant = self
+                                .resolve_exception_variant_name(exc_type)
                                 .ok_or_else(|| {
                                     self.error(
                                         handler.span,
                                         format!("Unknown exception type for handler: {exc_type}"),
                                     )
                                 })?;
-                        if emitted_specific.insert(variant.to_string()) {
-                            self.emit_except_handler(handler, mut_counts)?;
+                            if !seen_in_handler.insert(variant.clone()) {
+                                continue;
+                            }
+                            if emitted_specific.insert(variant.clone()) {
+                                fresh_variants.push(variant);
+                            }
+                        }
+                        if !fresh_variants.is_empty() {
+                            self.emit_except_handler(handler, Some(&fresh_variants), mut_counts)?;
                         }
                     }
                 }
@@ -556,6 +574,9 @@ impl<'a> Codegen<'a> {
                         collect_assign_target(target, out);
                         collect_expr(value, out);
                     }
+                    StmtKind::Delete { target } => {
+                        collect_assign_target(target, out);
+                    }
                     StmtKind::Return { value } => {
                         if let Some(value) = value {
                             collect_expr(value, out);
@@ -670,70 +691,45 @@ impl<'a> Codegen<'a> {
     fn emit_except_handler(
         &mut self,
         handler: &ExceptHandler,
+        variants: Option<&[String]>,
         mut_counts: &HashMap<String, usize>,
     ) -> Result<(), CompileError> {
         // Check if handler body contains a bare raise.
         let needs_current_exception = self.handler_has_bare_raise(&handler.body);
 
-        if let Some(exc_type) = &handler.exc_type {
-            // Handle "Exception" as catch-all.
-            if exc_type == "Exception" {
-                let pattern = if let Some(name) = &handler.name {
-                    format!("Err({})", name)
-                } else {
-                    "Err(_e)".to_string()
-                };
+        if let Some(variants) = variants {
+            // Emit one handler arm that may match several exception variants.
+            let pattern = variants
+                .iter()
+                .map(|variant| {
+                    if needs_current_exception {
+                        // Borrow the payload while also binding the whole exception so we
+                        // can clone it for bare `raise` paths without triggering partial-move
+                        // errors in Rust patterns.
+                        format!("Err(ref _matched_exception @ PyError::{}(ref _e))", variant)
+                    } else {
+                        format!("Err(PyError::{}(_e))", variant)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            self.push_line(&format!("{} => {{", pattern));
+            self.indent += 1;
 
-                self.push_line(&format!("{} => {{", pattern));
-                self.indent += 1;
-
-                // Save exception for bare raise if needed.
-                if needs_current_exception {
-                    let exc_var = handler.name.as_deref().unwrap_or("_e");
-                    self.push_line(&format!("let _current_exception = {}.clone();", exc_var));
-                }
-
-                for stmt in &handler.body {
-                    self.emit_stmt(stmt, mut_counts)?;
-                }
-                self.indent -= 1;
-                self.push_line("}");
-            } else {
-                let variant = self
-                    .resolve_exception_variant_name(exc_type)
-                    .ok_or_else(|| {
-                        self.error(
-                            handler.span,
-                            format!("Unknown exception type for handler: {exc_type}"),
-                        )
-                    })?;
-                let pattern = format!("Err(PyError::{}(_e))", variant.as_str());
-
-                self.push_line(&format!("{} => {{", pattern));
-                self.indent += 1;
-
-                if let Some(name) = &handler.name {
-                    // Keep `except SomeError as e` behavior as message-string binding.
-                    self.push_line(&format!("let {} = _e.to_string();", name));
-                }
-
-                // Save exception for bare raise if needed.
-                if needs_current_exception {
-                    self.push_line(&format!(
-                        "let _current_exception = PyError::{}({}.clone());",
-                        variant.as_str(),
-                        "_e"
-                    ));
-                }
-
-                for stmt in &handler.body {
-                    self.emit_stmt(stmt, mut_counts)?;
-                }
-                self.indent -= 1;
-                self.push_line("}");
+            if let Some(name) = &handler.name {
+                // Keep `except SomeError as e` behavior as message-string binding.
+                self.push_line(&format!("let {} = _e.to_string();", name));
             }
+            if needs_current_exception {
+                self.push_line("let _current_exception = (*_matched_exception).clone();");
+            }
+            for stmt in &handler.body {
+                self.emit_stmt(stmt, mut_counts)?;
+            }
+            self.indent -= 1;
+            self.push_line("}");
         } else {
-            // Catch all (no type specified).
+            // Catch all (no explicit type or explicit `Exception`).
             let pattern = if let Some(name) = &handler.name {
                 format!("Err({})", name)
             } else {

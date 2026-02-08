@@ -375,6 +375,14 @@ impl<'a> Codegen<'a> {
                     })
                 }
             }
+            Some(Type::Custom(name)) if name == "__py_file" => {
+                self.uses.py_file = true;
+                let lines_expr = self.wrap_result(format!("py_file_readlines(&mut {})", rendered));
+                Ok(IterSource {
+                    setup: Vec::new(),
+                    expr: format!("({}).into_iter()", lines_expr),
+                })
+            }
             // Iterators are already iterable; avoid redundant .into_iter() on ranges.
             Some(Type::Iterator(_)) => {
                 // Named iterator bindings should iterate by mutable reference so the

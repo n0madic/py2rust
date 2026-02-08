@@ -20,6 +20,24 @@ pub(super) fn walk_assign_target_names(target: &AssignTarget, visit: &mut impl F
     }
 }
 
+/// Visit all expressions embedded inside an assignment target.
+pub(super) fn walk_assign_target_exprs(target: &AssignTarget, visit: &mut impl FnMut(&Expr)) {
+    match target {
+        AssignTarget::Attr { value, .. } => visit(value),
+        AssignTarget::Index { value, index } => {
+            visit(value);
+            visit(index);
+        }
+        AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+            for item in items {
+                walk_assign_target_exprs(item, visit);
+            }
+        }
+        AssignTarget::Starred(inner) => walk_assign_target_exprs(inner, visit),
+        AssignTarget::Name(_) => {}
+    }
+}
+
 /// Depth-first walk over a statement tree.
 pub(super) fn walk_stmt_tree(stmts: &[Stmt], visit: &mut impl FnMut(&Stmt)) {
     for stmt in stmts {
@@ -65,6 +83,14 @@ pub(super) fn walk_storage_stmt_events<Ctx: Copy>(
                 _ => value_ctx,
             };
             visit(StorageStmtEvent::Expr { expr: value, ctx });
+        }
+        StmtKind::Delete { target } => {
+            walk_assign_target_exprs(target, &mut |expr| {
+                visit(StorageStmtEvent::Expr {
+                    expr,
+                    ctx: value_ctx,
+                });
+            });
         }
         StmtKind::Return { value } => {
             if let Some(expr) = value {
@@ -298,6 +324,7 @@ fn walk_stmt_tree_one(stmt: &Stmt, visit: &mut impl FnMut(&Stmt)) {
         }
         StmtKind::Let { .. }
         | StmtKind::Assign { .. }
+        | StmtKind::Delete { .. }
         | StmtKind::Return { .. }
         | StmtKind::Expr(_)
         | StmtKind::Assert { .. }

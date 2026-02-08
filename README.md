@@ -7,15 +7,15 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Function signatures with positional-only params (`/`), defaults, keyword arguments, `*args`, keyword-only params, and `**kwargs`
 - Basic types: `int`, `float`, `bool`, `str`, `bytes`, `None`
 - Collections: `list[T]`, `dict[K, V]`, `tuple[...]`, `set[T]`
-- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, chained comparisons
-- Arithmetic and bitwise ops: `+`, `-`, `*`, `/`, `//`, `%`, `**`, `&`, `|`, `^`, `~`, `<<`, `>>` (`int` for bitwise/shifts)
+- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, chained comparisons (including set subset/superset ordering with `<`, `<=`, `>`, `>=`)
+- Arithmetic and bitwise ops: `+`, `-`, `*`, `/`, `//`, `%`, `**`, `&`, `|`, `^`, `~`, `<<`, `>>` (`int` for bitwise/shifts; `%` follows Python sign semantics)
 - Augmented assignment: `+=`, `-=`, `*=`, `/=`, `//=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 - Control flow: `if/elif/else`, `x if cond else y`, `while`, `for`, `return`, `break`, `continue`
 - Tuple/list unpacking assignments (including nested and one starred target like `a, *rest, b = ...`)
 - For-loop unpacking supports tuple/list targets, including one starred target (e.g. `for a, *rest in items:`)
 - Negative indexing and slicing for lists/tuples (including step)
-- List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`
-- Dict methods: `get`, `pop`, `update`, `clear`, `copy`
+- List methods: `append`, `extend`, `pop`, `insert`, `clear`, `copy`, `reverse`, `sort`, `index`, `count`, `remove`
+- Dict methods: `get`, `pop`, `update`, `clear`, `copy`, `keys`, `values`, `setdefault`
 - Set methods: `add`, `remove`, `discard`, `clear`, `copy`, `extend`, `pop`
 - String operations: indexing/slicing, `upper`, `lower`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `find`, `replace`, `split`, `join`, `count`, `title`, `capitalize`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`, `islower`
 - Classes with fields, methods, and class attributes
@@ -24,14 +24,14 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Enum-like `Union` aliases via `A | B` type aliases
 - `match/case` for literals/singletons, capture and wildcard patterns, `|` patterns, guards, and list sequence/star patterns
 - `match/case` on union variants (class patterns) with `__match_args__` support
-- Exception handling: `try/except/else/finally`, `raise`, bare re-raise, typed handlers, bare `except:`, and custom exception subclasses rooted in supported built-in exceptions
+- Exception handling: `try/except/else/finally`, `raise`, bare re-raise, typed handlers (including tuple handlers like `except (TypeError, NameError):`), bare `except:`, and custom exception subclasses rooted in supported built-in exceptions
 - Custom iterators via `__iter__` and `next`
 - List, set, and dict comprehensions (including multiple generator clauses)
 - Generator functions (`yield`) with `next(...)`, `.send(...)`, `.close()`, and generator expressions
 - Call-site unpacking via `*args` and `**kwargs` (including mixed call forms)
 - Nested functions with closure capture and `nonlocal` writes
 - `global` declarations with CPython-compatible shadowing rules (local assignment shadows module names unless explicitly declared `global`)
-- Builtins: `abs`, `all`, `any`, `ascii`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `int`, `isinstance`, `iter`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `type`, `zip`
+- Builtins: `abs`, `all`, `any`, `ascii`, `bin`, `bool`, `bytes`, `chr`, `dict`, `divmod`, `enumerate`, `filter`, `float`, `hash`, `hex`, `id`, `input`, `int`, `isinstance`, `iter`, `len`, `list`, `map`, `max`, `min`, `oct`, `ord`, `pow`, `range`, `repr`, `reversed`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `type`, `zip`
 - Stdlib modules (registry-backed):
   - `os`: `remove`, `getcwd`, `chdir`, `mkdir`, `listdir`, `rmdir`, `rename`, `replace`, `makedirs`, `getenv`, and attributes `environ`, `name`, `path`
   - `os.path`: `join`, `exists`, `basename`, `dirname`, `split`, `isdir`, `isfile`, `abspath`
@@ -47,6 +47,9 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
     - `ParseResult` fields `scheme`, `netloc`, `path`, `query`, `fragment` and method `geturl()`
     - `urlopen` response fields `status`, `url`, `headers` and methods `read()`, `getcode()`, `geturl()`
 - User imports from local files/packages: `import mymod`, `from mymod import f`, and relative package imports (`from .x import y`, `from .. import z`)
+- `from <stdlib_module> import *` for registry-backed stdlib modules (for example `from math import *`)
+- `del` for mutable targets: `del list[idx]`, `del dict[key]`, and `del obj.prop` when the property defines a deleter
+- File iteration via `for line in open(...): ...`
 
 ## Usage
 
@@ -86,6 +89,7 @@ Negative/compile-fail coverage lives in `crates/py2rust/tests/negative_tests.rs`
 The generated Rust injects tiny helper functions only when needed:
 - `py_print`
 - `py_int` (normalizes borrowed/owned `i64` operands for checked arithmetic)
+- `py_input`
 - `py_len`
 - `py_range`
 - `py_round`
@@ -101,8 +105,10 @@ The generated Rust injects tiny helper functions only when needed:
 - `typing.List/Dict/Set/Tuple` annotations are aliases of `list/dict/set/tuple` annotations.
 - Imports are unified through one resolver: `typing` and registry-backed stdlib modules (`os`, `sys`, `re`, `json`, `math`, `time`, `subprocess`, `urllib`, `urllib.parse`, `urllib.request`) stay virtual, while local user modules/packages are loaded from files and merged before type checking/codegen.
 - For registry-backed stdlib calls, module import is required (`os.remove(...)`, `sys.exit(...)`, `re.search(...)`, `json.dumps(...)`, `math.sqrt(...)`, `time.time(...)`, `subprocess.run(...)`, `urllib.parse.quote(...)`, `urllib.request.urlopen(...)` without import is a compile error).
-- `from ... import *` is not supported for stdlib modules.
+- `from ... import *` is supported only for registry-backed stdlib modules; wildcard imports from user modules remain unsupported.
 - Supported stdlib surface is registry-driven and intentionally explicit; unsupported module members produce compile-time errors.
+- Unknown names produce compile-time `NameError` diagnostics instead of falling back to runtime placeholders.
+- `del name` (deleting bare identifiers) is not supported; supported forms are container index/key and property deletion.
 - `re` support is intentionally lightweight and backed by `regex-lite` helpers (`search`, `match`, `sub`, `Match.group`, `Match.span`).
 - `json` support is intentionally lightweight and currently targets registry-backed calls (`dumps`, `loads`, `dump`, `load`) used by runtime coverage.
 - `math` support currently targets the registry-backed surface covered by runtime integration tests (constants + numeric/trig/hyperbolic/combinatorics helpers listed above).
@@ -114,6 +120,7 @@ The generated Rust injects tiny helper functions only when needed:
 - When generated code uses `urllib.request.urlopen(...)` for HTTP(S), py2rust compile/run flows auto-link `ureq`; direct manual `rustc` invocation must provide equivalent external crate flags.
 - Keyword arguments are supported for user-defined functions/methods/classes with known signatures.
 - Builtins are mostly positional-only; keyword arguments are supported for `print(sep=..., end=...)`, `sorted(key=..., reverse=...)`, and iterable-form `min/max(key=...)`.
+- `map(...)` currently supports one or two iterable arguments (`map(func, it)` and `map(func, it1, it2)`).
 - `set.extend(iterable)` is supported as an update-style alias that adds all iterable items to the target set.
 - `print(x)` in single-argument form uses a direct fast-path (no intermediate `vec![...].join(...)` and no forced `format!` wrapping).
 - Generator expressions are lowered through comprehension+`iter(...)` codegen.

@@ -3,26 +3,76 @@
 use super::super::*;
 
 impl<'a> TypeChecker<'a> {
-    pub(super) fn infer_callable_return(
+    pub(super) fn infer_callable_return_for_args(
         &mut self,
         func: &mut Expr,
-        arg_ty: &Type,
+        arg_tys: &[Type],
         span: Span,
     ) -> Result<Type, CompileError> {
+        // Build the arity error message once so we can use it without
+        // capturing `self` in a closure (avoids borrow conflicts).
+        let arity_error_msg = {
+            let suffix = if arg_tys.len() == 1 { "" } else { "s" };
+            format!(
+                "Callable must take exactly {} argument{suffix}",
+                arg_tys.len()
+            )
+        };
+
         match &mut func.kind {
             ExprKind::Name(name) => {
                 match name.as_str() {
-                    "str" => return Ok(Type::Str),
-                    "int" => return Ok(Type::Int),
-                    "float" => return Ok(Type::Float),
+                    "str" => {
+                        if arg_tys.len() != 1 {
+                            return Err(self.error(span, arity_error_msg.clone()));
+                        }
+                        return Ok(Type::Str);
+                    }
+                    "int" => {
+                        if arg_tys.len() != 1 {
+                            return Err(self.error(span, arity_error_msg.clone()));
+                        }
+                        return Ok(Type::Int);
+                    }
+                    "float" => {
+                        if arg_tys.len() != 1 {
+                            return Err(self.error(span, arity_error_msg.clone()));
+                        }
+                        return Ok(Type::Float);
+                    }
+                    "max" | "min" => {
+                        if arg_tys.len() != 2 {
+                            return Err(self.error(span, arity_error_msg.clone()));
+                        }
+                        let left = &arg_tys[0];
+                        let right = &arg_tys[1];
+                        if left == right {
+                            return Ok(left.clone());
+                        }
+                        let numeric = |ty: &Type| {
+                            matches!(ty, Type::Int | Type::Float | Type::Bool | Type::Unknown)
+                        };
+                        if numeric(left) && numeric(right) {
+                            if matches!(left, Type::Unknown) || matches!(right, Type::Unknown) {
+                                return Ok(Type::Unknown);
+                            }
+                            if matches!(left, Type::Float) || matches!(right, Type::Float) {
+                                return Ok(Type::Float);
+                            }
+                            return Ok(Type::Int);
+                        }
+                        return Ok(Type::Unknown);
+                    }
                     _ => {}
                 }
                 if let Some(sig) = self.ctx.functions.get(name).cloned() {
-                    if sig.params.len() != 1 {
-                        return Err(self.error(span, "Callable must take exactly one argument"));
+                    if sig.params.len() != arg_tys.len() {
+                        return Err(self.error(span, arity_error_msg.clone()));
                     }
-                    if !matches!(sig.params[0], Type::Unknown) {
-                        self.ensure_assignable(arg_ty, &sig.params[0], span)?;
+                    for (arg_ty, param_ty) in arg_tys.iter().zip(sig.params.iter()) {
+                        if !matches!(param_ty, Type::Unknown) {
+                            self.ensure_assignable(arg_ty, param_ty, span)?;
+                        }
                     }
                     return Ok(sig.ret);
                 }
@@ -32,7 +82,7 @@ impl<'a> TypeChecker<'a> {
                     if needs_refine {
                         if let Some(lambda_expr) = self.lambda_defs.get(name).cloned() {
                             let expected = Type::Lambda {
-                                params: vec![arg_ty.clone()],
+                                params: arg_tys.to_vec(),
                                 ret: Box::new(Type::Unknown),
                             };
                             let mut expr_clone = lambda_expr.clone();
@@ -49,44 +99,71 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
-                    if !params.is_empty() && params.len() != 1 {
-                        return Err(self.error(span, "Callable must take exactly one argument"));
+                    if !params.is_empty() && params.len() != arg_tys.len() {
+                        return Err(self.error(span, arity_error_msg.clone()));
                     }
-                    if let Some(param) = params.first() {
-                        if !matches!(param, Type::Unknown) {
-                            self.ensure_assignable(arg_ty, param, span)?;
+                    for (arg_ty, param_ty) in arg_tys.iter().zip(params.iter()) {
+                        if !matches!(param_ty, Type::Unknown) {
+                            self.ensure_assignable(arg_ty, param_ty, span)?;
                         }
                     }
                     return Ok(*ret);
                 }
                 let ty = self.check_expr(func, None)?;
-                if let Type::Lambda { ret, .. } = ty {
+                if let Type::Lambda { params, ret } = ty {
+                    if !params.is_empty() && params.len() != arg_tys.len() {
+                        return Err(self.error(span, arity_error_msg.clone()));
+                    }
+                    for (arg_ty, param_ty) in arg_tys.iter().zip(params.iter()) {
+                        if !matches!(param_ty, Type::Unknown) {
+                            self.ensure_assignable(arg_ty, param_ty, span)?;
+                        }
+                    }
                     return Ok(*ret);
                 }
                 Ok(Type::Unknown)
             }
             ExprKind::Lambda { params, body } => {
-                if params.len() != 1 {
-                    return Err(self.error(span, "Callable must take exactly one argument"));
+                if params.len() != arg_tys.len() {
+                    return Err(self.error(span, arity_error_msg.clone()));
                 }
                 self.scopes.push(HashMap::new());
-                self.insert_var(&params[0], arg_ty.clone(), span)?;
+                for (param, arg_ty) in params.iter().zip(arg_tys.iter()) {
+                    self.insert_var(param, arg_ty.clone(), span)?;
+                }
                 let ret_ty = self.check_expr(body, None)?;
                 self.scopes.pop();
                 func.ty = Some(Type::Lambda {
-                    params: vec![arg_ty.clone()],
+                    params: arg_tys.to_vec(),
                     ret: Box::new(ret_ty.clone()),
                 });
                 Ok(ret_ty)
             }
             _ => {
                 let ty = self.check_expr(func, None)?;
-                if let Type::Lambda { ret, .. } = ty {
+                if let Type::Lambda { params, ret } = ty {
+                    if !params.is_empty() && params.len() != arg_tys.len() {
+                        return Err(self.error(span, arity_error_msg));
+                    }
+                    for (arg_ty, param_ty) in arg_tys.iter().zip(params.iter()) {
+                        if !matches!(param_ty, Type::Unknown) {
+                            self.ensure_assignable(arg_ty, param_ty, span)?;
+                        }
+                    }
                     Ok(*ret)
                 } else {
                     Ok(Type::Unknown)
                 }
             }
         }
+    }
+
+    pub(super) fn infer_callable_return(
+        &mut self,
+        func: &mut Expr,
+        arg_ty: &Type,
+        span: Span,
+    ) -> Result<Type, CompileError> {
+        self.infer_callable_return_for_args(func, std::slice::from_ref(arg_ty), span)
     }
 }

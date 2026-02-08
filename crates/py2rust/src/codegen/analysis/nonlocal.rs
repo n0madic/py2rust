@@ -431,6 +431,75 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        fn visit_assign_target_for_lambdas(
+            this: &Codegen,
+            target: &AssignTarget,
+            locals: &HashSet<String>,
+            nonlocals: &HashSet<String>,
+            globals: &HashSet<String>,
+            cell_locals: &mut HashSet<String>,
+            unresolved: &mut HashSet<String>,
+        ) {
+            match target {
+                AssignTarget::Attr { value, .. } => {
+                    visit_expr_for_lambdas(
+                        this,
+                        value,
+                        locals,
+                        nonlocals,
+                        globals,
+                        cell_locals,
+                        unresolved,
+                    );
+                }
+                AssignTarget::Index { value, index } => {
+                    visit_expr_for_lambdas(
+                        this,
+                        value,
+                        locals,
+                        nonlocals,
+                        globals,
+                        cell_locals,
+                        unresolved,
+                    );
+                    visit_expr_for_lambdas(
+                        this,
+                        index,
+                        locals,
+                        nonlocals,
+                        globals,
+                        cell_locals,
+                        unresolved,
+                    );
+                }
+                AssignTarget::Tuple(items) | AssignTarget::List(items) => {
+                    for item in items {
+                        visit_assign_target_for_lambdas(
+                            this,
+                            item,
+                            locals,
+                            nonlocals,
+                            globals,
+                            cell_locals,
+                            unresolved,
+                        );
+                    }
+                }
+                AssignTarget::Starred(inner) => {
+                    visit_assign_target_for_lambdas(
+                        this,
+                        inner,
+                        locals,
+                        nonlocals,
+                        globals,
+                        cell_locals,
+                        unresolved,
+                    );
+                }
+                AssignTarget::Name(_) => {}
+            }
+        }
+
         fn visit_stmts_for_lambdas(
             this: &Codegen,
             stmts: &[Stmt],
@@ -457,6 +526,17 @@ impl<'a> Codegen<'a> {
                         visit_expr_for_lambdas(
                             this,
                             value,
+                            locals,
+                            nonlocals,
+                            globals,
+                            cell_locals,
+                            unresolved,
+                        );
+                    }
+                    StmtKind::Delete { target } => {
+                        visit_assign_target_for_lambdas(
+                            this,
+                            target,
                             locals,
                             nonlocals,
                             globals,

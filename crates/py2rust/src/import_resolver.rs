@@ -550,6 +550,9 @@ impl<'a> ModuleRewriter<'a> {
                 self.rewrite_expr(value)?;
                 self.rewrite_assign_target(target, top_level)?;
             }
+            StmtKind::Delete { target } => {
+                self.rewrite_assign_target(target, top_level)?;
+            }
             StmtKind::Return { value } => {
                 if let Some(value) = value.as_mut() {
                     self.rewrite_expr(value)?;
@@ -638,9 +641,11 @@ impl<'a> ModuleRewriter<'a> {
                     self.rewrite_stmt(stmt, top_level)?;
                 }
                 for handler in handlers {
-                    if let Some(exc_type) = handler.exc_type.as_mut() {
-                        if let Some(mapped) = self.type_renames.get(exc_type.as_str()) {
-                            *exc_type = mapped.clone();
+                    if let Some(exc_types) = handler.exc_types.as_mut() {
+                        for exc_type in exc_types {
+                            if let Some(mapped) = self.type_renames.get(exc_type.as_str()) {
+                                *exc_type = mapped.clone();
+                            }
                         }
                     }
                     if let Some(name) = handler.name.as_ref() {

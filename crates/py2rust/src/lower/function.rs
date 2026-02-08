@@ -421,6 +421,7 @@ impl<'a> Lowerer<'a> {
                     let mut is_property = false;
                     let mut property_name: Option<String> = None;
                     let mut is_property_setter = false;
+                    let mut is_property_deleter = false;
                     if !def.decorator_list.is_empty() {
                         if def.decorator_list.len() != 1 {
                             return Err(self.error(
@@ -450,6 +451,9 @@ impl<'a> Lowerer<'a> {
                                 if let ast::Expr::Name(base_name) = &*attr.value {
                                     if attr.attr.as_str() == "setter" {
                                         is_property_setter = true;
+                                        property_name = Some(self.ident(base_name.id.as_str()));
+                                    } else if attr.attr.as_str() == "deleter" {
+                                        is_property_deleter = true;
                                         property_name = Some(self.ident(base_name.id.as_str()));
                                     } else {
                                         return Err(
@@ -494,9 +498,39 @@ impl<'a> Lowerer<'a> {
                             name: prop_name,
                             getter: String::new(),
                             setter: Some(setter_name),
+                            deleter: None,
                             span: Span::from(def.range()),
                         });
                         methods.push(setter_func);
+                        continue;
+                    }
+                    if is_property_deleter {
+                        // Enforce canonical deleter shape to keep property metadata unambiguous.
+                        let deleter_shape_ok = func.params.len() == 1
+                            && func.params[0].name == "self"
+                            && matches!(func.params[0].kind, ParamKind::PositionalOrKeyword);
+                        if !deleter_shape_ok {
+                            return Err(self.error(
+                                def.range(),
+                                "Property deleter must have signature (self)",
+                            ));
+                        }
+                        let prop_name = property_name
+                            .as_ref()
+                            .expect("deleter must include property name")
+                            .clone();
+                        let deleter_name = format!("__del_{}", prop_name);
+                        let mut deleter_func = func;
+                        deleter_func.name = deleter_name.clone();
+                        method_kinds.insert(deleter_name.clone(), MethodKind::Instance);
+                        properties.push(PropertyDef {
+                            name: prop_name,
+                            getter: String::new(),
+                            setter: None,
+                            deleter: Some(deleter_name),
+                            span: Span::from(def.range()),
+                        });
+                        methods.push(deleter_func);
                         continue;
                     }
                     if is_property {
@@ -508,6 +542,7 @@ impl<'a> Lowerer<'a> {
                             name: prop_name,
                             getter: func.name.clone(),
                             setter: None,
+                            deleter: None,
                             span: Span::from(def.range()),
                         });
                     }

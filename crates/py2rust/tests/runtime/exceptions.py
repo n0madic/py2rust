@@ -1633,4 +1633,25 @@ def test_propagation_narrowing() -> None:
 test_propagation_narrowing()
 print("test_propagation_narrowing passed")
 
+def raises_name_error() -> int:
+    raise NameError("from function")
+
+def test_tuple_except_handlers() -> None:
+    caught_type: bool = False
+    try:
+        raises_type_error()
+    except (TypeError, NameError):
+        caught_type = True
+    assert caught_type, "TypeError should be caught by tuple handler"
+
+    caught_name: bool = False
+    try:
+        raises_name_error()
+    except (TypeError, NameError):
+        caught_name = True
+    assert caught_name, "NameError should be caught by tuple handler"
+
+test_tuple_except_handlers()
+print("test_tuple_except_handlers passed")
+
 print("All exception tests passed!")

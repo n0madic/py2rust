@@ -325,6 +325,54 @@ impl<'a> Codegen<'a> {
                 );
             }
         }
+        if attr == "remove" {
+            if let Some(Type::List(_)) = value.ty.as_ref() {
+                if args.len() != 1 {
+                    return Err(self.error(value.span, "list.remove() expects one argument"));
+                }
+                self.uses.py_list_index = true;
+                let needle_expr = self.gen_expr(&args[0])?;
+                let needle_tmp = self.new_tmp();
+                let idx_tmp = self.new_tmp();
+                if let ExprKind::Name(name) = &value.kind {
+                    if !self.is_global(name) && self.is_local_list_name(name) {
+                        let idx_expr = self.wrap_result(format!(
+                            "py_list_index(&{target}, &{needle})",
+                            target = name,
+                            needle = needle_tmp
+                        ));
+                        return Ok(format!(
+                            "{{ let {needle} = {needle_expr}; let {idx} = {idx_expr} as usize; {target}.remove({idx}); }}",
+                            needle = needle_tmp,
+                            needle_expr = needle_expr,
+                            idx = idx_tmp,
+                            idx_expr = idx_expr,
+                            target = name
+                        ));
+                    }
+                }
+                return self.with_locked_attr_target(
+                    value,
+                    "list mutex poisoned",
+                    true,
+                    |tc, guard| {
+                        let idx_expr = tc.wrap_result(format!(
+                            "py_list_index(&{guard}, &{needle})",
+                            guard = guard,
+                            needle = needle_tmp
+                        ));
+                        format!(
+                            "let {needle} = {needle_expr}; let {idx} = {idx_expr} as usize; {guard}.remove({idx});",
+                            needle = needle_tmp,
+                            needle_expr = needle_expr,
+                            idx = idx_tmp,
+                            idx_expr = idx_expr,
+                            guard = guard
+                        )
+                    },
+                );
+            }
+        }
         if attr == "sort" {
             if let Some(Type::List(inner)) = value.ty.as_ref() {
                 if !args.is_empty() {

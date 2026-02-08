@@ -95,6 +95,16 @@ impl<'a> TypeChecker<'a> {
             }
             return Ok(Type::Custom("__py_file".to_string()));
         }
+        if name == "input" {
+            if args.len() > 1 {
+                return Err(self.error(span, "input() expects zero or one argument"));
+            }
+            if let Some(prompt) = args.get_mut(0) {
+                let prompt_ty = self.check_expr(prompt, Some(&Type::Str))?;
+                self.ensure_assignable(&prompt_ty, &Type::Str, span)?;
+            }
+            return Ok(Type::Str);
+        }
         if name == "range" {
             if !args.is_empty() && args.len() <= 3 {
                 for arg in args.iter_mut() {
@@ -271,12 +281,18 @@ impl<'a> TypeChecker<'a> {
             return Ok(Type::Iterator(Box::new(tuple)));
         }
         if name == "map" {
-            if args.len() != 2 {
-                return Err(self.error(span, "map() expects two arguments"));
+            if args.len() < 2 || args.len() > 3 {
+                return Err(self.error(span, "map() expects two or three arguments"));
             }
             let iter_ty = self.check_expr(&mut args[1], None)?;
             let item_ty = self.iter_item_type(&iter_ty, span)?;
-            let out_ty = self.infer_callable_return(&mut args[0], &item_ty, span)?;
+            let out_ty = if args.len() == 2 {
+                self.infer_callable_return(&mut args[0], &item_ty, span)?
+            } else {
+                let iter_ty2 = self.check_expr(&mut args[2], None)?;
+                let item_ty2 = self.iter_item_type(&iter_ty2, span)?;
+                self.infer_callable_return_for_args(&mut args[0], &[item_ty, item_ty2], span)?
+            };
             return Ok(Type::Iterator(Box::new(out_ty)));
         }
         if name == "filter" {

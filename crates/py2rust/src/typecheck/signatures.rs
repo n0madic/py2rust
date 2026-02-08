@@ -97,6 +97,7 @@ impl<'a> TypeChecker<'a> {
                     let entry = properties.entry(prop.name.clone()).or_insert(PropertyInfo {
                         getter: String::new(),
                         setter: None,
+                        deleter: None,
                         ty: Type::Unknown,
                     });
                     if !prop.getter.is_empty() {
@@ -104,6 +105,9 @@ impl<'a> TypeChecker<'a> {
                     }
                     if prop.setter.is_some() {
                         entry.setter = prop.setter.clone();
+                    }
+                    if prop.deleter.is_some() {
+                        entry.deleter = prop.deleter.clone();
                     }
                 }
                 let mut init = None;
@@ -183,6 +187,22 @@ impl<'a> TypeChecker<'a> {
                                 ));
                             }
                             info.ty = sig.params[1].clone();
+                        }
+                    }
+                    if let Some(deleter) = info.deleter.as_ref() {
+                        if let Some(sig) = methods.get(deleter) {
+                            let deleter_shape_ok = sig.params.len() == 1
+                                && sig.param_names.len() == 1
+                                && sig.param_names[0] == "self"
+                                && sig.param_kinds.len() == 1
+                                && matches!(sig.param_kinds[0], ParamKind::PositionalOrKeyword)
+                                && sig.has_defaults.len() == 1;
+                            if !deleter_shape_ok {
+                                return Err(self.error(
+                                    sig.span,
+                                    "Property deleter must have signature (self)",
+                                ));
+                            }
                         }
                     }
                 }

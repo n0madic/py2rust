@@ -436,23 +436,55 @@ impl<'a> Codegen<'a> {
             return Ok(Some(format!("({}).zip({})", left_iter, right_iter)));
         }
         if name == "map" {
-            if args.len() != 2 {
-                return Err(self.error(expr.span, "map() expects two arguments"));
+            if args.len() < 2 || args.len() > 3 {
+                return Err(self.error(expr.span, "map() expects two or three arguments"));
             }
-            let iter_expr = self.gen_iter_source_owned(&args[1], IterContext::DeferredCapture)?;
-            let (func_expr, inline_closure) = match &args[0].kind {
-                ExprKind::Name(n) if n == "str" => ("|x| x.to_string()".to_string(), true),
-                ExprKind::Lambda { .. } => (self.gen_expr(&args[0])?, true),
-                _ => (self.gen_expr(&args[0])?, false),
-            };
-            if inline_closure {
-                return Ok(Some(format!("({}).map({})", iter_expr, func_expr)));
+            if args.len() == 2 {
+                let iter_expr =
+                    self.gen_iter_source_owned(&args[1], IterContext::DeferredCapture)?;
+                let (func_expr, inline_closure) = match &args[0].kind {
+                    ExprKind::Name(n) if n == "str" => ("|x| x.to_string()".to_string(), true),
+                    ExprKind::Lambda { .. } => (self.gen_expr(&args[0])?, true),
+                    _ => (self.gen_expr(&args[0])?, false),
+                };
+                if inline_closure {
+                    return Ok(Some(format!("({}).map({})", iter_expr, func_expr)));
+                }
+                // Use cleaner function call syntax: func(x) instead of (func)(x)
+                let tmp = self.new_tmp();
+                return Ok(Some(format!(
+                    "{{ let {} = {}; ({}).map(move |x| {}(x)) }}",
+                    tmp, func_expr, iter_expr, tmp
+                )));
             }
-            // Use cleaner function call syntax: func(x) instead of (func)(x)
+
+            let left_iter = self.gen_iter_source_owned(&args[1], IterContext::DeferredCapture)?;
+            let right_iter = self.gen_iter_source_owned(&args[2], IterContext::DeferredCapture)?;
+            if let ExprKind::Name(n) = &args[0].kind {
+                if n == "max" {
+                    return Ok(Some(format!(
+                        "({}).zip({}).map(|(x, y)| if x >= y {{ x }} else {{ y }})",
+                        left_iter, right_iter
+                    )));
+                }
+                if n == "min" {
+                    return Ok(Some(format!(
+                        "({}).zip({}).map(|(x, y)| if x <= y {{ x }} else {{ y }})",
+                        left_iter, right_iter
+                    )));
+                }
+            }
+            let func_expr = self.gen_expr(&args[0])?;
+            if matches!(args[0].kind, ExprKind::Lambda { .. }) {
+                return Ok(Some(format!(
+                    "({}).zip({}).map(move |(x, y)| ({})(x, y))",
+                    left_iter, right_iter, func_expr
+                )));
+            }
             let tmp = self.new_tmp();
             return Ok(Some(format!(
-                "{{ let {} = {}; ({}).map(move |x| {}(x)) }}",
-                tmp, func_expr, iter_expr, tmp
+                "{{ let {} = {}; ({}).zip({}).map(move |(x, y)| {}(x, y)) }}",
+                tmp, func_expr, left_iter, right_iter, tmp
             )));
         }
         if name == "filter" {
@@ -1089,8 +1121,30 @@ impl<'a> Codegen<'a> {
             if args.is_empty() {
                 return Ok(Some("false".to_string()));
             }
-            let arg_expr = self.gen_expr(&args[0])?;
-            let ty = args[0].ty.as_ref().unwrap_or(&Type::Unknown);
+            let arg = &args[0];
+            // Empty literals/constructors are always falsy and this avoids
+            // type-inference failures for `bool({})` and `bool(set())`.
+            let known_empty = match &arg.kind {
+                ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
+                    items.is_empty()
+                }
+                ExprKind::Dict(items) => items.is_empty(),
+                ExprKind::Call {
+                    func,
+                    args,
+                    keywords,
+                } => {
+                    args.is_empty()
+                        && keywords.is_empty()
+                        && matches!(func.kind, ExprKind::Name(ref n) if n == "set" || n == "dict" || n == "list" || n == "tuple")
+                }
+                _ => false,
+            };
+            if known_empty {
+                return Ok(Some("false".to_string()));
+            }
+            let arg_expr = self.gen_expr(arg)?;
+            let ty = arg.ty.as_ref().unwrap_or(&Type::Unknown);
             return Ok(Some(self.truthy_expr_for_type(&arg_expr, ty)));
         }
         if name == "chr" {
@@ -1419,6 +1473,17 @@ impl<'a> Codegen<'a> {
             return Ok(Some(
                 self.wrap_result(format!("py_open(&{}, &{})", path_expr, mode_expr)),
             ));
+        }
+        if name == "input" {
+            if args.len() > 1 {
+                return Err(self.error(expr.span, "input() expects zero or one argument"));
+            }
+            self.uses.py_input = true;
+            if args.is_empty() {
+                return Ok(Some("py_input(None)".to_string()));
+            }
+            let prompt_expr = self.gen_expr(&args[0])?;
+            return Ok(Some(format!("py_input(Some(&{}))", prompt_expr)));
         }
         if name == "exit" {
             if args.len() > 1 {

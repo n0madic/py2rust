@@ -513,6 +513,179 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
+    /// Emit Python `del` for supported targets.
+    ///
+    /// Supported forms:
+    /// - `del list[idx]`
+    /// - `del dict[key]`
+    /// - `del obj.prop` when `prop` has a deleter
+    pub(crate) fn emit_delete_target(
+        &mut self,
+        target: &AssignTarget,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        match target {
+            AssignTarget::Index {
+                value: container,
+                index,
+            } => {
+                if let ExprKind::Name(name) = &container.kind {
+                    if self.is_global(name) {
+                        let guard = self.new_tmp();
+                        self.push_line("{");
+                        self.indent += 1;
+                        self.push_line(&format!(
+                            "let mut {} = {};",
+                            guard,
+                            self.global_lock_expr(name)
+                        ));
+                        match container.ty.as_ref() {
+                            Some(Type::Dict(_, _)) => {
+                                let idx_expr = self.gen_expr(index)?;
+                                let dict_guard = self.new_tmp();
+                                self.push_line(&format!(
+                                    "let mut {} = {}.lock().expect(\"dict mutex poisoned\");",
+                                    dict_guard, guard
+                                ));
+                                self.push_line(&format!(
+                                    "{}.shift_remove(&{});",
+                                    dict_guard, idx_expr
+                                ));
+                            }
+                            Some(Type::List(_)) => {
+                                let idx_raw = self.gen_expr(index)?;
+                                self.uses.py_index = true;
+                                let inner = self.new_tmp();
+                                let len_tmp = self.new_tmp();
+                                let idx_tmp = self.new_tmp();
+                                self.push_line(&format!(
+                                    "let mut {} = {}.lock().expect(\"list mutex poisoned\");",
+                                    inner, guard
+                                ));
+                                self.push_line(&format!("let {} = {}.len();", len_tmp, inner));
+                                self.push_line(&format!(
+                                    "let {} = {};",
+                                    idx_tmp,
+                                    self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp))
+                                ));
+                                self.push_line(&format!("{}.remove({});", inner, idx_tmp));
+                            }
+                            _ => {
+                                return Err(
+                                    self.error(span, "del index requires list or dict container")
+                                )
+                            }
+                        }
+                        self.indent -= 1;
+                        self.push_line("}");
+                        return Ok(());
+                    }
+                }
+
+                let cont_expr = self.gen_expr(container)?;
+                match container.ty.as_ref() {
+                    Some(Type::Dict(_, _)) => {
+                        let idx_expr = self.gen_expr(index)?;
+                        if matches!(self.dict_storage_for_expr(container), DictStorage::Local) {
+                            self.push_line(&format!("{}.shift_remove(&{});", cont_expr, idx_expr));
+                        } else {
+                            let guard = self.new_tmp();
+                            self.push_line("{");
+                            self.indent += 1;
+                            self.push_line(&format!(
+                                "let mut {} = {}.lock().expect(\"dict mutex poisoned\");",
+                                guard, cont_expr
+                            ));
+                            self.push_line(&format!("{}.shift_remove(&{});", guard, idx_expr));
+                            self.indent -= 1;
+                            self.push_line("}");
+                        }
+                    }
+                    Some(Type::List(_)) => {
+                        let idx_raw = self.gen_expr(index)?;
+                        self.uses.py_index = true;
+                        if let ExprKind::Name(name) = &container.kind {
+                            if self.is_local_list_name(name) {
+                                // Resolve possibly-negative Python index before removal.
+                                let len_tmp = self.new_tmp();
+                                let idx_tmp = self.new_tmp();
+                                self.push_line(&format!("let {} = {}.len();", len_tmp, name));
+                                self.push_line(&format!(
+                                    "let {} = {};",
+                                    idx_tmp,
+                                    self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp))
+                                ));
+                                self.push_line(&format!("{}.remove({});", name, idx_tmp));
+                                return Ok(());
+                            }
+                        }
+                        let guard = self.new_tmp();
+                        let len_tmp = self.new_tmp();
+                        let idx_tmp = self.new_tmp();
+                        self.push_line("{");
+                        self.indent += 1;
+                        self.push_line(&format!(
+                            "let mut {} = {}.lock().expect(\"list mutex poisoned\");",
+                            guard, cont_expr
+                        ));
+                        self.push_line(&format!("let {} = {}.len();", len_tmp, guard));
+                        self.push_line(&format!(
+                            "let {} = {};",
+                            idx_tmp,
+                            self.wrap_result(format!("py_index({}, {})", idx_raw, len_tmp))
+                        ));
+                        self.push_line(&format!("{}.remove({});", guard, idx_tmp));
+                        self.indent -= 1;
+                        self.push_line("}");
+                    }
+                    _ => {
+                        return Err(self.error(span, "del index requires list or dict container"));
+                    }
+                }
+            }
+            AssignTarget::Attr { value: obj, attr } => {
+                if let Some(Type::Custom(class_name)) = obj.ty.as_ref() {
+                    if let Some(prop) = self.class_property(class_name, attr).cloned() {
+                        if let Some(deleter) = prop.deleter {
+                            if let ExprKind::Name(name) = &obj.kind {
+                                if self.is_global(name) {
+                                    let guard = self.new_tmp();
+                                    self.push_line("{");
+                                    self.indent += 1;
+                                    self.push_line(&format!(
+                                        "let mut {} = {};",
+                                        guard,
+                                        self.global_lock_expr(name)
+                                    ));
+                                    self.push_line(&format!("{}.{}();", guard, deleter));
+                                    self.indent -= 1;
+                                    self.push_line("}");
+                                    return Ok(());
+                                }
+                            }
+                            let obj_expr = self.gen_expr(obj)?;
+                            self.push_line(&format!("{}.{}();", obj_expr, deleter));
+                            return Ok(());
+                        }
+                        return Err(self
+                            .error(span, format!("Property {class_name}.{attr} has no deleter")));
+                    }
+                }
+                return Err(self.error(span, "del attribute requires a property with a deleter"));
+            }
+            AssignTarget::Name(_) => {
+                return Err(self.error(
+                    span,
+                    "del name is not supported; only del index/attribute is supported",
+                ))
+            }
+            AssignTarget::Tuple(_) | AssignTarget::List(_) | AssignTarget::Starred(_) => {
+                return Err(self.error(span, "del unpacking targets are not supported"));
+            }
+        }
+        Ok(())
+    }
+
     /// Emit tuple/list unpacking assignments, evaluating the RHS once.
     pub(super) fn emit_unpack_assign(
         &mut self,

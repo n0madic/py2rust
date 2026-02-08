@@ -196,6 +196,10 @@ define_stmt_visitors!(
         mut_pat: StmtKind::Assign { target, value } => visit_assign_mut(target: &mut AssignTarget, value: &mut Expr) => (target, value)
     },
     {
+        imm_pat: StmtKind::Delete { target } => visit_delete(target: &AssignTarget) => (target),
+        mut_pat: StmtKind::Delete { target } => visit_delete_mut(target: &mut AssignTarget) => (target)
+    },
+    {
         imm_pat: StmtKind::Return { value } => visit_return(value: Option<&Expr>) => (value.as_ref()),
         mut_pat: StmtKind::Return { value } => visit_return_mut(value: &mut Option<Expr>) => (value)
     },
@@ -424,6 +428,10 @@ pub trait StmtWalkerMut: ExprWalkerMut {
         walk_expr_mut(self, value);
     }
 
+    fn visit_delete_mut(&mut self, target: &mut AssignTarget) {
+        walk_assign_target_mut(self, target);
+    }
+
     fn visit_return_mut(&mut self, value: &mut Option<Expr>) {
         if let Some(value) = value {
             walk_expr_mut(self, value);
@@ -626,6 +634,10 @@ impl<T: StmtWalkerMut + ?Sized> StmtVisitorMut<()> for T {
         StmtWalkerMut::visit_assign_mut(self, target, value);
     }
 
+    fn visit_delete_mut(&mut self, target: &mut AssignTarget) {
+        StmtWalkerMut::visit_delete_mut(self, target);
+    }
+
     fn visit_return_mut(&mut self, value: &mut Option<Expr>) {
         StmtWalkerMut::visit_return_mut(self, value);
     }
@@ -709,6 +721,9 @@ fn walk_stmt_expr_only_mut<W: ExprWalkerMut + ?Sized>(walker: &mut W, stmt: &mut
         StmtKind::Assign { target, value } => {
             walk_assign_target_mut(walker, target);
             walk_expr_mut(walker, value);
+        }
+        StmtKind::Delete { target } => {
+            walk_assign_target_mut(walker, target);
         }
         StmtKind::Return { value } => {
             if let Some(value) = value {

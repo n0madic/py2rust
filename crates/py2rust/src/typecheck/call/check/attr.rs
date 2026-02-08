@@ -213,6 +213,21 @@ impl<'a> TypeChecker<'a> {
                 }
                 return Ok(Type::Int);
             }
+            if attr == "remove" {
+                if args.len() != 1 {
+                    return Err(self.error(span, "list.remove() expects one argument"));
+                }
+                let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
+                if !matches!(arg_ty, Type::Unknown) && !matches!(inner.as_ref(), Type::Unknown) {
+                    self.ensure_assignable(&arg_ty, inner, span)?;
+                }
+                if matches!(inner.as_ref(), Type::Unknown) && !matches!(arg_ty, Type::Unknown) {
+                    if let ExprKind::Name(name) = &value.kind {
+                        self.set_var_type(name, Type::List(Box::new(arg_ty.clone())));
+                    }
+                }
+                return Ok(Type::None);
+            }
             if attr == "sort" {
                 if !args.is_empty() {
                     return Err(self.error(span, "list.sort() expects no arguments"));
@@ -295,6 +310,55 @@ impl<'a> TypeChecker<'a> {
                     return Ok(Type::None);
                 }
                 return Err(self.error(span, "dict.update() expects a dict argument"));
+            }
+            if attr == "keys" {
+                if !args.is_empty() {
+                    return Err(self.error(span, "dict.keys() expects no arguments"));
+                }
+                return Ok(Type::Iterator(Box::new(*key_ty.clone())));
+            }
+            if attr == "values" {
+                if !args.is_empty() {
+                    return Err(self.error(span, "dict.values() expects no arguments"));
+                }
+                return Ok(Type::Iterator(Box::new(*val_ty.clone())));
+            }
+            if attr == "setdefault" {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(self.error(span, "dict.setdefault() expects one or two arguments"));
+                }
+                let arg_key = self.check_expr(&mut args[0], Some(key_ty))?;
+                self.ensure_assignable(&arg_key, key_ty, span)?;
+                if args.len() == 1 {
+                    if !matches!(
+                        val_ty.as_ref(),
+                        Type::Option(_) | Type::None | Type::Unknown
+                    ) {
+                        return Err(self.error(
+                            span,
+                            "dict.setdefault() without default requires dict values that can be None",
+                        ));
+                    }
+                    return Ok(*val_ty.clone());
+                }
+
+                let default_ty = self.check_expr(&mut args[1], Some(val_ty))?;
+                if !matches!(default_ty, Type::Unknown) && !matches!(val_ty.as_ref(), Type::Unknown)
+                {
+                    self.ensure_assignable(&default_ty, val_ty, span)?;
+                }
+
+                if matches!(val_ty.as_ref(), Type::Unknown) && !matches!(default_ty, Type::Unknown)
+                {
+                    if let ExprKind::Name(name) = &value.kind {
+                        self.set_var_type(
+                            name,
+                            Type::Dict(key_ty.clone(), Box::new(default_ty.clone())),
+                        );
+                    }
+                    return Ok(default_ty);
+                }
+                return Ok(*val_ty.clone());
             }
         }
         if let Type::Set(inner) = &obj_ty {

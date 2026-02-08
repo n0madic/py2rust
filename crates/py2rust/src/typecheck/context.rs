@@ -69,6 +69,7 @@ pub struct ClassAttrInfo {
 pub struct PropertyInfo {
     pub getter: String,
     pub setter: Option<String>,
+    pub deleter: Option<String>,
     pub ty: Type,
 }
 

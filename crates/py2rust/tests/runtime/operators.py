@@ -53,6 +53,23 @@ def test_set_ops() -> None:
     assert (empty ^ c) == c, "empty symmetric difference should be original set"
 
 
+def test_python_modulo_and_set_ordering() -> None:
+    # Python modulo keeps the sign of the divisor.
+    assert -7 % 3 == 2, "-7 % 3 should equal 2"
+    assert -7.0 % 3.0 == 2.0, "-7.0 % 3.0 should equal 2.0"
+
+    left: set[int] = {1, 2}
+    right: set[int] = {1, 2, 3}
+    assert left <= right, "left must be subset of right"
+    assert not (left >= right), "left must not be superset of right"
+    assert left < right, "left must be strict subset of right"
+    assert right > left, "right must be strict superset of left"
+
+    # Empty dict/set must be falsy.
+    assert bool({}) == False, "bool({}) should be False"
+    assert bool(set()) == False, "bool(set()) should be False"
+
+
 # Helper classes for attribute augmented-assignment tests.
 class Counter:
     count: int
@@ -180,6 +197,7 @@ def test_augmented_bitwise() -> None:
 test_membership()
 test_precedence()
 test_set_ops()
+test_python_modulo_and_set_ordering()
 test_augmented_assignments()
 test_augmented_bitwise()
 

@@ -41,6 +41,16 @@ impl<'cg, 'a, 'm> StmtVisitor<Result<(), CompileError>> for EmitStmtVisitor<'cg,
         self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
     }
 
+    fn visit_delete(&mut self, target: &AssignTarget) -> Result<(), CompileError> {
+        let tmp = Stmt {
+            kind: StmtKind::Delete {
+                target: target.clone(),
+            },
+            span: self.span,
+        };
+        self.cg.emit_stmt_via_match(&tmp, self.mut_counts)
+    }
+
     fn visit_return(&mut self, value: Option<&Expr>) -> Result<(), CompileError> {
         let tmp = Stmt {
             kind: StmtKind::Return {
@@ -722,6 +732,33 @@ impl<'a> Codegen<'a> {
                                     expr_mentions_name(value, target)
                                 }
                                 StmtKind::Assign { value, .. } => expr_mentions_name(value, target),
+                                StmtKind::Delete {
+                                    target: assign_target,
+                                } => {
+                                    fn target_mentions_name(
+                                        target: &AssignTarget,
+                                        name: &str,
+                                    ) -> bool {
+                                        match target {
+                                            AssignTarget::Name(target_name) => target_name == name,
+                                            AssignTarget::Attr { value, .. } => {
+                                                expr_mentions_name(value, name)
+                                            }
+                                            AssignTarget::Index { value, index } => {
+                                                expr_mentions_name(value, name)
+                                                    || expr_mentions_name(index, name)
+                                            }
+                                            AssignTarget::Tuple(items)
+                                            | AssignTarget::List(items) => items
+                                                .iter()
+                                                .any(|item| target_mentions_name(item, name)),
+                                            AssignTarget::Starred(inner) => {
+                                                target_mentions_name(inner, name)
+                                            }
+                                        }
+                                    }
+                                    target_mentions_name(assign_target, target)
+                                }
                                 StmtKind::Return { value } => value
                                     .as_ref()
                                     .is_some_and(|expr| expr_mentions_name(expr, target)),
@@ -981,6 +1018,9 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.emit_simple_assign(target, value, mut_counts, false)?;
                 }
+            }
+            StmtKind::Delete { target } => {
+                self.emit_delete_target(target, stmt.span)?;
             }
             StmtKind::Return { value } => {
                 // Check if we're in a throwing function or inside a try block with value return.
