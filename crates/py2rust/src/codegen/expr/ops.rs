@@ -834,48 +834,14 @@ impl<'a> Codegen<'a> {
             if matches!(left.ty.as_ref(), Some(Type::List(_)))
                 && matches!(right.ty.as_ref(), Some(Type::List(_)))
             {
-                let left_expr = self.gen_expr(left)?;
-                let right_expr = self.gen_expr(right)?;
-                let left_local = matches!(self.list_storage_for_expr(left), ListStorage::Local);
-                let right_local = matches!(self.list_storage_for_expr(right), ListStorage::Local);
-                let eq_expr = if left_local && right_local {
-                    format!("{}.iter().eq({}.iter())", left_expr, right_expr)
-                } else if left_local {
-                    let right_tmp = self.new_tmp();
-                    let right_guard = self.new_tmp();
-                    format!(
-                        "{{ let {right_tmp} = {right_expr}.clone(); let {right_guard} = {right_tmp}.lock().expect(\"list mutex poisoned\"); {left}.iter().eq({right_guard}.iter()) }}",
-                        right_tmp = right_tmp,
-                        right_guard = right_guard,
-                        right_expr = right_expr,
-                        left = left_expr
-                    )
-                } else if right_local {
-                    let left_tmp = self.new_tmp();
-                    let left_guard = self.new_tmp();
-                    format!(
-                        "{{ let {left_tmp} = {left_expr}.clone(); let {left_guard} = {left_tmp}.lock().expect(\"list mutex poisoned\"); {left_guard}.iter().eq({right}.iter()) }}",
-                        left_tmp = left_tmp,
-                        left_guard = left_guard,
-                        left_expr = left_expr,
-                        right = right_expr
-                    )
-                } else {
-                    let left_tmp = self.new_tmp();
-                    let right_tmp = self.new_tmp();
-                    let left_guard = self.new_tmp();
-                    let right_guard = self.new_tmp();
-                    format!(
-                        // Clone the Arcs to avoid moving list values out of scope.
-                        "{{ let {left_tmp} = {left_expr}.clone(); let {right_tmp} = {right_expr}.clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().expect(\"list mutex poisoned\"); let {right_guard} = {right_tmp}.lock().expect(\"list mutex poisoned\"); {left_guard}.iter().eq({right_guard}.iter()) }} }}",
-                        left_tmp = left_tmp,
-                        right_tmp = right_tmp,
-                        left_guard = left_guard,
-                        right_guard = right_guard,
-                        left_expr = left_expr,
-                        right_expr = right_expr
-                    )
-                };
+                let (left_expr, left_is_shared) = self.gen_list_eq_operand(left)?;
+                let (right_expr, right_is_shared) = self.gen_list_eq_operand(right)?;
+                let eq_expr = self.gen_list_eq_from_rendered(
+                    &left_expr,
+                    left_is_shared,
+                    &right_expr,
+                    right_is_shared,
+                );
                 if matches!(op, CmpOp::Eq) {
                     return Ok(eq_expr);
                 }
@@ -902,47 +868,14 @@ impl<'a> Codegen<'a> {
             if matches!(left.ty.as_ref(), Some(Type::Dict(_, _)))
                 && matches!(right.ty.as_ref(), Some(Type::Dict(_, _)))
             {
-                let left_expr = self.gen_expr(left)?;
-                let right_expr = self.gen_expr(right)?;
-                let left_local = matches!(self.dict_storage_for_expr(left), DictStorage::Local);
-                let right_local = matches!(self.dict_storage_for_expr(right), DictStorage::Local);
-                let eq_expr = if left_local && right_local {
-                    format!("{} == {}", left_expr, right_expr)
-                } else if left_local {
-                    let right_tmp = self.new_tmp();
-                    let right_guard = self.new_tmp();
-                    format!(
-                        "{{ let {right_tmp} = {right_expr}.clone(); let {right_guard} = {right_tmp}.lock().expect(\"dict mutex poisoned\"); {left_expr} == *{right_guard} }}",
-                        right_tmp = right_tmp,
-                        right_guard = right_guard,
-                        left_expr = left_expr,
-                        right_expr = right_expr
-                    )
-                } else if right_local {
-                    let left_tmp = self.new_tmp();
-                    let left_guard = self.new_tmp();
-                    format!(
-                        "{{ let {left_tmp} = {left_expr}.clone(); let {left_guard} = {left_tmp}.lock().expect(\"dict mutex poisoned\"); *{left_guard} == {right_expr} }}",
-                        left_tmp = left_tmp,
-                        left_guard = left_guard,
-                        left_expr = left_expr,
-                        right_expr = right_expr
-                    )
-                } else {
-                    let left_tmp = self.new_tmp();
-                    let right_tmp = self.new_tmp();
-                    let left_guard = self.new_tmp();
-                    let right_guard = self.new_tmp();
-                    format!(
-                        "{{ let {left_tmp} = {left_expr}.clone(); let {right_tmp} = {right_expr}.clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.lock().expect(\"dict mutex poisoned\"); let {right_guard} = {right_tmp}.lock().expect(\"dict mutex poisoned\"); *{left_guard} == *{right_guard} }} }}",
-                        left_tmp = left_tmp,
-                        right_tmp = right_tmp,
-                        left_guard = left_guard,
-                        right_guard = right_guard,
-                        left_expr = left_expr,
-                        right_expr = right_expr
-                    )
-                };
+                let (left_expr, left_is_shared) = self.gen_dict_eq_operand(left)?;
+                let (right_expr, right_is_shared) = self.gen_dict_eq_operand(right)?;
+                let eq_expr = self.gen_dict_eq_from_rendered(
+                    &left_expr,
+                    left_is_shared,
+                    &right_expr,
+                    right_is_shared,
+                );
                 if matches!(op, CmpOp::Eq) {
                     return Ok(eq_expr);
                 }
@@ -1175,6 +1108,76 @@ impl<'a> Codegen<'a> {
             tuple_len,
             list_on_left,
         ))
+    }
+
+    /// Render a list equality operand and report whether it is shared storage.
+    ///
+    /// Fresh temporary list expressions are lowered as local `Vec<_>` values so
+    /// `==`/`!=` comparisons avoid unnecessary `Arc<Mutex<_>>` wrappers.
+    fn gen_list_eq_operand(&mut self, expr: &Expr) -> Result<(String, bool), CompileError> {
+        if let Some(local_expr) = self.gen_fresh_list_expr_with_storage(expr, ListStorage::Local)? {
+            return Ok((local_expr, false));
+        }
+        let rendered = self.gen_expr(expr)?;
+        let is_shared = !matches!(self.list_storage_for_expr(expr), ListStorage::Local);
+        Ok((rendered, is_shared))
+    }
+
+    /// Render a dict equality operand and report whether it is shared storage.
+    ///
+    /// Fresh temporary dict literals and `dict(...)` calls are lowered as local
+    /// `IndexMap` values so equality against expected literals avoids mutex noise.
+    fn gen_dict_eq_operand(&mut self, expr: &Expr) -> Result<(String, bool), CompileError> {
+        match &expr.kind {
+            ExprKind::Dict(items) => {
+                let rendered = self.gen_dict_expr_with_storage(expr, items, DictStorage::Local)?;
+                Ok((rendered, false))
+            }
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } if matches!(&func.kind, ExprKind::Name(name) if name == "dict")
+                && keywords.is_empty()
+                && args.len() <= 1 =>
+            {
+                self.uses.index_map = true;
+                if args.is_empty() {
+                    return Ok(("IndexMap::new()".to_string(), false));
+                }
+                let arg = &args[0];
+                let arg_expr = self.gen_expr(arg)?;
+                if matches!(arg.ty.as_ref(), Some(Type::Dict(_, _))) {
+                    if matches!(self.dict_storage_for_expr(arg), DictStorage::Local) {
+                        return Ok((format!("{}.clone()", arg_expr), false));
+                    }
+                    let tmp = self.new_tmp();
+                    let guard = self.new_tmp();
+                    let init = if matches!(arg.kind, ExprKind::Name(_)) {
+                        format!("{}.clone()", arg_expr)
+                    } else {
+                        arg_expr
+                    };
+                    return Ok((
+                        format!(
+                            "{{ let {tmp} = {init}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.clone() }}",
+                            tmp = tmp,
+                            init = init,
+                            guard = guard
+                        ),
+                        false,
+                    ));
+                }
+                let iter_src = self.gen_iter_source(arg)?;
+                let body = format!("({}).collect::<IndexMap<_, _>>()", iter_src.expr);
+                Ok((iter_src.wrap(body), false))
+            }
+            _ => {
+                let rendered = self.gen_expr(expr)?;
+                let is_shared = !matches!(self.dict_storage_for_expr(expr), DictStorage::Local);
+                Ok((rendered, is_shared))
+            }
+        }
     }
 
     fn gen_list_tuple_eq_from_rendered(

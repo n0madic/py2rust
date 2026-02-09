@@ -197,10 +197,7 @@ impl<'a> Codegen<'a> {
                         }
                     };
                     let mut rendered = self.gen_expr_with_expected(arg_expr, Some(param_ty))?;
-                    if matches!(
-                        param_ty,
-                        Type::List(_) | Type::Dict(_, _) | Type::Str | Type::Bytes
-                    ) {
+                    if self.call_arg_needs_owned_clone(arg_expr, param_ty) {
                         rendered = format!("{}.clone()", rendered);
                     } else if self.needs_borrow(arg_ty_ref, param_ty) {
                         rendered = format!("&{}", rendered);
@@ -317,10 +314,7 @@ impl<'a> Codegen<'a> {
                     self.gen_expr(arg)?
                 };
                 if let Some(param_ty) = expected {
-                    if matches!(
-                        param_ty,
-                        Type::List(_) | Type::Dict(_, _) | Type::Str | Type::Bytes
-                    ) {
+                    if self.call_arg_needs_owned_clone(arg, param_ty) {
                         rendered = format!("{}.clone()", rendered);
                     } else if self.needs_borrow(arg.ty.as_ref(), param_ty) {
                         rendered = format!("&{}", rendered);

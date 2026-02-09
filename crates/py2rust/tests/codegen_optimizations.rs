@@ -181,3 +181,117 @@ fn exceptions_codegen_avoids_redundant_runtime_patterns() {
         "String indexing should avoid temporary Vec<char> collection"
     );
 }
+
+#[test]
+fn list_equality_literal_uses_local_vec_operand() {
+    // Fresh list literals in equality should stay local and avoid Arc<Mutex<_>> wrapping.
+    let source = r#"
+
+def f() -> bool:
+    xs: list[int] = [9, 8, 7]
+    return xs == [1, 2, 3]
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    assert!(
+        out.rust.contains("vec![1i64, 2i64, 3i64]"),
+        "Expected local Vec literal for equality operand"
+    );
+    assert!(
+        !out.rust
+            .contains("Arc::new(Mutex::new(vec![1i64, 2i64, 3i64]))"),
+        "Equality literal should not be wrapped in Arc<Mutex<_>>"
+    );
+}
+
+#[test]
+fn local_list_constructor_assignment_stays_vec_backed() {
+    // `result = list(src)` should stay local for local storage targets.
+    let source = r#"
+
+def f() -> bool:
+    src: list[int] = [1, 2, 3]
+    result: list[int] = list(src)
+    return result == [1, 2, 3]
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    assert!(
+        out.rust.contains("collect::<Vec<_>>()"),
+        "Expected Vec-based list constructor lowering"
+    );
+    assert!(
+        !out.rust.contains("let result = Arc::new(Mutex::new("),
+        "Local list target should not use shared Arc<Mutex<_>> storage"
+    );
+}
+
+#[test]
+fn string_literal_call_arg_avoids_redundant_clone() {
+    // String literals are rvalues and should not become `.to_string().clone()` at call sites.
+    let source = r#"
+
+def takes(s: str) -> int:
+    return len(s)
+
+def f() -> int:
+    return takes("hello")
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    assert!(
+        out.rust.contains("takes(\"hello\".to_string())"),
+        "Expected direct String construction for literal call arg"
+    );
+    assert!(
+        !out.rust.contains("\"hello\".to_string().clone()"),
+        "Literal call arg should not clone after to_string()"
+    );
+}
+
+#[test]
+fn optional_unwrap_avoids_double_clone() {
+    // Optional-to-non-optional coercion should not produce `.clone().clone()`.
+    let source = r#"
+
+class Boxed:
+    values: list[int]
+
+    def __init__(self, values: list[int] | None = None):
+        if values is None:
+            values = [1, 2, 3]
+        self.values = values
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    assert!(
+        out.rust
+            .contains(".as_ref().expect(\"optional value is None\").clone()"),
+        "Expected Optional unwrap clone for list coercion"
+    );
+    assert!(
+        !out.rust.contains(".clone().clone()"),
+        "Optional unwrap path should not emit double clone"
+    );
+}
+
+#[test]
+fn non_throwing_assert_uses_assert_macro() {
+    // Non-throwing assert lowering should use Rust's idiomatic assert! macro.
+    let source = r#"
+
+def f() -> int:
+    assert 1 == 1, "ok"
+    return 1
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    assert!(
+        out.rust.contains("assert!("),
+        "Expected non-throwing assert to use assert! macro"
+    );
+    assert!(
+        !out.rust.contains("panic!(\"AssertionError: {}\""),
+        "Non-throwing assert should not lower to panic! branch"
+    );
+}

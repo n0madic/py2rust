@@ -85,7 +85,32 @@ impl<'a> Codegen<'a> {
 
     /// Determine if an expression creates a fresh list value.
     fn is_fresh_list_expr(&self, expr: &Expr) -> bool {
-        matches!(expr.kind, ExprKind::List(_) | ExprKind::ListComp { .. })
+        match &expr.kind {
+            ExprKind::List(_) | ExprKind::ListComp { .. } => true,
+            ExprKind::Binary {
+                op: BinOp::Add,
+                left,
+                right,
+            } => {
+                matches!(left.ty.as_ref(), Some(Type::List(_)))
+                    && matches!(right.ty.as_ref(), Some(Type::List(_)))
+            }
+            ExprKind::Slice { value, .. } => {
+                matches!(expr.ty.as_ref(), Some(Type::List(_)))
+                    && matches!(value.ty.as_ref(), Some(Type::List(_)))
+            }
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
+                keywords.is_empty()
+                    && args.len() <= 1
+                    && matches!(expr.ty.as_ref(), Some(Type::List(_)))
+                    && matches!(&func.kind, ExprKind::Name(name) if name == "list" || name == "tuple")
+            }
+            _ => false,
+        }
     }
 
     /// Record list usage inside expressions, marking escapes conservatively.

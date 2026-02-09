@@ -1686,19 +1686,19 @@ impl<'a> Codegen<'a> {
                 } else {
                     "\"assertion failed\".to_string()".to_string()
                 };
-                self.uses.py_error = true;
                 let in_throwing_context = self.lambda_depth == 0
                     && (self.try_block_return_type.is_some()
                         || matches!(self.current_function_ret.as_ref(), Some(Type::Result(_, _)))
                         || (self.current_function.is_none() && self.top_level_can_throw));
                 if in_throwing_context {
+                    self.uses.py_error = true;
                     self.push_line(&format!(
                         "if !({}) {{ return Err(PyError::AssertionError(({}).into())); }}",
                         test_expr, msg_expr
                     ));
                 } else {
                     self.push_line(&format!(
-                        "if !({}) {{ panic!(\"AssertionError: {{}}\", {}); }}",
+                        "assert!({}, \"AssertionError: {{}}\", {});",
                         test_expr, msg_expr
                     ));
                 }

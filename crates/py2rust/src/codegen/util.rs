@@ -361,6 +361,11 @@ impl<'a> Codegen<'a> {
                 Some(Type::List(_)) | Some(Type::Dict(_, _)) | Some(Type::Str) | Some(Type::Bytes)
             )
         {
+            // `gen_expr_with_expected` already clones after Optional unwrap; avoid
+            // emitting `.clone().clone()` when assignment/call sites request cloning too.
+            if expr.contains(".as_ref().expect(\"optional value is None\").clone()") {
+                return expr;
+            }
             return format!("{}.clone()", expr);
         }
         expr

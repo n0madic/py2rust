@@ -1254,41 +1254,7 @@ impl<'a> Codegen<'a> {
         if !matches!(self.list_storage_for_name(name), ListStorage::Local) {
             return Ok(None);
         }
-        match &value.kind {
-            ExprKind::List(items) => Ok(Some(self.gen_list_expr_with_storage(
-                value,
-                items,
-                ListStorage::Local,
-            )?)),
-            ExprKind::Binary {
-                op: BinOp::Add,
-                left,
-                right,
-            } if matches!(left.ty.as_ref(), Some(Type::List(_)))
-                && matches!(right.ty.as_ref(), Some(Type::List(_))) =>
-            {
-                Ok(Some(self.gen_list_concat_expr_with_storage(
-                    left,
-                    right,
-                    ListStorage::Local,
-                )?))
-            }
-            ExprKind::ListComp {
-                elt,
-                target,
-                iter,
-                ifs,
-                generators,
-            } => Ok(Some(self.gen_list_comp_expr_with_storage(
-                elt,
-                target,
-                iter,
-                ifs,
-                generators,
-                ListStorage::Local,
-            )?)),
-            _ => Ok(None),
-        }
+        self.gen_fresh_list_expr_with_storage(value, ListStorage::Local)
     }
 
     fn emit_inplace_list_add_assign(

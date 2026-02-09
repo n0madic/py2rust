@@ -488,6 +488,50 @@ impl<'a> Codegen<'a> {
         Ok(format!("{}[{}]", base, idx))
     }
 
+    /// Lower list slicing with a requested output storage strategy.
+    pub(crate) fn gen_list_slice_expr_with_storage(
+        &mut self,
+        value: &Expr,
+        start: Option<&Expr>,
+        end: Option<&Expr>,
+        step: Option<&Expr>,
+        storage: ListStorage,
+    ) -> Result<String, CompileError> {
+        let base = self.gen_expr(value)?;
+        let start_arg = match start {
+            Some(s) => format!("Some({})", self.gen_expr(s)?),
+            None => "None".to_string(),
+        };
+        let end_arg = match end {
+            Some(e) => format!("Some({})", self.gen_expr(e)?),
+            None => "None".to_string(),
+        };
+        self.uses.py_list_slice_step = true;
+        let call = if let Some(step_expr) = step {
+            let step_arg = self.gen_expr(step_expr)?;
+            let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
+                format!("&{}", base)
+            } else {
+                format!("&{}.lock().expect(\"list mutex poisoned\")", base)
+            };
+            self.wrap_result(format!(
+                "py_list_slice_step({}, {}, {}, {})",
+                list_ref, start_arg, end_arg, step_arg
+            ))
+        } else {
+            let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
+                format!("&{}", base)
+            } else {
+                format!("&{}.lock().expect(\"list mutex poisoned\")", base)
+            };
+            self.wrap_result(format!(
+                "py_list_slice_step({}, {}, {}, 1i64)",
+                list_ref, start_arg, end_arg
+            ))
+        };
+        Ok(self.wrap_list_storage_expr(&call, storage))
+    }
+
     /// Lower slicing expressions for lists and strings.
     pub(super) fn gen_slice_expr(
         &mut self,
@@ -625,43 +669,23 @@ impl<'a> Codegen<'a> {
                 base, start_arg, end_arg
             ));
         }
-        if matches!(value.ty.as_ref(), Some(Type::List(_)) | Some(Type::Bytes)) {
-            if let Some(step) = step {
-                self.uses.py_list_slice_step = true;
-                let step_arg = self.gen_expr(step)?;
-                let call = if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                    let list_ref =
-                        if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
-                            format!("&{}", base)
-                        } else {
-                            format!("&{}.lock().expect(\"list mutex poisoned\")", base)
-                        };
-                    self.wrap_result(format!(
-                        "py_list_slice_step({}, {}, {}, {})",
-                        list_ref, start_arg, end_arg, step_arg
-                    ))
-                } else {
-                    self.wrap_result(format!(
-                        "py_list_slice_step(&{}, {}, {}, {})",
-                        base, start_arg, end_arg, step_arg
-                    ))
-                };
-                if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                    return Ok(format!("Arc::new(Mutex::new({}))", call));
-                }
-                return Ok(call);
-            }
+        if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+            return self.gen_list_slice_expr_with_storage(
+                value,
+                start,
+                end,
+                step,
+                ListStorage::Shared,
+            );
+        }
+        if matches!(value.ty.as_ref(), Some(Type::Bytes)) {
             // Use the step helper with step=1 to handle negative bounds consistently.
             self.uses.py_list_slice_step = true;
-            let call = if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
-                    format!("&{}", base)
-                } else {
-                    format!("&{}.lock().expect(\"list mutex poisoned\")", base)
-                };
+            let call = if let Some(step) = step {
+                let step_arg = self.gen_expr(step)?;
                 self.wrap_result(format!(
-                    "py_list_slice_step({}, {}, {}, 1i64)",
-                    list_ref, start_arg, end_arg
+                    "py_list_slice_step(&{}, {}, {}, {})",
+                    base, start_arg, end_arg, step_arg
                 ))
             } else {
                 self.wrap_result(format!(
@@ -669,9 +693,6 @@ impl<'a> Codegen<'a> {
                     base, start_arg, end_arg
                 ))
             };
-            if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                return Ok(format!("Arc::new(Mutex::new({}))", call));
-            }
             return Ok(call);
         }
         Err(self.error(expr.span, "Slicing requires list or str"))

@@ -204,11 +204,8 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(arg)?
             };
             if let Some(param_ty) = param_ty {
-                // Shared containers and owned strings must be cloned to avoid moves.
-                if matches!(
-                    param_ty,
-                    Type::List(_) | Type::Dict(_, _) | Type::Str | Type::Bytes
-                ) {
+                // Clone only lvalue-style arguments so temporary rvalues can move.
+                if self.call_arg_needs_owned_clone(arg, param_ty) {
                     parts.push(format!("{}.clone()", rendered));
                     continue;
                 }
@@ -252,6 +249,116 @@ impl<'a> Codegen<'a> {
                 matches!(arg_ty, Some(Type::Union(_)))
             }
             _ => false,
+        }
+    }
+
+    /// Return true when a callable argument should be cloned to preserve binding ownership.
+    ///
+    /// We only clone container/string arguments when they come from lvalue-style expressions
+    /// (`name`/`attr`) that may be reused later. Temporary rvalues can be moved directly.
+    pub(crate) fn call_arg_needs_owned_clone(&self, arg: &Expr, param_ty: &Type) -> bool {
+        if !matches!(
+            param_ty,
+            Type::List(_) | Type::Dict(_, _) | Type::Str | Type::Bytes
+        ) {
+            return false;
+        }
+        matches!(arg.kind, ExprKind::Name(_) | ExprKind::Attr { .. })
+    }
+
+    /// Generate `list(...)`/`tuple(...)` constructor lowering with an explicit list storage mode.
+    ///
+    /// In this runtime model both `list()` and `tuple()` constructors lower to list-backed
+    /// values; `storage` decides whether the result is plain `Vec<T>` or `Arc<Mutex<Vec<T>>>`.
+    pub(crate) fn gen_list_ctor_from_call_with_storage(
+        &mut self,
+        call_expr: &Expr,
+        ctor_name: &str,
+        args: &[Expr],
+        keywords: &[KeywordArg],
+        storage: ListStorage,
+    ) -> Result<Option<String>, CompileError> {
+        if !matches!(ctor_name, "list" | "tuple") {
+            return Ok(None);
+        }
+        if !keywords.is_empty() || args.len() > 1 {
+            return Ok(None);
+        }
+        if args.is_empty() {
+            if let Some(Type::List(inner)) = call_expr.ty.as_ref() {
+                if !matches!(inner.as_ref(), Type::Unknown) {
+                    let base = format!("Vec::<{}>::new()", self.rust_type(inner));
+                    return Ok(Some(self.wrap_list_storage_expr(&base, storage)));
+                }
+            }
+            // Keep empty unknown element lists concrete in generated Rust.
+            self.uses.py_repr = true;
+            let base = "Vec::<PyRepr>::new()".to_string();
+            return Ok(Some(self.wrap_list_storage_expr(&base, storage)));
+        }
+        let iter_src = self.gen_iter_source(&args[0])?;
+        let body = format!("({}).collect::<Vec<_>>()", iter_src.expr);
+        Ok(Some(
+            iter_src.wrap(self.wrap_list_storage_expr(&body, storage)),
+        ))
+    }
+
+    /// Try lowering known fresh-list expression forms with a requested storage strategy.
+    pub(crate) fn gen_fresh_list_expr_with_storage(
+        &mut self,
+        expr: &Expr,
+        storage: ListStorage,
+    ) -> Result<Option<String>, CompileError> {
+        match &expr.kind {
+            ExprKind::List(items) => {
+                Ok(Some(self.gen_list_expr_with_storage(expr, items, storage)?))
+            }
+            ExprKind::ListComp {
+                elt,
+                target,
+                iter,
+                ifs,
+                generators,
+            } => Ok(Some(self.gen_list_comp_expr_with_storage(
+                elt, target, iter, ifs, generators, storage,
+            )?)),
+            ExprKind::Binary {
+                op: BinOp::Add,
+                left,
+                right,
+            } if matches!(left.ty.as_ref(), Some(Type::List(_)))
+                && matches!(right.ty.as_ref(), Some(Type::List(_))) =>
+            {
+                Ok(Some(
+                    self.gen_list_concat_expr_with_storage(left, right, storage)?,
+                ))
+            }
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } if matches!(expr.ty.as_ref(), Some(Type::List(_))) => {
+                Ok(Some(self.gen_list_slice_expr_with_storage(
+                    value,
+                    start.as_deref(),
+                    end.as_deref(),
+                    step.as_deref(),
+                    storage,
+                )?))
+            }
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
+                if let ExprKind::Name(name) = &func.kind {
+                    return self
+                        .gen_list_ctor_from_call_with_storage(expr, name, args, keywords, storage);
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
         }
     }
 
