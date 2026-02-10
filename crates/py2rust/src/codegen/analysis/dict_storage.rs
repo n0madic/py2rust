@@ -17,6 +17,23 @@ impl<'a> Codegen<'a> {
         storage
     }
 
+    /// Collect dict storage strategies from statement references without cloning.
+    pub(in crate::codegen) fn collect_dict_storage_for_stmt_refs(
+        &self,
+        stmts: &[&Stmt],
+        shared_globals: &HashSet<String>,
+    ) -> HashMap<String, DictStorage> {
+        let mut storage = HashMap::new();
+        for stmt in stmts {
+            self.collect_dict_storage_in_stmts(
+                std::slice::from_ref(*stmt),
+                shared_globals,
+                &mut storage,
+            );
+        }
+        storage
+    }
+
     /// Walk statements and record whether dict locals can remain as local IndexMap.
     fn collect_dict_storage_in_stmts(
         &self,
@@ -34,8 +51,7 @@ impl<'a> Codegen<'a> {
                     // Alias assignment: let x = y
                     if let ExprKind::Name(src) = &value.kind {
                         if matches!(value.ty.as_ref(), Some(Type::Dict(_, _))) {
-                            self.mark_dict_shared(src, storage);
-                            self.mark_dict_shared(name, storage);
+                            self.promote_dict_alias(name, src, shared_globals, storage);
                         }
                     }
                 }
@@ -44,8 +60,7 @@ impl<'a> Codegen<'a> {
                         self.note_dict_storage_assignment(name, value, shared_globals, storage);
                         if let ExprKind::Name(src) = &value.kind {
                             if matches!(value.ty.as_ref(), Some(Type::Dict(_, _))) {
-                                self.mark_dict_shared(src, storage);
-                                self.mark_dict_shared(name, storage);
+                                self.promote_dict_alias(name, src, shared_globals, storage);
                             }
                         }
                     }
@@ -66,7 +81,7 @@ impl<'a> Codegen<'a> {
         storage: &mut HashMap<String, DictStorage>,
     ) {
         if shared_globals.contains(name) {
-            self.mark_dict_shared(name, storage);
+            self.mark_dict_shared_sync(name, storage);
             return;
         }
         if !matches!(value.ty.as_ref(), Some(Type::Dict(_, _))) {
@@ -75,7 +90,7 @@ impl<'a> Codegen<'a> {
         if self.is_fresh_dict_expr(value) {
             self.mark_dict_local_if_absent(name, storage);
         } else {
-            self.mark_dict_shared(name, storage);
+            self.mark_dict_shared_cell(name, storage);
         }
     }
 
@@ -108,17 +123,62 @@ impl<'a> Codegen<'a> {
     }
 
     /// Mark dict operands used in identity comparisons as shared.
-    fn mark_identity_dict_operand(&self, expr: &Expr, storage: &mut HashMap<String, DictStorage>) {
+    fn mark_identity_dict_operand(
+        &self,
+        expr: &Expr,
+        shared_globals: &HashSet<String>,
+        storage: &mut HashMap<String, DictStorage>,
+    ) {
         if matches!(expr.ty.as_ref(), Some(Type::Dict(_, _))) {
             if let ExprKind::Name(name) = &expr.kind {
-                self.mark_dict_shared(name, storage);
+                self.mark_dict_shared_by_scope(name, shared_globals, storage);
             }
         }
     }
 
-    /// Mark a dict variable as shared.
-    fn mark_dict_shared(&self, name: &str, storage: &mut HashMap<String, DictStorage>) {
-        storage.insert(name.to_string(), DictStorage::Shared);
+    /// Mark a dict variable as shared with single-threaded cell storage.
+    fn mark_dict_shared_cell(&self, name: &str, storage: &mut HashMap<String, DictStorage>) {
+        storage.insert(name.to_string(), DictStorage::SharedCell);
+    }
+
+    /// Mark a dict variable as shared with sync storage.
+    fn mark_dict_shared_sync(&self, name: &str, storage: &mut HashMap<String, DictStorage>) {
+        storage.insert(name.to_string(), DictStorage::SharedSync);
+    }
+
+    /// Mark a dict variable as shared based on whether it is global/sync-bound.
+    fn mark_dict_shared_by_scope(
+        &self,
+        name: &str,
+        shared_globals: &HashSet<String>,
+        storage: &mut HashMap<String, DictStorage>,
+    ) {
+        if shared_globals.contains(name) {
+            self.mark_dict_shared_sync(name, storage);
+        } else {
+            self.mark_dict_shared_cell(name, storage);
+        }
+    }
+
+    /// Promote alias-connected dict variables; sync storage wins over cell storage.
+    fn promote_dict_alias(
+        &self,
+        lhs: &str,
+        rhs: &str,
+        shared_globals: &HashSet<String>,
+        storage: &mut HashMap<String, DictStorage>,
+    ) {
+        let lhs_sync = shared_globals.contains(lhs)
+            || matches!(storage.get(lhs), Some(DictStorage::SharedSync));
+        let rhs_sync = shared_globals.contains(rhs)
+            || matches!(storage.get(rhs), Some(DictStorage::SharedSync));
+        if lhs_sync || rhs_sync {
+            self.mark_dict_shared_sync(lhs, storage);
+            self.mark_dict_shared_sync(rhs, storage);
+        } else {
+            self.mark_dict_shared_cell(lhs, storage);
+            self.mark_dict_shared_cell(rhs, storage);
+        }
     }
 
     /// Mark a dict variable as local if it hasn't already been forced shared.
@@ -177,7 +237,8 @@ impl<'codegen, 'ctx, 'src> StorageExprCallbacks<DictUseContext>
             && matches!(expr.ty.as_ref(), Some(Type::Dict(_, _)))
         {
             if let ExprKind::Name(name) = &expr.kind {
-                self.codegen.mark_dict_shared(name, self.storage);
+                self.codegen
+                    .mark_dict_shared_by_scope(name, self.shared_globals, self.storage);
             }
         }
         match &expr.kind {
@@ -186,8 +247,10 @@ impl<'codegen, 'ctx, 'src> StorageExprCallbacks<DictUseContext>
                 left,
                 right,
             } => {
-                self.codegen.mark_identity_dict_operand(left, self.storage);
-                self.codegen.mark_identity_dict_operand(right, self.storage);
+                self.codegen
+                    .mark_identity_dict_operand(left, self.shared_globals, self.storage);
+                self.codegen
+                    .mark_identity_dict_operand(right, self.shared_globals, self.storage);
             }
             ExprKind::CompareChain {
                 left,
@@ -198,8 +261,16 @@ impl<'codegen, 'ctx, 'src> StorageExprCallbacks<DictUseContext>
                 let mut prev = left.as_ref();
                 for (op, cmp) in ops.iter().zip(comparators.iter()) {
                     if matches!(op, CmpOp::Is | CmpOp::IsNot) {
-                        self.codegen.mark_identity_dict_operand(prev, self.storage);
-                        self.codegen.mark_identity_dict_operand(cmp, self.storage);
+                        self.codegen.mark_identity_dict_operand(
+                            prev,
+                            self.shared_globals,
+                            self.storage,
+                        );
+                        self.codegen.mark_identity_dict_operand(
+                            cmp,
+                            self.shared_globals,
+                            self.storage,
+                        );
                     }
                     prev = cmp;
                 }

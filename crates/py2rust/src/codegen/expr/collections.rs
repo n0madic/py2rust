@@ -16,7 +16,7 @@ impl<'a> Codegen<'a> {
         expr: &Expr,
         items: &[Expr],
     ) -> Result<String, CompileError> {
-        self.gen_list_expr_with_storage(expr, items, ListStorage::Shared)
+        self.gen_list_expr_with_storage(expr, items, ListStorage::SharedCell)
     }
 
     /// Lower a list literal with an explicit storage strategy.
@@ -114,7 +114,7 @@ impl<'a> Codegen<'a> {
         expr: &Expr,
         items: &[DictEntry],
     ) -> Result<String, CompileError> {
-        self.gen_dict_expr_with_storage(expr, items, DictStorage::Shared)
+        self.gen_dict_expr_with_storage(expr, items, DictStorage::SharedCell)
     }
 
     /// Lower a dict literal expression with an explicit storage strategy.
@@ -204,7 +204,7 @@ impl<'a> Codegen<'a> {
                         let src_tmp = self.new_tmp();
                         let src_guard = self.new_tmp();
                         ops.push(format!(
-                            "{{ let {src_tmp} = {src_expr}; let {src_guard} = {src_tmp}.lock().expect(\"dict mutex poisoned\"); {dict_tmp}.extend({src_guard}.iter().map(|(k, v)| ({key_map_expr}, {val_map_expr}))); }}",
+                            "{{ let {src_tmp} = {src_expr}; let {src_guard} = {src_tmp}.py_dict_guard(); {dict_tmp}.extend({src_guard}.iter().map(|(k, v)| ({key_map_expr}, {val_map_expr}))); }}",
                             src_tmp = src_tmp,
                             src_expr = src_expr,
                             src_guard = src_guard,
@@ -325,14 +325,14 @@ impl<'a> Codegen<'a> {
                 let guard = self.new_tmp();
                 if is_local_name {
                     return Ok(self.wrap_result(format!(
-                        "{{ let dict_ref = {base}.as_ref().expect(\"optional value is None\"); let {guard} = dict_ref.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                        "{{ let dict_ref = {base}.as_ref().expect(\"optional value is None\"); let {guard} = dict_ref.py_dict_guard(); py_dict_get(&{guard}, &{idx}) }}",
                         base = base,
                         guard = guard,
                         idx = idx
                     )));
                 }
                 return Ok(self.wrap_result(format!(
-                    "{{ let {tmp} = {base}; let dict_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {guard} = dict_ref.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                    "{{ let {tmp} = {base}; let dict_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {guard} = dict_ref.py_dict_guard(); py_dict_get(&{guard}, &{idx}) }}",
                     tmp = tmp,
                     base = base,
                     guard = guard,
@@ -362,14 +362,14 @@ impl<'a> Codegen<'a> {
                     let guard = self.new_tmp();
                     if is_local_name {
                         return Ok(self.wrap_result(format!(
-                            "{{ let list_ref = {base}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.lock().expect(\"list mutex poisoned\"); py_list_get(&{guard}, {idx}) }}",
+                            "{{ let list_ref = {base}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.py_list_guard(); py_list_get(&{guard}, {idx}) }}",
                             base = base,
                             guard = guard,
                             idx = idx_expr
                         )));
                     }
                     return Ok(self.wrap_result(format!(
-                        "{{ let {tmp} = {base}; let list_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.lock().expect(\"list mutex poisoned\"); py_list_get(&{guard}, {idx}) }}",
+                        "{{ let {tmp} = {base}; let list_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.py_list_guard(); py_list_get(&{guard}, {idx}) }}",
                         tmp = tmp,
                         base = base,
                         guard = guard,
@@ -447,14 +447,14 @@ impl<'a> Codegen<'a> {
             let dict_tmp = self.new_tmp();
             if is_local_name {
                 return Ok(self.wrap_result(format!(
-                    "{{ let {guard} = {base}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                    "{{ let {guard} = {base}.py_dict_guard(); py_dict_get(&{guard}, &{idx}) }}",
                     guard = guard,
                     base = base,
                     idx = idx
                 )));
             }
             return Ok(self.wrap_result(format!(
-                "{{ let {dict_tmp} = {base}; let {guard} = {dict_tmp}.lock().expect(\"dict mutex poisoned\"); py_dict_get(&{guard}, &{idx}) }}",
+                "{{ let {dict_tmp} = {base}; let {guard} = {dict_tmp}.py_dict_guard(); py_dict_get(&{guard}, &{idx}) }}",
                 dict_tmp = dict_tmp,
                 guard = guard,
                 base = base,
@@ -469,7 +469,7 @@ impl<'a> Codegen<'a> {
                 let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
                     format!("&{}", base)
                 } else {
-                    format!("&{}.lock().expect(\"list mutex poisoned\")", base)
+                    format!("&{}.py_list_guard()", base)
                 };
                 return Ok(self.wrap_result(format!("py_list_get({}, {})", list_ref, idx_expr)));
             }
@@ -512,7 +512,7 @@ impl<'a> Codegen<'a> {
             let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
                 format!("&{}", base)
             } else {
-                format!("&{}.lock().expect(\"list mutex poisoned\")", base)
+                format!("&{}.py_list_guard()", base)
             };
             self.wrap_result(format!(
                 "py_list_slice_step({}, {}, {}, {})",
@@ -522,7 +522,7 @@ impl<'a> Codegen<'a> {
             let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
                 format!("&{}", base)
             } else {
-                format!("&{}.lock().expect(\"list mutex poisoned\")", base)
+                format!("&{}.py_list_guard()", base)
             };
             self.wrap_result(format!(
                 "py_list_slice_step({}, {}, {}, 1i64)",
@@ -675,7 +675,7 @@ impl<'a> Codegen<'a> {
                 start,
                 end,
                 step,
-                ListStorage::Shared,
+                ListStorage::SharedCell,
             );
         }
         if matches!(value.ty.as_ref(), Some(Type::Bytes)) {
@@ -725,7 +725,7 @@ impl<'a> Codegen<'a> {
             iter,
             ifs,
             generators,
-            ListStorage::Shared,
+            ListStorage::SharedCell,
         )
     }
 

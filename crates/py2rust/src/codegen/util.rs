@@ -50,7 +50,7 @@ impl<'a> Codegen<'a> {
     /// Determine the storage strategy for a list variable by name.
     pub(crate) fn list_storage_for_name(&self, name: &str) -> ListStorage {
         if self.is_global(name) {
-            return ListStorage::Shared;
+            return ListStorage::SharedSync;
         }
         if self.current_function.is_some() {
             if let Some(map) = self.local_list_storage.as_ref() {
@@ -58,12 +58,12 @@ impl<'a> Codegen<'a> {
                     return *storage;
                 }
             }
-            return ListStorage::Shared;
+            return ListStorage::SharedCell;
         }
         if let Some(storage) = self.main_list_storage.get(name) {
             return *storage;
         }
-        ListStorage::Shared
+        ListStorage::SharedSync
     }
 
     /// Check if a list variable is stored locally as Vec<T>.
@@ -78,14 +78,15 @@ impl<'a> Codegen<'a> {
                 return self.list_storage_for_name(name);
             }
         }
-        ListStorage::Shared
+        ListStorage::SharedCell
     }
 
     /// Wrap a list expression with the configured storage strategy.
     pub(crate) fn wrap_list_storage_expr(&self, expr: &str, storage: ListStorage) -> String {
         match storage {
             ListStorage::Local => expr.to_string(),
-            ListStorage::Shared => format!("Arc::new(Mutex::new({}))", expr),
+            ListStorage::SharedCell => format!("Rc::new(RefCell::new({}))", expr),
+            ListStorage::SharedSync => format!("Arc::new(Mutex::new({}))", expr),
         }
     }
 
@@ -103,7 +104,7 @@ impl<'a> Codegen<'a> {
     /// Determine the storage strategy for a dict variable by name.
     pub(crate) fn dict_storage_for_name(&self, name: &str) -> DictStorage {
         if self.is_global(name) {
-            return DictStorage::Shared;
+            return DictStorage::SharedSync;
         }
         if self.current_function.is_some() {
             if let Some(map) = self.local_dict_storage.as_ref() {
@@ -111,37 +112,43 @@ impl<'a> Codegen<'a> {
                     return *storage;
                 }
             }
-            return DictStorage::Shared;
+            return DictStorage::SharedCell;
         }
         if let Some(storage) = self.main_dict_storage.get(name) {
             return *storage;
         }
-        DictStorage::Shared
+        DictStorage::SharedSync
     }
 
     /// Resolve storage strategy for a dict expression (defaults to Shared).
     pub(crate) fn dict_storage_for_expr(&self, expr: &Expr) -> DictStorage {
         if matches!(expr.ty.as_ref(), Some(Type::Dict(_, _))) {
             if let ExprKind::Name(name) = &expr.kind {
-                return if matches!(self.dict_storage_for_name(name), DictStorage::Local) {
-                    DictStorage::Local
-                } else {
-                    DictStorage::Shared
-                };
+                return self.dict_storage_for_name(name);
             }
         }
-        DictStorage::Shared
+        DictStorage::SharedCell
     }
 
     /// Wrap a dict expression with the configured storage strategy.
     pub(crate) fn wrap_dict_storage_expr(&self, expr: &str, storage: DictStorage) -> String {
         match storage {
             DictStorage::Local => expr.to_string(),
-            DictStorage::Shared => format!("Arc::new(Mutex::new({}))", expr),
+            DictStorage::SharedCell => format!("Rc::new(RefCell::new({}))", expr),
+            DictStorage::SharedSync => format!("Arc::new(Mutex::new({}))", expr),
         }
     }
 
-    // Dict storage for temporaries currently defaults to Shared; add tracking if needed.
+    /// Record dict storage for a generated temporary or local name.
+    pub(crate) fn set_dict_storage_for_temp(&mut self, name: &str, storage: DictStorage) {
+        if self.current_function.is_some() {
+            if let Some(map) = self.local_dict_storage.as_mut() {
+                map.insert(name.to_string(), storage);
+            }
+        } else {
+            self.main_dict_storage.insert(name.to_string(), storage);
+        }
+    }
 
     pub(crate) fn global_name(&self, name: &str) -> String {
         format!("__GLOBAL_{}", name.to_uppercase())
@@ -385,6 +392,16 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Return true when a global name stores a lowered default argument value.
+    pub(crate) fn is_default_global_name(&self, name: &str) -> bool {
+        name.starts_with("__default_")
+    }
+
+    /// Compute the thread-local cache name used for mutable default list/dict args.
+    pub(crate) fn default_cache_name(&self, name: &str) -> String {
+        format!("__DEFAULT_CACHE_{}", name.to_uppercase())
+    }
+
     /// Locate a method definition on a class by name.
     pub(crate) fn method_def(&self, class_name: &str, method_name: &str) -> Option<&Function> {
         // Method signatures in typecheck are inheritance-aware, so codegen lookup
@@ -457,7 +474,10 @@ impl<'a> Codegen<'a> {
 /// - next() calls: `next(iterator)` mutates the iterator
 /// - Index assignments: `list[i] = value` mutates the list
 /// - Method calls that mutate: Some methods (if any) mutate their receiver
-pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
+fn collect_assign_counts_impl<'stmt, I>(stmts: I) -> HashMap<String, usize>
+where
+    I: IntoIterator<Item = &'stmt Stmt>,
+{
     let mut counts = HashMap::new();
     fn visit_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
         match &expr.kind {
@@ -727,6 +747,17 @@ pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
         visit_stmt(stmt, &mut counts);
     }
     counts
+}
+
+pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
+    collect_assign_counts_impl(stmts.iter())
+}
+
+/// Count assignments for a top-level statement list held by reference.
+///
+/// This avoids cloning top-level `Stmt` values when only immutable traversal is needed.
+pub(crate) fn collect_assign_counts_for_stmt_refs(stmts: &[&Stmt]) -> HashMap<String, usize> {
+    collect_assign_counts_impl(stmts.iter().copied())
 }
 
 /// Check if a variable needs `mut` based on its assignment count.

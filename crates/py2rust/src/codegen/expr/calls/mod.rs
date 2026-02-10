@@ -40,7 +40,7 @@ impl<'a> Codegen<'a> {
             }
         }
         if let ExprKind::Attr { value, attr } = &func.kind {
-            return self.gen_attr_call(value, attr, args, keywords);
+            return self.gen_attr_call(expr, value, attr, args, keywords);
         }
         // Check if this is a user-defined function.
         if let ExprKind::Name(name) = &func.kind {
@@ -64,7 +64,8 @@ impl<'a> Codegen<'a> {
                     .iter()
                     .map(|t| self.to_borrowed_param_type(t))
                     .collect();
-                let full_args = if let Some(def) = self.function_defs.get(name) {
+                let def = self.function_defs.get(name).cloned();
+                let full_args = if let Some(def) = def.as_ref() {
                     self.resolve_call_args(
                         args,
                         keywords,
@@ -82,11 +83,20 @@ impl<'a> Codegen<'a> {
                     }
                     args.to_vec()
                 };
-                let call = format!(
-                    "{}({})",
-                    name,
-                    self.gen_call_args_for_sig(&param_types, &full_args)?
-                );
+                let call = if let Some(def) = def.as_ref() {
+                    self.gen_user_call_with_mutable_default_sync(
+                        name,
+                        &param_types,
+                        &full_args,
+                        def,
+                    )?
+                } else {
+                    format!(
+                        "{}({})",
+                        name,
+                        self.gen_call_args_for_sig(&param_types, &full_args)?
+                    )
+                };
                 // Add ? operator if function can throw.
                 if sig.can_throw {
                     return Ok(format!("({}?)", call));
@@ -236,7 +246,8 @@ impl<'a> Codegen<'a> {
                     if matches!(inner_ty, Type::Unknown) {
                         self.uses.py_repr = true;
                     }
-                    rendered_args[vararg_idx] = Some(format!("Arc::new(Mutex::new({}))", vec_expr));
+                    rendered_args[vararg_idx] =
+                        Some(self.wrap_list_storage_expr(&vec_expr, ListStorage::SharedCell));
                 } else if !plan.vararg_positional.is_empty() {
                     return Err(self.error(expr.span, "Argument count mismatch"));
                 }
@@ -268,7 +279,8 @@ impl<'a> Codegen<'a> {
                     } else {
                         format!("IndexMap::from([({})])", entries.join("), ("))
                     };
-                    rendered_args[varkw_idx] = Some(format!("Arc::new(Mutex::new({}))", dict_expr));
+                    rendered_args[varkw_idx] =
+                        Some(self.wrap_dict_storage_expr(&dict_expr, DictStorage::SharedCell));
                 } else if !plan.varkw_keywords.is_empty() {
                     return Err(self.error(expr.span, "Unknown keyword argument"));
                 }
@@ -360,5 +372,125 @@ impl<'a> Codegen<'a> {
             self.gen_expr(func)?,
             self.gen_args(args)?
         ))
+    }
+
+    /// Emit a user-function call while preserving mutable default list/dict semantics.
+    ///
+    /// For omitted mutable defaults, defaults live in global sync storage
+    /// (`Arc<Mutex<...>>`) but function parameters are list/dict locals
+    /// (`Rc<RefCell<...>>`). We bridge by cloning into a temporary local arg,
+    /// executing the call, then writing back the mutated contents.
+    fn gen_user_call_with_mutable_default_sync(
+        &mut self,
+        func_name: &str,
+        param_types: &[Type],
+        full_args: &[Expr],
+        def: &Function,
+    ) -> Result<String, CompileError> {
+        let mut pre_lines = Vec::new();
+        let mut post_lines = Vec::new();
+        let mut rendered_args = Vec::new();
+
+        for (idx, arg) in full_args.iter().enumerate() {
+            let param_ty = param_types.get(idx);
+            let default_global = def.params.get(idx).and_then(|param| {
+                param.default.as_ref()?;
+                let ExprKind::Name(name) = &arg.kind else {
+                    return None;
+                };
+                let expected = self.default_global_name(None, func_name, param.name.as_str());
+                if *name == expected {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            });
+
+            if let Some(default_name) = default_global {
+                match param_ty {
+                    Some(Type::List(_)) => {
+                        let arg_tmp = self.new_tmp();
+                        let cache_name = self.default_cache_name(&default_name);
+                        let src_tmp = self.new_tmp();
+                        let src_guard = self.new_tmp();
+                        let dst_guard = self.new_tmp();
+                        let global_lock = self.global_lock_expr(&default_name);
+                        pre_lines.push(format!(
+                            "let {arg_tmp} = {cache_name}.with(|slot| {{ let mut slot = slot.borrow_mut(); if slot.is_none() {{ let {src_tmp} = {global_lock}.clone(); let {src_guard} = {src_tmp}.py_list_guard(); *slot = Some(Rc::new(RefCell::new({src_guard}.clone()))); }} slot.as_ref().expect(\"default list cache initialized\").clone() }});",
+                            arg_tmp = arg_tmp,
+                            cache_name = cache_name,
+                            src_tmp = src_tmp,
+                            global_lock = global_lock,
+                            src_guard = src_guard
+                        ));
+                        post_lines.push(format!(
+                            "*{global_lock} = {{ let {dst_guard} = {arg_tmp}.py_list_guard(); Arc::new(Mutex::new({dst_guard}.clone())) }};",
+                            global_lock = global_lock,
+                            dst_guard = dst_guard,
+                            arg_tmp = arg_tmp
+                        ));
+                        rendered_args.push(format!("{arg_tmp}.clone()", arg_tmp = arg_tmp));
+                        continue;
+                    }
+                    Some(Type::Dict(_, _)) => {
+                        let arg_tmp = self.new_tmp();
+                        let cache_name = self.default_cache_name(&default_name);
+                        let src_tmp = self.new_tmp();
+                        let src_guard = self.new_tmp();
+                        let dst_guard = self.new_tmp();
+                        let global_lock = self.global_lock_expr(&default_name);
+                        pre_lines.push(format!(
+                            "let {arg_tmp} = {cache_name}.with(|slot| {{ let mut slot = slot.borrow_mut(); if slot.is_none() {{ let {src_tmp} = {global_lock}.clone(); let {src_guard} = {src_tmp}.py_dict_guard(); *slot = Some(Rc::new(RefCell::new({src_guard}.clone()))); }} slot.as_ref().expect(\"default dict cache initialized\").clone() }});",
+                            arg_tmp = arg_tmp,
+                            cache_name = cache_name,
+                            src_tmp = src_tmp,
+                            global_lock = global_lock,
+                            src_guard = src_guard
+                        ));
+                        post_lines.push(format!(
+                            "*{global_lock} = {{ let {dst_guard} = {arg_tmp}.py_dict_guard(); Arc::new(Mutex::new({dst_guard}.clone())) }};",
+                            global_lock = global_lock,
+                            dst_guard = dst_guard,
+                            arg_tmp = arg_tmp
+                        ));
+                        rendered_args.push(format!("{arg_tmp}.clone()", arg_tmp = arg_tmp));
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut rendered = if let Some(param_ty) = param_ty {
+                self.gen_expr_with_expected(arg, Some(param_ty))?
+            } else {
+                self.gen_expr(arg)?
+            };
+            if let Some(param_ty) = param_ty {
+                if self.call_arg_needs_owned_clone(arg, param_ty) {
+                    rendered = format!("{}.clone()", rendered);
+                } else if self.needs_borrow(arg.ty.as_ref(), param_ty) {
+                    rendered = format!("&{}", rendered);
+                }
+            }
+            rendered_args.push(rendered);
+        }
+
+        let base_call = format!("{func_name}({})", rendered_args.join(", "));
+        if pre_lines.is_empty() {
+            return Ok(base_call);
+        }
+        let result_tmp = self.new_tmp();
+        let mut wrapped = String::from("{ ");
+        for line in pre_lines {
+            wrapped.push_str(&line);
+            wrapped.push(' ');
+        }
+        wrapped.push_str(&format!("let {result_tmp} = {base_call}; "));
+        for line in post_lines {
+            wrapped.push_str(&line);
+            wrapped.push(' ');
+        }
+        wrapped.push_str(&format!("{result_tmp} }}"));
+        Ok(wrapped)
     }
 }

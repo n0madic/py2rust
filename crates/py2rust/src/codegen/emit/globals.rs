@@ -37,6 +37,14 @@ impl<'a> Codegen<'a> {
                 "static {}: OnceLock<Mutex<{}>> = OnceLock::new();",
                 gname, ty_str
             ));
+            if self.is_default_global_name(name) && matches!(ty, Type::List(_) | Type::Dict(_, _)) {
+                let cache_name = self.default_cache_name(name);
+                let local_ty = self.rust_type(ty);
+                self.push_line(&format!(
+                    "thread_local! {{ static {}: RefCell<Option<{}>> = RefCell::new(None); }}",
+                    cache_name, local_ty
+                ));
+            }
         }
         self.push_line("");
     }

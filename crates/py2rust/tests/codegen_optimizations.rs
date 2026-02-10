@@ -295,3 +295,86 @@ def f() -> int:
         "Non-throwing assert should not lower to panic! branch"
     );
 }
+
+#[test]
+fn local_aliasing_lists_and_dicts_use_rc_refcell_storage() {
+    // Escaping locals that never touch globals should stay on Rc<RefCell<...>>.
+    let source = r#"
+
+def f() -> int:
+    cell_list: list[int] = [1, 2]
+    alias_list: list[int] = cell_list
+    alias_list.append(3)
+    cell_dict: dict[str, int] = {"a": 1}
+    alias_dict: dict[str, int] = cell_dict
+    alias_dict["b"] = 2
+    return len(cell_list) + len(cell_dict)
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    assert!(
+        out.rust.contains("let cell_list: Rc<RefCell<Vec<i64>>>"),
+        "Expected local shared list storage to use Rc<RefCell<Vec<_>>>"
+    );
+    assert!(
+        out.rust
+            .contains("let mut alias_list: Rc<RefCell<Vec<i64>>>"),
+        "Expected local list aliases to remain Rc<RefCell<Vec<_>>>"
+    );
+    assert!(
+        out.rust
+            .contains("let cell_dict: Rc<RefCell<IndexMap<String, i64>>>"),
+        "Expected local shared dict storage to use Rc<RefCell<IndexMap<_, _>>>"
+    );
+    assert!(
+        out.rust
+            .contains("let mut alias_dict: Rc<RefCell<IndexMap<String, i64>>>"),
+        "Expected local dict aliases to remain Rc<RefCell<IndexMap<_, _>>>"
+    );
+}
+
+#[test]
+fn global_alias_chains_promote_local_bindings_to_arc_mutex_storage() {
+    // Any alias chain that touches globals must be sync-backed for static correctness.
+    let source = r#"
+g_list: list[int] = [1]
+g_dict: dict[str, int] = {"x": 1}
+
+def f() -> int:
+    alias_list: list[int] = g_list
+    alias_dict: dict[str, int] = g_dict
+    alias_list.append(2)
+    alias_dict["y"] = 2
+    return len(g_list) + len(g_dict)
+"#;
+    let out =
+        compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
+    assert!(
+        out.rust
+            .contains("static __GLOBAL_G_LIST: OnceLock<Mutex<Arc<Mutex<Vec<i64>>>>>"),
+        "Expected global list storage to stay Arc<Mutex<_>>"
+    );
+    assert!(
+        out.rust
+            .contains("static __GLOBAL_G_DICT: OnceLock<Mutex<Arc<Mutex<IndexMap<String, i64>>>>>"),
+        "Expected global dict storage to stay Arc<Mutex<_>>"
+    );
+    assert!(
+        out.rust
+            .contains("let mut alias_list: Arc<Mutex<Vec<i64>>>"),
+        "Expected local alias of global list to be promoted to Arc<Mutex<_>>"
+    );
+    assert!(
+        out.rust
+            .contains("let mut alias_dict: Arc<Mutex<IndexMap<String, i64>>>"),
+        "Expected local alias of global dict to be promoted to Arc<Mutex<_>>"
+    );
+    assert!(
+        !out.rust
+            .contains("let mut alias_list: Rc<RefCell<Vec<i64>>>")
+            && !out
+                .rust
+                .contains("let mut alias_dict: Rc<RefCell<IndexMap<String, i64>>>"),
+        "Global alias chains must not stay on Rc<RefCell<_>> storage"
+    );
+}

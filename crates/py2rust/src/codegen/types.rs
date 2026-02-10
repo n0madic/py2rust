@@ -8,8 +8,8 @@ use super::*;
 /// - int -> i64 (not i32, to handle large numbers)
 /// - float -> f64 (standard floating point)
 /// - str -> String (owned, not &str, to avoid lifetime complexity)
-/// - list -> Arc<Mutex<Vec<T>>>
-/// - dict -> Arc<Mutex<IndexMap<K, V>>>
+/// - list -> Rc<RefCell<Vec<T>>> (non-global shared path)
+/// - dict -> Rc<RefCell<IndexMap<K, V>>> (non-global shared path)
 /// - set -> HashSet<T>
 /// - None -> () (unit type)
 /// - Optional[T] -> Option<T>
@@ -52,10 +52,10 @@ impl<'a> Codegen<'a> {
             Type::List(inner) => {
                 if lambda_depth > 0 && matches!(inner.as_ref(), Type::Unknown) {
                     self.uses.py_repr = true;
-                    "Arc<Mutex<Vec<PyRepr>>>".to_string()
+                    "Rc<RefCell<Vec<PyRepr>>>".to_string()
                 } else {
                     format!(
-                        "Arc<Mutex<Vec<{}>>>",
+                        "Rc<RefCell<Vec<{}>>>",
                         self.rust_type_with_lambda_depth(inner, lambda_depth)
                     )
                 }
@@ -74,7 +74,7 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.rust_type_with_lambda_depth(v, lambda_depth)
                 };
-                format!("Arc<Mutex<IndexMap<{}, {}>>>", key_ty, val_ty)
+                format!("Rc<RefCell<IndexMap<{}, {}>>>", key_ty, val_ty)
             }
             Type::Tuple(items) => {
                 let parts: Vec<String> = items
@@ -180,6 +180,12 @@ impl<'a> Codegen<'a> {
             (Type::List(inner), ListStorage::Local) => {
                 format!("Vec<{}>", self.rust_type(inner))
             }
+            (Type::List(inner), ListStorage::SharedCell) => {
+                format!("Rc<RefCell<Vec<{}>>>", self.rust_type(inner))
+            }
+            (Type::List(inner), ListStorage::SharedSync) => {
+                format!("Arc<Mutex<Vec<{}>>>", self.rust_type(inner))
+            }
             _ => self.rust_type(ty),
         }
     }
@@ -190,6 +196,22 @@ impl<'a> Codegen<'a> {
             (Type::Dict(k, v), DictStorage::Local) => {
                 self.uses.index_map = true;
                 format!("IndexMap<{}, {}>", self.rust_type(k), self.rust_type(v))
+            }
+            (Type::Dict(k, v), DictStorage::SharedCell) => {
+                self.uses.index_map = true;
+                format!(
+                    "Rc<RefCell<IndexMap<{}, {}>>>",
+                    self.rust_type(k),
+                    self.rust_type(v)
+                )
+            }
+            (Type::Dict(k, v), DictStorage::SharedSync) => {
+                self.uses.index_map = true;
+                format!(
+                    "Arc<Mutex<IndexMap<{}, {}>>>",
+                    self.rust_type(k),
+                    self.rust_type(v)
+                )
             }
             _ => self.rust_type(ty),
         }

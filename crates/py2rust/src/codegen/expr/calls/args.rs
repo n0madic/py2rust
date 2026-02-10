@@ -354,11 +354,14 @@ impl<'a> Codegen<'a> {
                 }
                 ParamKind::VarArgs => {
                     has_vararg = true;
+                    let wrapped = self.wrap_list_storage_expr(
+                        &format!("{pos_vec}[{pos_idx}..].to_vec()"),
+                        ListStorage::SharedCell,
+                    );
                     lines.push(format!(
-                        "let {arg_var} = Arc::new(Mutex::new({pos_vec}[{pos_idx}..].to_vec()));",
+                        "let {arg_var} = {wrapped};",
                         arg_var = arg_var,
-                        pos_vec = pos_vec,
-                        pos_idx = pos_idx
+                        wrapped = wrapped
                     ));
                     lines.push(format!(
                         "{pos_idx} = {pos_vec}.len();",
@@ -368,10 +371,11 @@ impl<'a> Codegen<'a> {
                 }
                 ParamKind::VarKeywords => {
                     has_varkw = true;
+                    let wrapped = self.wrap_dict_storage_expr(&kw_map, DictStorage::SharedCell);
                     lines.push(format!(
-                        "let {arg_var} = Arc::new(Mutex::new({kw_map}));",
+                        "let {arg_var} = {wrapped};",
                         arg_var = arg_var,
-                        kw_map = kw_map
+                        wrapped = wrapped
                     ));
                 }
             }
@@ -597,11 +601,14 @@ impl<'a> Codegen<'a> {
                 }
                 ParamKind::VarArgs => {
                     has_vararg = true;
+                    let wrapped = self.wrap_list_storage_expr(
+                        &format!("{pos_vec}[{pos_idx}..].to_vec()"),
+                        ListStorage::SharedCell,
+                    );
                     lines.push(format!(
-                        "let {arg_var} = Arc::new(Mutex::new({pos_vec}[{pos_idx}..].to_vec()));",
+                        "let {arg_var} = {wrapped};",
                         arg_var = arg_var,
-                        pos_vec = pos_vec,
-                        pos_idx = pos_idx
+                        wrapped = wrapped
                     ));
                     lines.push(format!(
                         "{pos_idx} = {pos_vec}.len();",
@@ -611,10 +618,11 @@ impl<'a> Codegen<'a> {
                 }
                 ParamKind::VarKeywords => {
                     has_varkw = true;
+                    let wrapped = self.wrap_dict_storage_expr(&kw_map, DictStorage::SharedCell);
                     lines.push(format!(
-                        "let {arg_var} = Arc::new(Mutex::new({kw_map}));",
+                        "let {arg_var} = {wrapped};",
                         arg_var = arg_var,
-                        kw_map = kw_map
+                        wrapped = wrapped
                     ));
                 }
             }
@@ -680,10 +688,11 @@ impl<'a> Codegen<'a> {
         };
         let shared_dict_ty = value_ty.map(|ty| {
             self.uses.index_map = true;
-            format!("Arc<Mutex<IndexMap<String, {}>>>", self.rust_type(ty))
+            let dict_ty = Type::Dict(Box::new(Type::Str), Box::new(ty.clone()));
+            self.rust_type_for_dict_storage(&dict_ty, self.dict_storage_for_expr(kwargs))
         });
         Ok(format!(
-            "{{ let {dict_tmp}{dict_ty_suffix} = {dict_init}; let {dict_guard} = {dict_tmp}.lock().expect(\"dict mutex poisoned\"); {dict_guard}.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>() }}",
+            "{{ let {dict_tmp}{dict_ty_suffix} = {dict_init}; let {dict_guard} = {dict_tmp}.py_dict_guard(); {dict_guard}.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>() }}",
             dict_tmp = dict_tmp,
             dict_ty_suffix = shared_dict_ty
                 .as_ref()

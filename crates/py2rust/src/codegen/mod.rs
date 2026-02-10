@@ -132,7 +132,8 @@ pub(crate) struct Uses {
 /// Storage strategy for list values in generated Rust.
 ///
 /// Local lists are represented as `Vec<T>` for zero-cost mutation,
-/// while shared lists use `Arc<Mutex<Vec<T>>>` to preserve Python aliasing.
+/// while shared lists use either `Rc<RefCell<Vec<T>>>` for single-threaded
+/// local aliasing or `Arc<Mutex<Vec<T>>>` for global/sync paths.
 ///
 /// # Decision Strategy
 ///
@@ -142,30 +143,38 @@ pub(crate) struct Uses {
 /// - It's not returned from functions
 /// - It's not assigned to another variable that could alias it
 ///
-/// A list uses shared storage (`Arc<Mutex<Vec<T>>>`) when:
-/// - It's a global variable (accessed from multiple scopes)
-/// - It escapes via return, function argument, or aliased assignment
-/// - The escape analysis cannot prove it's safe to use local storage
+/// A list uses shared cell storage (`Rc<RefCell<Vec<T>>>`) when:
+/// - It escapes via return, function argument, or aliased assignment,
+/// - but does not participate in global/static access.
+///
+/// A list uses shared sync storage (`Arc<Mutex<Vec<T>>>`) when:
+/// - It's a global variable (accessed from multiple scopes), or
+/// - It aliases with a global-bound list.
 ///
 /// See `ListStorageAnalyzer` in `analysis.rs` for the escape analysis implementation.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) enum ListStorage {
     /// Non-escaping list stored as `Vec<T>`. Zero mutex overhead.
     Local,
-    /// Potentially shared list stored as `Arc<Mutex<Vec<T>>>`.
-    Shared,
+    /// Shared list stored as `Rc<RefCell<Vec<T>>>` for local aliasing.
+    SharedCell,
+    /// Shared list stored as `Arc<Mutex<Vec<T>>>` for global/sync aliasing.
+    SharedSync,
 }
 
 /// Storage strategy for dict values in generated Rust.
 ///
 /// Local dicts are represented as `IndexMap<K, V>` for insertion-ordered semantics,
-/// while shared dicts use `Arc<Mutex<IndexMap<K, V>>>` to preserve Python aliasing.
+/// while shared dicts use either `Rc<RefCell<IndexMap<K, V>>>` for single-threaded
+/// local aliasing or `Arc<Mutex<IndexMap<K, V>>>` for global/sync paths.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) enum DictStorage {
     /// Non-escaping dict stored as `IndexMap<K, V>`.
     Local,
-    /// Potentially shared dict stored as `Arc<Mutex<IndexMap<K, V>>>`.
-    Shared,
+    /// Shared dict stored as `Rc<RefCell<IndexMap<K, V>>>` for local aliasing.
+    SharedCell,
+    /// Shared dict stored as `Arc<Mutex<IndexMap<K, V>>>` for global/sync aliasing.
+    SharedSync,
 }
 
 /// Iterator consumption context for optimization decisions.
@@ -307,6 +316,20 @@ pub struct Codegen<'a> {
     pub(crate) main_dict_storage: HashMap<String, DictStorage>,
 }
 
+/// Cached program-level analysis and item partitions used during emission.
+struct ProgramFacts<'program> {
+    unions: Vec<&'program UnionDef>,
+    classes: Vec<&'program ClassDef>,
+    functions: Vec<&'program Function>,
+    top_level_stmts: Vec<&'program Stmt>,
+    shared_globals: HashSet<String>,
+    name_compare_only: bool,
+    main_list_elems: HashMap<String, Type>,
+    main_dict_kv: HashMap<String, (Type, Type)>,
+    main_list_storage: HashMap<String, ListStorage>,
+    main_dict_storage: HashMap<String, DictStorage>,
+}
+
 impl<'a> Codegen<'a> {
     pub fn new(ctx: &'a TypeContext, source: &'a str, filename: &'a str) -> Self {
         Self {
@@ -425,64 +448,34 @@ impl<'a> Codegen<'a> {
     /// - We don't know which imports/helpers are needed until we scan the code
     /// - String building is easier when we can append, then prepend headers
     pub fn emit_program(mut self, program: &Program) -> Result<String, CompileError> {
-        // Cache class and function definitions for codegen lookups.
-        for item in &program.items {
-            if let Item::Class(def) = item {
-                self.class_defs.insert(def.name.clone(), def.clone());
-            }
-            if let Item::Function(func) = item {
-                self.function_defs.insert(func.name.clone(), func.clone());
-            }
-        }
+        let facts = self.collect_program_facts(program);
+
         // Phase 1: Scan to determine which helpers are needed
         self.collect_uses(program)?;
-
-        // Determine which globals must be emitted for cross-function access.
-        self.shared_globals = self.collect_shared_globals(program);
-
-        // Phase 2: Analyze __name__ usage
-        self.name_compare_only = self.analyze_name_compare_only(program);
+        self.shared_globals = facts.shared_globals;
+        self.name_compare_only = facts.name_compare_only;
 
         // Phase 3: Generate code for all items
         // Generate unions first (they're enum definitions)
-        for item in &program.items {
-            if let Item::Union(def) = item {
-                self.emit_union(def)?;
-            }
+        for def in &facts.unions {
+            self.emit_union(def)?;
         }
 
         // Generate classes (struct definitions + impl blocks)
-        for item in &program.items {
-            if let Item::Class(class_def) = item {
-                self.emit_class(class_def)?;
-            }
+        for class_def in &facts.classes {
+            self.emit_class(class_def)?;
         }
 
         // Generate top-level functions
-        for item in &program.items {
-            if let Item::Function(func) = item {
-                self.emit_function(func, None)?;
-            }
+        for func in &facts.functions {
+            self.emit_function(func, None)?;
         }
 
-        // Collect top-level statements and generate main()
-        let mut top_level = Vec::new();
-        for item in &program.items {
-            if let Item::Stmt(stmt) = item {
-                top_level.push(stmt.as_ref().clone());
-            }
-        }
-        // Capture list element type hints for top-level statements before codegen.
-        self.main_list_elems = self.collect_list_elem_types_for_stmts(&top_level);
-        // Capture dict key/value hints for top-level empty-literal inference.
-        self.main_dict_kv = self.collect_dict_kv_types_for_stmts(&top_level);
-        // Compute list storage strategy for top-level locals.
-        self.main_list_storage =
-            self.collect_list_storage_for_stmts(&top_level, &self.shared_globals);
-        // Compute dict storage strategy for top-level locals.
-        self.main_dict_storage =
-            self.collect_dict_storage_for_stmts(&top_level, &self.shared_globals);
-        self.emit_main(program, &top_level)?;
+        self.main_list_elems = facts.main_list_elems;
+        self.main_dict_kv = facts.main_dict_kv;
+        self.main_list_storage = facts.main_list_storage;
+        self.main_dict_storage = facts.main_dict_storage;
+        self.emit_main(program, &facts.top_level_stmts)?;
 
         // Phase 4: Inject header and helpers before the generated code
         let generated_code = mem::take(&mut self.out);
@@ -492,5 +485,56 @@ impl<'a> Codegen<'a> {
         self.out.push_str(&generated_code);
 
         Ok(self.out)
+    }
+
+    /// Collect one-shot program facts and partitions used by code emission.
+    fn collect_program_facts<'program>(
+        &mut self,
+        program: &'program Program,
+    ) -> ProgramFacts<'program> {
+        self.class_defs.clear();
+        self.function_defs.clear();
+
+        let mut unions = Vec::new();
+        let mut classes = Vec::new();
+        let mut functions = Vec::new();
+        let mut top_level_stmts = Vec::new();
+
+        for item in &program.items {
+            match item {
+                Item::Union(def) => unions.push(def),
+                Item::Class(def) => {
+                    self.class_defs.insert(def.name.clone(), def.clone());
+                    classes.push(def);
+                }
+                Item::Function(func) => {
+                    self.function_defs.insert(func.name.clone(), func.clone());
+                    functions.push(func);
+                }
+                Item::Stmt(stmt) => top_level_stmts.push(stmt.as_ref()),
+            }
+        }
+
+        let shared_globals = self.collect_shared_globals(program);
+        let name_compare_only = self.analyze_name_compare_only(program);
+        let main_list_elems = self.collect_list_elem_types_for_stmt_refs(&top_level_stmts);
+        let main_dict_kv = self.collect_dict_kv_types_for_stmt_refs(&top_level_stmts);
+        let main_list_storage =
+            self.collect_list_storage_for_stmt_refs(&top_level_stmts, &shared_globals);
+        let main_dict_storage =
+            self.collect_dict_storage_for_stmt_refs(&top_level_stmts, &shared_globals);
+
+        ProgramFacts {
+            unions,
+            classes,
+            functions,
+            top_level_stmts,
+            shared_globals,
+            name_compare_only,
+            main_list_elems,
+            main_dict_kv,
+            main_list_storage,
+            main_dict_storage,
+        }
     }
 }

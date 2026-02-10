@@ -6,6 +6,7 @@ impl<'a> Codegen<'a> {
     /// Lower dict method calls.
     pub(super) fn gen_dict_attr_call(
         &mut self,
+        call_expr: &Expr,
         value: &Expr,
         attr: &str,
         args: &[Expr],
@@ -46,7 +47,7 @@ impl<'a> Codegen<'a> {
                         let guard = self.new_tmp();
                         if let Some(default_expr) = default_expr {
                             return Ok(format!(
-                                "{{ let {outer} = {lock}; let {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
+                                "{{ let {outer} = {lock}; let {guard} = {outer}.py_dict_guard(); {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
                                 outer = outer,
                                 guard = guard,
                                 lock = self.global_lock_expr(name),
@@ -55,7 +56,7 @@ impl<'a> Codegen<'a> {
                             ));
                         }
                         return Ok(format!(
-                            "{{ let {outer} = {lock}; let {guard} = {outer}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned() }}",
+                            "{{ let {outer} = {lock}; let {guard} = {outer}.py_dict_guard(); {guard}.get(&{key}).cloned() }}",
                             outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name),
@@ -69,7 +70,7 @@ impl<'a> Codegen<'a> {
                     if !matches!(value.kind, ExprKind::Name(_)) {
                         let tmp = self.new_tmp();
                         return Ok(format!(
-                            "{{ let {tmp} = {target}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
+                            "{{ let {tmp} = {target}; let {guard} = {tmp}.py_dict_guard(); {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
                             tmp = tmp,
                             target = target_expr,
                             guard = guard,
@@ -78,7 +79,7 @@ impl<'a> Codegen<'a> {
                         ));
                     }
                     return Ok(format!(
-                        "{{ let {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
+                        "{{ let {guard} = {target}.py_dict_guard(); {guard}.get(&{key}).cloned().unwrap_or({default}) }}",
                         guard = guard,
                         target = target_expr,
                         key = key_expr,
@@ -89,7 +90,7 @@ impl<'a> Codegen<'a> {
                 if !matches!(value.kind, ExprKind::Name(_)) {
                     let tmp = self.new_tmp();
                     return Ok(format!(
-                        "{{ let {tmp} = {target}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned() }}",
+                        "{{ let {tmp} = {target}; let {guard} = {tmp}.py_dict_guard(); {guard}.get(&{key}).cloned() }}",
                         tmp = tmp,
                         target = target_expr,
                         guard = guard,
@@ -97,7 +98,7 @@ impl<'a> Codegen<'a> {
                     ));
                 }
                 return Ok(format!(
-                    "{{ let {guard} = {target}.lock().expect(\"dict mutex poisoned\"); {guard}.get(&{key}).cloned() }}",
+                    "{{ let {guard} = {target}.py_dict_guard(); {guard}.get(&{key}).cloned() }}",
                     guard = guard,
                     target = target_expr,
                     key = key_expr
@@ -186,16 +187,21 @@ impl<'a> Codegen<'a> {
                 if !args.is_empty() {
                     return Err(self.error(value.span, "dict.copy() expects no arguments"));
                 }
+                let storage = self.dict_storage_for_expr(call_expr);
                 if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
                     let target_expr = self.gen_expr(value)?;
                     // IndexMap::clone creates a new dict object.
-                    return Ok(format!("{}.clone()", target_expr));
+                    let cloned = format!("{target_expr}.clone()");
+                    return Ok(self.wrap_dict_storage_expr(&cloned, storage));
                 }
                 return self.with_locked_attr_target(
                     value,
                     "dict mutex poisoned",
                     false,
-                    |_tc, guard| format!("Arc::new(Mutex::new({guard}.clone()))", guard = guard),
+                    |tc, guard| {
+                        let cloned = format!("{guard}.clone()");
+                        tc.wrap_dict_storage_expr(&cloned, storage)
+                    },
                 );
             }
         }
@@ -225,7 +231,7 @@ impl<'a> Codegen<'a> {
                         arg_expr
                     };
                     format!(
-                        "{{ let {arg_tmp} = {arg_init}; let {arg_guard} = {arg_tmp}.lock().expect(\"dict mutex poisoned\"); {arg_guard}.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>() }}",
+                        "{{ let {arg_tmp} = {arg_init}; let {arg_guard} = {arg_tmp}.py_dict_guard(); {arg_guard}.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>() }}",
                         arg_tmp = arg_tmp,
                         arg_init = arg_init,
                         arg_guard = arg_guard
@@ -266,26 +272,29 @@ impl<'a> Codegen<'a> {
                 } else {
                     "keys().cloned()"
                 };
+                let storage = self.list_storage_for_expr(call_expr);
                 if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
                     let target_expr = self.gen_expr(value)?;
                     // CPython compatibility compromise:
                     // Emit a snapshot list instead of a live dict_keys view object.
-                    return Ok(format!(
-                        "Arc::new(Mutex::new({target}.{iter}.collect::<Vec<_>>()))",
+                    let snapshot = format!(
+                        "{target}.{iter}.collect::<Vec<_>>()",
                         target = target_expr,
                         iter = iter_call
-                    ));
+                    );
+                    return Ok(self.wrap_list_storage_expr(&snapshot, storage));
                 }
                 return self.with_locked_attr_target(
                     value,
                     "dict mutex poisoned",
                     false,
-                    |_tc, guard| {
-                        format!(
-                            "Arc::new(Mutex::new({guard}.{iter}.collect::<Vec<_>>()))",
+                    |tc, guard| {
+                        let snapshot = format!(
+                            "{guard}.{iter}.collect::<Vec<_>>()",
                             guard = guard,
                             iter = iter_call
-                        )
+                        );
+                        tc.wrap_list_storage_expr(&snapshot, storage)
                     },
                 );
             }
@@ -301,26 +310,29 @@ impl<'a> Codegen<'a> {
                 } else {
                     "values().cloned()"
                 };
+                let storage = self.list_storage_for_expr(call_expr);
                 if matches!(self.dict_storage_for_expr(value), DictStorage::Local) {
                     let target_expr = self.gen_expr(value)?;
                     // CPython compatibility compromise:
                     // Emit a snapshot list instead of a live dict_values view object.
-                    return Ok(format!(
-                        "Arc::new(Mutex::new({target}.{iter}.collect::<Vec<_>>()))",
+                    let snapshot = format!(
+                        "{target}.{iter}.collect::<Vec<_>>()",
                         target = target_expr,
                         iter = iter_call
-                    ));
+                    );
+                    return Ok(self.wrap_list_storage_expr(&snapshot, storage));
                 }
                 return self.with_locked_attr_target(
                     value,
                     "dict mutex poisoned",
                     false,
-                    |_tc, guard| {
-                        format!(
-                            "Arc::new(Mutex::new({guard}.{iter}.collect::<Vec<_>>()))",
+                    |tc, guard| {
+                        let snapshot = format!(
+                            "{guard}.{iter}.collect::<Vec<_>>()",
                             guard = guard,
                             iter = iter_call
-                        )
+                        );
+                        tc.wrap_list_storage_expr(&snapshot, storage)
                     },
                 );
             }

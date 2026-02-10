@@ -13,6 +13,18 @@ impl<'a> Codegen<'a> {
         inferred
     }
 
+    /// Collect dict key/value hints from statement references without cloning.
+    pub(in crate::codegen) fn collect_dict_kv_types_for_stmt_refs(
+        &self,
+        stmts: &[&Stmt],
+    ) -> HashMap<String, (Type, Type)> {
+        let mut inferred = HashMap::new();
+        for stmt in stmts {
+            self.collect_dict_kv_types_in_stmts(std::slice::from_ref(*stmt), &mut inferred);
+        }
+        inferred
+    }
+
     fn merge_hint(existing: &Type, new: &Type) -> Type {
         match (existing, new) {
             (Type::Unknown, ty) => ty.clone(),

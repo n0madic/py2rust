@@ -16,6 +16,79 @@ fn py_int(value: impl std::borrow::Borrow<i64>) -> i64 {
 }
 "#;
 
+/// Static helper body for unified list/dict guard access across Arc/Mutex and Rc/RefCell.
+const HELPER_PY_CONTAINER_GUARDS: &str = r#"
+enum PyListGuard<'a, T> {
+    Sync(std::sync::MutexGuard<'a, Vec<T>>),
+    Cell(std::cell::RefMut<'a, Vec<T>>),
+}
+impl<'a, T> std::ops::Deref for PyListGuard<'a, T> {
+    type Target = Vec<T>;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Sync(guard) => guard,
+            Self::Cell(guard) => guard,
+        }
+    }
+}
+impl<'a, T> std::ops::DerefMut for PyListGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Sync(guard) => guard,
+            Self::Cell(guard) => guard,
+        }
+    }
+}
+trait PyListGuardExt<T> {
+    fn py_list_guard(&self) -> PyListGuard<'_, T>;
+}
+impl<T> PyListGuardExt<T> for Arc<Mutex<Vec<T>>> {
+    fn py_list_guard(&self) -> PyListGuard<'_, T> {
+        PyListGuard::Sync(self.lock().expect("list mutex poisoned"))
+    }
+}
+impl<T> PyListGuardExt<T> for Rc<RefCell<Vec<T>>> {
+    fn py_list_guard(&self) -> PyListGuard<'_, T> {
+        PyListGuard::Cell(self.borrow_mut())
+    }
+}
+
+enum PyDictGuard<'a, K, V> {
+    Sync(std::sync::MutexGuard<'a, indexmap::IndexMap<K, V>>),
+    Cell(std::cell::RefMut<'a, indexmap::IndexMap<K, V>>),
+}
+impl<'a, K, V> std::ops::Deref for PyDictGuard<'a, K, V> {
+    type Target = indexmap::IndexMap<K, V>;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Sync(guard) => guard,
+            Self::Cell(guard) => guard,
+        }
+    }
+}
+impl<'a, K, V> std::ops::DerefMut for PyDictGuard<'a, K, V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Sync(guard) => guard,
+            Self::Cell(guard) => guard,
+        }
+    }
+}
+trait PyDictGuardExt<K, V> {
+    fn py_dict_guard(&self) -> PyDictGuard<'_, K, V>;
+}
+impl<K, V> PyDictGuardExt<K, V> for Arc<Mutex<indexmap::IndexMap<K, V>>> {
+    fn py_dict_guard(&self) -> PyDictGuard<'_, K, V> {
+        PyDictGuard::Sync(self.lock().expect("dict mutex poisoned"))
+    }
+}
+impl<K, V> PyDictGuardExt<K, V> for Rc<RefCell<indexmap::IndexMap<K, V>>> {
+    fn py_dict_guard(&self) -> PyDictGuard<'_, K, V> {
+        PyDictGuard::Cell(self.borrow_mut())
+    }
+}
+"#;
+
 /// Static helper body for Python `type(...)` name extraction.
 const HELPER_PY_TYPE_NAME: &str = r#"
 fn py_type_name<T: ?Sized>(value: &T) -> String {
@@ -85,14 +158,14 @@ fn py_os_mkdir(path: &str) -> Result<(), PyError> {
 
 /// Static helper body for `os.listdir(path)`.
 const HELPER_PY_OS_LISTDIR: &str = r#"
-fn py_os_listdir(path: &str) -> Result<Arc<Mutex<Vec<String>>>, PyError> {
+fn py_os_listdir(path: &str) -> Result<Rc<RefCell<Vec<String>>>, PyError> {
     let mut entries = Vec::new();
     let dir = std::fs::read_dir(path).map_err(|e| PyError::IOError(e.to_string().into()))?;
     for entry in dir {
         let entry = entry.map_err(|e| PyError::IOError(e.to_string().into()))?;
         entries.push(entry.file_name().to_string_lossy().to_string());
     }
-    Ok(Arc::new(Mutex::new(entries)))
+    Ok(Rc::new(RefCell::new(entries)))
 }
 "#;
 
@@ -136,8 +209,8 @@ fn py_os_getenv(key: &str, default: Option<String>) -> Option<String> {
 
 /// Static helper body for `os.environ`.
 const HELPER_PY_OS_ENVIRON: &str = r#"
-fn py_os_environ() -> Arc<Mutex<indexmap::IndexMap<String, String>>> {
-    Arc::new(Mutex::new(
+fn py_os_environ() -> Rc<RefCell<indexmap::IndexMap<String, String>>> {
+    Rc::new(RefCell::new(
         std::env::vars().collect::<indexmap::IndexMap<_, _>>(),
     ))
 }
@@ -236,8 +309,8 @@ fn py_os_path_abspath(path: &str) -> Result<String, PyError> {
 
 /// Static helper body for `sys.argv`.
 const HELPER_PY_SYS_ARGV: &str = r#"
-fn py_sys_argv() -> Arc<Mutex<Vec<String>>> {
-    Arc::new(Mutex::new(std::env::args().collect()))
+fn py_sys_argv() -> Rc<RefCell<Vec<String>>> {
+    Rc::new(RefCell::new(std::env::args().collect()))
 }
 "#;
 
@@ -253,7 +326,7 @@ const HELPER_PY_SUBPROCESS_COMPLETED_PROCESS: &str = r#"
 #[allow(non_camel_case_types)]
 #[derive(Clone)]
 struct __stdlib_subprocess_completed_process {
-    args: Arc<Mutex<Vec<String>>>,
+    args: Rc<RefCell<Vec<String>>>,
     returncode: i64,
     stdout: Option<String>,
     stderr: Option<String>,
@@ -312,7 +385,7 @@ fn py_subprocess_run(
             ));
         }
         return Ok(__stdlib_subprocess_completed_process {
-            args: Arc::new(Mutex::new(args)),
+            args: Rc::new(RefCell::new(args)),
             returncode: returncode as i64,
             stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
             stderr: Some(String::from_utf8_lossy(&output.stderr).to_string()),
@@ -329,7 +402,7 @@ fn py_subprocess_run(
         ));
     }
     Ok(__stdlib_subprocess_completed_process {
-        args: Arc::new(Mutex::new(args)),
+        args: Rc::new(RefCell::new(args)),
         returncode: returncode as i64,
         stdout: None,
         stderr: None,
@@ -423,8 +496,11 @@ fn py_urllib_quote(text: &str, safe: &str) -> String {
 
 /// Static helper body for `urllib.parse.urlencode(params)`.
 const HELPER_PY_URLLIB_URLENCODE: &str = r#"
-fn py_urllib_urlencode(params: &Arc<Mutex<indexmap::IndexMap<String, String>>>) -> String {
-    let guard = params.lock().expect("urllib urlencode dict mutex poisoned");
+fn py_urllib_urlencode<T>(params: &T) -> String
+where
+    T: PyDictGuardExt<String, String>,
+{
+    let guard = params.py_dict_guard();
     let mut pairs: Vec<String> = Vec::new();
     for (key, value) in guard.iter() {
         pairs.push(format!(
@@ -441,15 +517,15 @@ fn py_urllib_urlencode(params: &Arc<Mutex<indexmap::IndexMap<String, String>>>) 
 const HELPER_PY_URLLIB_PARSE_QS: &str = r#"
 fn py_urllib_parse_qs(
     query: &str,
-) -> Arc<Mutex<indexmap::IndexMap<String, Arc<Mutex<Vec<String>>>>>> {
-    let mut out: indexmap::IndexMap<String, Arc<Mutex<Vec<String>>>> = indexmap::IndexMap::new();
+) -> Rc<RefCell<indexmap::IndexMap<String, Rc<RefCell<Vec<String>>>>>> {
+    let mut out: indexmap::IndexMap<String, Rc<RefCell<Vec<String>>>> = indexmap::IndexMap::new();
     let raw = if let Some(rest) = query.strip_prefix('?') {
         rest
     } else {
         query
     };
     if raw.is_empty() {
-        return Arc::new(Mutex::new(out));
+        return Rc::new(RefCell::new(out));
     }
     for pair in raw.split('&') {
         if pair.is_empty() {
@@ -459,15 +535,12 @@ fn py_urllib_parse_qs(
         let key = py_urllib_unquote(split.next().unwrap_or_default());
         let value = py_urllib_unquote(split.next().unwrap_or_default());
         if let Some(values) = out.get(&key) {
-            values
-                .lock()
-                .expect("urllib parse_qs value list mutex poisoned")
-                .push(value);
+            values.borrow_mut().push(value);
             continue;
         }
-        out.insert(key, Arc::new(Mutex::new(vec![value])));
+        out.insert(key, Rc::new(RefCell::new(vec![value])));
     }
-    Arc::new(Mutex::new(out))
+    Rc::new(RefCell::new(out))
 }
 "#;
 
@@ -1885,17 +1958,28 @@ fn py_json_load(file: &mut std::fs::File) -> Result<__py_json_value, PyError> {
 const HELPER_PY_ITER: &str = r#"
 #[derive(Clone)]
 struct PyIter<T> {
-    inner: Arc<Mutex<Box<dyn Iterator<Item = T> + Send>>>,
+    inner: PyIterInner<T>,
+}
+#[derive(Clone)]
+enum PyIterInner<T> {
+    Local(Rc<RefCell<Box<dyn Iterator<Item = T>>>>),
+    Sync(Arc<Mutex<Box<dyn Iterator<Item = T> + Send>>>),
 }
 impl<T> PyIter<T> {
-    fn new<I: Iterator<Item = T> + Send + 'static>(iter: I) -> Self {
-        Self { inner: Arc::new(Mutex::new(Box::new(iter))) }
+    fn new<I: Iterator<Item = T> + 'static>(iter: I) -> Self {
+        Self { inner: PyIterInner::Local(Rc::new(RefCell::new(Box::new(iter)))) }
+    }
+    fn new_sync<I: Iterator<Item = T> + Send + 'static>(iter: I) -> Self {
+        Self { inner: PyIterInner::Sync(Arc::new(Mutex::new(Box::new(iter)))) }
     }
 }
 impl<T> Iterator for PyIter<T> {
     type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.lock().expect("PyIter mutex poisoned").next()
+        match &self.inner {
+            PyIterInner::Local(iter) => iter.borrow_mut().next(),
+            PyIterInner::Sync(iter) => iter.lock().expect("PyIter mutex poisoned").next(),
+        }
     }
 }
 trait PyIteratorSendClose<T>: Iterator<Item = T> {
@@ -1908,9 +1992,15 @@ trait PyIteratorSendClose<T>: Iterator<Item = T> {
 impl<I, T> PyIteratorSendClose<T> for I where I: Iterator<Item = T> {}
 fn py_iter<T, I>(iter: I) -> PyIter<T>
 where
-    I: Iterator<Item = T> + Send + 'static,
+    I: Iterator<Item = T> + 'static,
 {
     PyIter::new(iter)
+}
+fn py_iter_sync<T, I>(iter: I) -> PyIter<T>
+where
+    I: Iterator<Item = T> + Send + 'static,
+{
+    PyIter::new_sync(iter)
 }
 "#;
 
@@ -2474,7 +2564,7 @@ impl<T: PyListRepr> PyListRepr for Arc<Mutex<Vec<T>>> {
     fn py_repr(&self) -> String { py_list_str(self) }
 }
 impl<T: PyListRepr> PyListRepr for Rc<RefCell<Vec<T>>> {
-    fn py_repr(&self) -> String { py_list_str_rc(self) }
+    fn py_repr(&self) -> String { py_list_str(self) }
 }
 fn py_list_str_vec<T: PyListRepr>(list: &[T]) -> String {
     let mut out = "[".to_string();
@@ -2485,12 +2575,11 @@ fn py_list_str_vec<T: PyListRepr>(list: &[T]) -> String {
     out.push(']');
     out
 }
-fn py_list_str<T: PyListRepr>(list: &Arc<Mutex<Vec<T>>>) -> String {
-    let guard = list.lock().expect("list mutex poisoned");
-    py_list_str_vec(&guard)
-}
-fn py_list_str_rc<T: PyListRepr>(list: &Rc<RefCell<Vec<T>>>) -> String {
-    let guard = list.borrow();
+fn py_list_str<T: PyListRepr, L>(list: &L) -> String
+where
+    L: PyListGuardExt<T>,
+{
+    let guard = list.py_list_guard();
     py_list_str_vec(&guard)
 }
 "#;
@@ -2611,6 +2700,10 @@ impl<'a> Codegen<'a> {
         if self.needs_py_error() {
             self.emit_py_error_enum();
         }
+
+        // Unified guard adapters allow list/dict operations to target either
+        // Arc<Mutex<...>> (sync globals) or Rc<RefCell<...>> (local shared aliases).
+        self.push_block(HELPER_PY_CONTAINER_GUARDS);
 
         // PyIter wrapper makes iterators clonable (Python's for loops clone iterators).
         if self.uses.py_iter {

@@ -78,7 +78,8 @@ impl<'a> Codegen<'a> {
                 {
                     self.uses.index_map = true;
                     let dict_expr = self.gen_expr(arg)?;
-                    let is_local = matches!(self.dict_storage_for_expr(arg), DictStorage::Local);
+                    let dict_storage = self.dict_storage_for_expr(arg);
+                    let is_local = matches!(dict_storage, DictStorage::Local);
                     let needs_concrete_dict = match arg.ty.as_ref() {
                         Some(Type::Dict(key_ty, val_ty)) => {
                             matches!(key_ty.as_ref(), Type::Unknown)
@@ -97,18 +98,34 @@ impl<'a> Codegen<'a> {
                                 dict_expr = dict_expr
                             ));
                         }
+                        let shared_ty = match dict_storage {
+                            DictStorage::SharedSync => {
+                                "Arc<Mutex<IndexMap<PyRepr, PyRepr>>>".to_string()
+                            }
+                            DictStorage::SharedCell => {
+                                "Rc<RefCell<IndexMap<PyRepr, PyRepr>>>".to_string()
+                            }
+                            DictStorage::Local => unreachable!("handled above"),
+                        };
+                        let guard = self.new_tmp();
                         return Ok(format!(
-                            "{{ let {tmp}: Arc<Mutex<IndexMap<PyRepr, PyRepr>>> = {dict_expr}; format!(\"{{:?}}\", {tmp}.lock().expect(\"dict mutex poisoned\")) }}",
+                            "{{ let {tmp}: {shared_ty} = {dict_expr}; let {guard} = {tmp}.py_dict_guard(); format!(\"{{:?}}\", &*{guard}) }}",
                             tmp = tmp,
-                            dict_expr = dict_expr
+                            shared_ty = shared_ty,
+                            dict_expr = dict_expr,
+                            guard = guard
                         ));
                     }
                     if is_local {
                         return Ok(format!("format!(\"{{:?}}\", {})", dict_expr));
                     }
+                    let tmp = self.new_tmp();
+                    let guard = self.new_tmp();
                     return Ok(format!(
-                        "format!(\"{{:?}}\", {}.lock().expect(\"dict mutex poisoned\"))",
-                        dict_expr
+                        "{{ let {tmp} = {dict_expr}; let {guard} = {tmp}.py_dict_guard(); format!(\"{{:?}}\", &*{guard}) }}",
+                        tmp = tmp,
+                        dict_expr = dict_expr,
+                        guard = guard
                     ));
                 }
                 if self.print_needs_debug(arg) {
@@ -232,71 +249,22 @@ impl<'a> Codegen<'a> {
             }
         }
         if name == "list" {
-            if args.len() > 1 {
-                return Err(self.error(expr.span, "list() expects zero or one argument"));
+            let storage = self.list_storage_for_expr(expr);
+            if let Some(rendered) =
+                self.gen_list_ctor_from_call_with_storage(expr, "list", args, keywords, storage)?
+            {
+                return Ok(Some(rendered));
             }
-            if args.is_empty() {
-                if let Some(Type::List(inner)) = expr.ty.as_ref() {
-                    if !matches!(inner.as_ref(), Type::Unknown) {
-                        return Ok(Some(format!(
-                            "Arc::new(Mutex::new(Vec::<{}>::new()))",
-                            self.rust_type(inner)
-                        )));
-                    }
-                }
-                // Default to PyRepr so empty lists have a concrete element type.
-                self.uses.py_repr = true;
-                return Ok(Some(
-                    "Arc::new(Mutex::new(Vec::<PyRepr>::new()))".to_string(),
-                ));
-            }
-            if let Some(Type::Tuple(items)) = args[0].ty.as_ref() {
-                let tmp = self.new_tmp();
-                let base = self.gen_expr(&args[0])?;
-                let mut elems = Vec::new();
-                for idx in 0..items.len() {
-                    elems.push(format!("{}.{}", tmp, idx));
-                }
-                return Ok(Some(format!(
-                    "{{ let {} = {}; Arc::new(Mutex::new(vec![{}])) }}",
-                    tmp,
-                    base,
-                    elems.join(", ")
-                )));
-            }
-            let iter_src = self.gen_iter_source(&args[0])?;
-            // Scope iterator consumption to avoid holding list locks across expressions.
-            let body = format!(
-                "Arc::new(Mutex::new(({}).collect::<Vec<_>>()))",
-                iter_src.expr
-            );
-            return Ok(Some(iter_src.wrap(body)));
+            return Err(self.error(expr.span, "list() expects zero or one argument"));
         }
         if name == "tuple" {
-            if args.len() > 1 {
-                return Err(self.error(expr.span, "tuple() expects zero or one argument"));
+            let storage = self.list_storage_for_expr(expr);
+            if let Some(rendered) =
+                self.gen_list_ctor_from_call_with_storage(expr, "tuple", args, keywords, storage)?
+            {
+                return Ok(Some(rendered));
             }
-            if args.is_empty() {
-                if let Some(Type::List(inner)) = expr.ty.as_ref() {
-                    if !matches!(inner.as_ref(), Type::Unknown) {
-                        return Ok(Some(format!(
-                            "Arc::new(Mutex::new(Vec::<{}>::new()))",
-                            self.rust_type(inner)
-                        )));
-                    }
-                }
-                // Default to PyRepr so empty tuples have a concrete element type.
-                self.uses.py_repr = true;
-                return Ok(Some(
-                    "Arc::new(Mutex::new(Vec::<PyRepr>::new()))".to_string(),
-                ));
-            }
-            let iter_src = self.gen_iter_source(&args[0])?;
-            let body = format!(
-                "Arc::new(Mutex::new(({}).collect::<Vec<_>>()))",
-                iter_src.expr
-            );
-            return Ok(Some(iter_src.wrap(body)));
+            return Err(self.error(expr.span, "tuple() expects zero or one argument"));
         }
         if name == "set" {
             if args.len() > 1 {
@@ -333,8 +301,11 @@ impl<'a> Codegen<'a> {
                 return Err(self.error(expr.span, "dict() expects at most one argument"));
             }
             self.uses.index_map = true;
+            let storage = self.dict_storage_for_expr(expr);
             if args.is_empty() {
-                return Ok(Some("Arc::new(Mutex::new(IndexMap::new()))".to_string()));
+                return Ok(Some(
+                    self.wrap_dict_storage_expr("IndexMap::new()", storage),
+                ));
             }
             let arg_expr = self.gen_expr(&args[0])?;
             if matches!(args[0].ty.as_ref(), Some(Type::Dict(_, _))) {
@@ -346,18 +317,18 @@ impl<'a> Codegen<'a> {
                 } else {
                     arg_expr
                 };
+                let cloned = self.wrap_dict_storage_expr(&format!("{guard}.clone()"), storage);
                 return Ok(Some(format!(
-                    "{{ let {tmp} = {init}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); Arc::new(Mutex::new({guard}.clone())) }}",
+                    "{{ let {tmp} = {init}; let {guard} = {tmp}.py_dict_guard(); {cloned} }}",
                     tmp = tmp,
                     init = init,
-                    guard = guard
+                    guard = guard,
+                    cloned = cloned
                 )));
             }
             let iter_src = self.gen_iter_source(&args[0])?;
-            let body = format!(
-                "Arc::new(Mutex::new(({}).collect::<IndexMap<_, _>>()))",
-                iter_src.expr
-            );
+            let collected = format!("({}).collect::<IndexMap<_, _>>()", iter_src.expr);
+            let body = self.wrap_dict_storage_expr(&collected, storage);
             return Ok(Some(iter_src.wrap(body)));
         }
         if name == "bytes" {
@@ -688,14 +659,14 @@ impl<'a> Codegen<'a> {
                     // Lists need a bounded lock scope; collect in reverse, then iterate owned.
                     if self.is_copy_type(inner) {
                         format!(
-                            "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); {guard}.iter().rev().copied().collect::<Vec<_>>().into_iter() }}",
+                            "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.py_list_guard(); {guard}.iter().rev().copied().collect::<Vec<_>>().into_iter() }}",
                             tmp = tmp,
                             expr = arg_expr,
                             guard = guard
                         )
                     } else {
                         format!(
-                            "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); {guard}.iter().rev().cloned().collect::<Vec<_>>().into_iter() }}",
+                            "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.py_list_guard(); {guard}.iter().rev().cloned().collect::<Vec<_>>().into_iter() }}",
                             tmp = tmp,
                             expr = arg_expr,
                             guard = guard
@@ -753,22 +724,29 @@ impl<'a> Codegen<'a> {
                 "false".to_string()
             };
             let buf = self.new_tmp();
+            let storage = self.list_storage_for_expr(expr);
             if let Some(key_expr) = key_kw {
                 let key_fn = self.gen_expr(key_expr)?;
+                let sorted_items =
+                    format!("{buf}.into_iter().map(|(_, item)| item).collect::<Vec<_>>()");
+                let wrapped = self.wrap_list_storage_expr(&sorted_items, storage);
                 let body = format!(
-                    "{{ let mut {buf} = ({iter}).map(|item| (({key})(item.clone()), item)).collect::<Vec<_>>(); {buf}.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)); if {reverse} {{ {buf}.reverse(); }} Arc::new(Mutex::new({buf}.into_iter().map(|(_, item)| item).collect::<Vec<_>>())) }}",
+                    "{{ let mut {buf} = ({iter}).map(|item| (({key})(item.clone()), item)).collect::<Vec<_>>(); {buf}.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)); if {reverse} {{ {buf}.reverse(); }} {wrapped} }}",
                     buf = buf,
                     iter = iter_src.expr,
                     key = key_fn,
-                    reverse = reverse_expr
+                    reverse = reverse_expr,
+                    wrapped = wrapped
                 );
                 return Ok(Some(iter_src.wrap(body)));
             }
+            let wrapped = self.wrap_list_storage_expr(&buf, storage);
             let body = format!(
-                "{{ let mut {buf} = ({iter}).collect::<Vec<_>>(); {buf}.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); if {reverse} {{ {buf}.reverse(); }} Arc::new(Mutex::new({buf})) }}",
+                "{{ let mut {buf} = ({iter}).collect::<Vec<_>>(); {buf}.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); if {reverse} {{ {buf}.reverse(); }} {wrapped} }}",
                 buf = buf,
                 iter = iter_src.expr,
-                reverse = reverse_expr
+                reverse = reverse_expr,
+                wrapped = wrapped
             );
             return Ok(Some(iter_src.wrap(body)));
         }

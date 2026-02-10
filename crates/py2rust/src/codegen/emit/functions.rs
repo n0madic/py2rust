@@ -1,6 +1,8 @@
 // Function and main emission plus signature helpers.
 
-use super::super::util::{collect_assign_counts, mut_kw_for_param};
+use super::super::util::{
+    collect_assign_counts, collect_assign_counts_for_stmt_refs, mut_kw_for_param,
+};
 use super::super::*;
 use std::collections::{HashMap, HashSet};
 
@@ -145,10 +147,10 @@ impl<'a> Codegen<'a> {
         self.inferred_dict_kv = Some(self.collect_dict_kv_types_for_stmts(&func.body));
         // Precompute list storage strategy for this function's locals.
         self.local_list_storage =
-            Some(self.collect_list_storage_for_stmts(&func.body, &HashSet::new()));
+            Some(self.collect_list_storage_for_stmts(&func.body, &self.shared_globals));
         // Precompute dict storage strategy for this function's locals.
         self.local_dict_storage =
-            Some(self.collect_dict_storage_for_stmts(&func.body, &HashSet::new()));
+            Some(self.collect_dict_storage_for_stmts(&func.body, &self.shared_globals));
         let mut_counts = collect_assign_counts(&func.body);
         for stmt in &func.body {
             self.emit_stmt(stmt, &mut_counts)?;
@@ -188,7 +190,7 @@ impl<'a> Codegen<'a> {
     pub(crate) fn emit_main(
         &mut self,
         program: &Program,
-        body: &[Stmt],
+        body: &[&Stmt],
     ) -> Result<(), CompileError> {
         // Track top-level locals so reassignments can reuse declared types.
         self.local_vars = Some(HashMap::new());
@@ -196,7 +198,7 @@ impl<'a> Codegen<'a> {
         self.nonlocal_decls = None;
         self.cell_locals = None;
         // Check if top-level contains exception handling.
-        let top_level_can_throw = self.analyze_top_level_throws(body);
+        let top_level_can_throw = self.analyze_top_level_throws_refs(body);
         self.top_level_can_throw = top_level_can_throw;
 
         if top_level_can_throw {
@@ -208,7 +210,7 @@ impl<'a> Codegen<'a> {
 
             // Initialize defaults and class attributes before running top-level code.
             self.emit_pre_main_inits(program)?;
-            let mut_counts = collect_assign_counts(body);
+            let mut_counts = collect_assign_counts_for_stmt_refs(body);
             for stmt in body {
                 self.emit_stmt(stmt, &mut_counts)?;
             }
@@ -233,7 +235,7 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             // Initialize defaults and class attributes before running top-level code.
             self.emit_pre_main_inits(program)?;
-            let mut_counts = collect_assign_counts(body);
+            let mut_counts = collect_assign_counts_for_stmt_refs(body);
             for stmt in body {
                 self.emit_stmt(stmt, &mut_counts)?;
             }

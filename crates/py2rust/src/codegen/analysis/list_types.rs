@@ -13,6 +13,18 @@ impl<'a> Codegen<'a> {
         inferred
     }
 
+    /// Collect list element hints from statement references without cloning.
+    pub(in crate::codegen) fn collect_list_elem_types_for_stmt_refs(
+        &self,
+        stmts: &[&Stmt],
+    ) -> HashMap<String, Type> {
+        let mut inferred = HashMap::new();
+        for stmt in stmts {
+            self.collect_list_elem_types_in_stmts(std::slice::from_ref(*stmt), &mut inferred);
+        }
+        inferred
+    }
+
     /// Walk statements and record list element types inferred from assignments and calls.
     fn collect_list_elem_types_in_stmts(
         &self,

@@ -16,6 +16,7 @@ impl<'a> Codegen<'a> {
     /// Lower attribute-based method calls with special cases for collections and format().
     pub(super) fn gen_attr_call(
         &mut self,
+        call_expr: &Expr,
         value: &Expr,
         attr: &str,
         args: &[Expr],
@@ -67,13 +68,13 @@ impl<'a> Codegen<'a> {
                     | "islower"
             )
         {
-            return self.gen_str_attr_call(value, attr, args, keywords);
+            return self.gen_str_attr_call(call_expr, value, attr, args, keywords);
         }
 
         if matches!(value.ty.as_ref(), Some(Type::Custom(name)) if name == "__py_file")
             && matches!(attr, "read" | "readline" | "readlines" | "write" | "close")
         {
-            return self.gen_file_attr_call(value, attr, args, keywords);
+            return self.gen_file_attr_call(call_expr, value, attr, args, keywords);
         }
 
         if matches!(value.ty.as_ref(), Some(Type::Custom(name)) if name == "__py_re_match")
@@ -101,7 +102,7 @@ impl<'a> Codegen<'a> {
                 if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
                     return Err(self.error(value.span, shape_err.message()));
                 }
-                return self.gen_list_attr_call(value, attr, args, keywords);
+                return self.gen_list_attr_call(call_expr, value, attr, args, keywords);
             }
         }
 
@@ -112,7 +113,7 @@ impl<'a> Codegen<'a> {
                 if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
                     return Err(self.error(value.span, shape_err.message()));
                 }
-                return self.gen_dict_attr_call(value, attr, args, keywords);
+                return self.gen_dict_attr_call(call_expr, value, attr, args, keywords);
             }
         }
 
@@ -256,30 +257,36 @@ impl<'a> Codegen<'a> {
         render: impl FnOnce(&mut Self, &str) -> String,
     ) -> Result<String, CompileError> {
         let mut_kw = if mutable_guard { "mut " } else { "" };
+        let guard_access = match value.ty.as_ref() {
+            Some(Type::List(_)) => GuardAccess::List,
+            Some(Type::Dict(_, _)) => GuardAccess::Dict,
+            _ => GuardAccess::Sync(poison_message.to_string()),
+        };
         match self.resolve_attr_value_target(value)? {
             AttrValueTarget::GlobalName(name) => {
                 let outer = self.new_tmp();
                 let guard = self.new_tmp();
                 let body = render(self, &guard);
+                let guard_expr = self.render_guard_expr(&outer, &guard_access);
                 Ok(format!(
-                    "{{ let {outer} = {lock}; let {mut_kw}{guard} = {outer}.lock().expect(\"{poison}\"); {body} }}",
+                    "{{ let {outer} = {lock}; let {mut_kw}{guard} = {guard_expr}; {body} }}",
                     outer = outer,
                     lock = self.global_lock_expr(&name),
                     mut_kw = mut_kw,
                     guard = guard,
-                    poison = poison_message,
+                    guard_expr = guard_expr,
                     body = body
                 ))
             }
             AttrValueTarget::Name(name) => {
                 let guard = self.new_tmp();
                 let body = render(self, &guard);
+                let guard_expr = self.render_guard_expr(&name, &guard_access);
                 Ok(format!(
-                    "{{ let {mut_kw}{guard} = {target}.lock().expect(\"{poison}\"); {body} }}",
+                    "{{ let {mut_kw}{guard} = {guard_expr}; {body} }}",
                     mut_kw = mut_kw,
                     guard = guard,
-                    target = name,
-                    poison = poison_message,
+                    guard_expr = guard_expr,
                     body = body
                 ))
             }
@@ -287,15 +294,26 @@ impl<'a> Codegen<'a> {
                 let tmp = self.new_tmp();
                 let guard = self.new_tmp();
                 let body = render(self, &guard);
+                let guard_expr = self.render_guard_expr(&tmp, &guard_access);
                 Ok(format!(
-                    "{{ let {tmp} = {target}; let {mut_kw}{guard} = {tmp}.lock().expect(\"{poison}\"); {body} }}",
+                    "{{ let {tmp} = {target}; let {mut_kw}{guard} = {guard_expr}; {body} }}",
                     tmp = tmp,
                     target = target,
                     mut_kw = mut_kw,
                     guard = guard,
-                    poison = poison_message,
+                    guard_expr = guard_expr,
                     body = body
                 ))
+            }
+        }
+    }
+
+    fn render_guard_expr(&self, target: &str, access: &GuardAccess) -> String {
+        match access {
+            GuardAccess::List => format!("{target}.py_list_guard()"),
+            GuardAccess::Dict => format!("{target}.py_dict_guard()"),
+            GuardAccess::Sync(poison) => {
+                format!("{target}.lock().expect(\"{poison}\")")
             }
         }
     }
@@ -309,4 +327,10 @@ pub(super) enum AttrValueTarget {
     Name(String),
     /// A non-name expression lowered once.
     Expr(String),
+}
+
+enum GuardAccess {
+    List,
+    Dict,
+    Sync(String),
 }

@@ -78,6 +78,46 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Coerce list/dict RHS into global sync storage when assigning globals.
+    pub(crate) fn coerce_container_to_global_storage(
+        &mut self,
+        expr: String,
+        value: &Expr,
+        expected: Option<&Type>,
+    ) -> String {
+        match expected {
+            Some(Type::List(_)) => match self.list_storage_for_expr(value) {
+                ListStorage::SharedSync => expr,
+                ListStorage::Local => self.wrap_list_storage_expr(&expr, ListStorage::SharedSync),
+                ListStorage::SharedCell => {
+                    let tmp = self.new_tmp();
+                    let guard = self.new_tmp();
+                    format!(
+                        "{{ let {tmp} = {expr}; let {guard} = {tmp}.py_list_guard(); Arc::new(Mutex::new({guard}.clone())) }}",
+                        tmp = tmp,
+                        expr = expr,
+                        guard = guard
+                    )
+                }
+            },
+            Some(Type::Dict(_, _)) => match self.dict_storage_for_expr(value) {
+                DictStorage::SharedSync => expr,
+                DictStorage::Local => self.wrap_dict_storage_expr(&expr, DictStorage::SharedSync),
+                DictStorage::SharedCell => {
+                    let tmp = self.new_tmp();
+                    let guard = self.new_tmp();
+                    format!(
+                        "{{ let {tmp} = {expr}; let {guard} = {tmp}.py_dict_guard(); Arc::new(Mutex::new({guard}.clone())) }}",
+                        tmp = tmp,
+                        expr = expr,
+                        guard = guard
+                    )
+                }
+            },
+            _ => expr,
+        }
+    }
+
     /// Emit a non-destructuring assignment target, optionally allowing new bindings.
     pub(crate) fn emit_simple_assign(
         &mut self,
@@ -168,6 +208,8 @@ impl<'a> Codegen<'a> {
                     if allow_let && !self.initialized_globals.contains(name) {
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                         let expr = self.maybe_clone_list_expr(expr, value, expected.as_ref());
+                        let expr =
+                            self.coerce_container_to_global_storage(expr, value, expected.as_ref());
                         let expr = self.wrap_global_value(expr, value, expected.as_ref());
                         let tmp = self.new_tmp();
                         let gname = self.global_name(name);
@@ -185,6 +227,8 @@ impl<'a> Codegen<'a> {
                     let expr = self.with_global_override(name, current.clone(), |this| {
                         let expr = this.gen_expr_with_expected(value, expected.as_ref())?;
                         let expr = this.maybe_clone_list_expr(expr, value, expected.as_ref());
+                        let expr =
+                            this.coerce_container_to_global_storage(expr, value, expected.as_ref());
                         Ok(this.wrap_global_value(expr, value, expected.as_ref()))
                     })?;
                     self.push_line("{");
@@ -206,6 +250,7 @@ impl<'a> Codegen<'a> {
                         let mut_kw = mut_kw_for_name(name, mut_counts);
                         self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                         self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
+                        self.set_list_storage_for_temp(name, self.list_storage_for_name(name));
                         return Ok(());
                     }
                     if let Some(expr) = self.gen_list_assignment_expr(name, value)? {
@@ -213,6 +258,7 @@ impl<'a> Codegen<'a> {
                         self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                         if let Some(ty) = value.ty.clone() {
                             self.set_local_var_type(name, ty);
+                            self.set_list_storage_for_temp(name, ListStorage::Local);
                         }
                         return Ok(());
                     }
@@ -221,6 +267,7 @@ impl<'a> Codegen<'a> {
                         self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                         if let Some(ty) = value.ty.clone() {
                             self.set_local_var_type(name, ty);
+                            self.set_dict_storage_for_temp(name, DictStorage::Local);
                         }
                         return Ok(());
                     }
@@ -230,6 +277,7 @@ impl<'a> Codegen<'a> {
                     self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                     if let Some(ty) = value.ty.clone() {
                         self.set_local_var_type(name, ty);
+                        self.sync_binding_container_storage_from_value(name, value);
                     }
                 } else {
                     let expected = self.local_var_type(name).cloned();
@@ -252,11 +300,9 @@ impl<'a> Codegen<'a> {
                                         // list binding, we emit `Vec::new()` without an
                                         // explicit element type and let subsequent list
                                         // mutations infer the new Rust element type.
-                                        let expr = if self.is_local_list_name(name) {
-                                            "Vec::new()".to_string()
-                                        } else {
-                                            "Arc::new(Mutex::new(Vec::new()))".to_string()
-                                        };
+                                        let storage = self.list_storage_for_name(name);
+                                        let expr =
+                                            self.wrap_list_storage_expr("Vec::new()", storage);
                                         let mut_kw = mut_kw_for_name(name, mut_counts);
                                         self.push_line(&format!(
                                             "let {}{} = {};",
@@ -265,6 +311,10 @@ impl<'a> Codegen<'a> {
                                         self.set_local_var_type(
                                             name,
                                             Type::List(Box::new(Type::Unknown)),
+                                        );
+                                        self.set_list_storage_for_temp(
+                                            name,
+                                            self.list_storage_for_name(name),
                                         );
                                         return Ok(());
                                     }
@@ -277,6 +327,10 @@ impl<'a> Codegen<'a> {
                                     let mut_kw = mut_kw_for_name(name, mut_counts);
                                     self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                                     self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
+                                    self.set_list_storage_for_temp(
+                                        name,
+                                        self.list_storage_for_name(name),
+                                    );
                                     return Ok(());
                                 }
                             }
@@ -285,6 +339,7 @@ impl<'a> Codegen<'a> {
                             let mut_kw = mut_kw_for_name(name, mut_counts);
                             self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                             self.set_local_var_type(name, new_ty.clone());
+                            self.sync_binding_container_storage_from_value(name, value);
                             return Ok(());
                         }
                     }
@@ -450,7 +505,7 @@ impl<'a> Codegen<'a> {
                             let idx_expr = self.gen_expr(index)?;
                             // Lock the inner dict before inserting.
                             self.push_line(&format!(
-                                "let mut {} = {}.lock().expect(\"dict mutex poisoned\");",
+                                "let mut {} = {}.py_dict_guard();",
                                 dict_guard, guard
                             ));
                             self.push_line(&format!(
@@ -463,7 +518,7 @@ impl<'a> Codegen<'a> {
                             let len_tmp = self.new_tmp();
                             let idx_tmp = self.new_tmp();
                             self.push_line(&format!(
-                                "let mut {} = {}.lock().expect(\"list mutex poisoned\");",
+                                "let mut {} = {}.py_list_guard();",
                                 inner, guard
                             ));
                             self.push_line(&format!("let {} = {}.len();", len_tmp, inner));
@@ -502,7 +557,7 @@ impl<'a> Codegen<'a> {
                         self.push_line("{");
                         self.indent += 1;
                         self.push_line(&format!(
-                            "let mut {} = {}.lock().expect(\"dict mutex poisoned\");",
+                            "let mut {} = {}.py_dict_guard();",
                             guard, cont_expr
                         ));
                         self.push_line(&format!("{}.insert({}, {});", guard, idx_expr, val_expr));
@@ -532,7 +587,7 @@ impl<'a> Codegen<'a> {
                     self.push_line("{");
                     self.indent += 1;
                     self.push_line(&format!(
-                        "let mut {} = {}.lock().expect(\"list mutex poisoned\");",
+                        "let mut {} = {}.py_list_guard();",
                         guard, cont_expr
                     ));
                     self.push_line(&format!("let {} = {}.len();", len_tmp, guard));
@@ -695,7 +750,7 @@ impl<'a> Codegen<'a> {
                                 let idx_expr = self.gen_expr(index)?;
                                 let dict_guard = self.new_tmp();
                                 self.push_line(&format!(
-                                    "let mut {} = {}.lock().expect(\"dict mutex poisoned\");",
+                                    "let mut {} = {}.py_dict_guard();",
                                     dict_guard, guard
                                 ));
                                 self.push_line(&format!(
@@ -710,7 +765,7 @@ impl<'a> Codegen<'a> {
                                 let len_tmp = self.new_tmp();
                                 let idx_tmp = self.new_tmp();
                                 self.push_line(&format!(
-                                    "let mut {} = {}.lock().expect(\"list mutex poisoned\");",
+                                    "let mut {} = {}.py_list_guard();",
                                     inner, guard
                                 ));
                                 self.push_line(&format!("let {} = {}.len();", len_tmp, inner));
@@ -744,7 +799,7 @@ impl<'a> Codegen<'a> {
                             self.push_line("{");
                             self.indent += 1;
                             self.push_line(&format!(
-                                "let mut {} = {}.lock().expect(\"dict mutex poisoned\");",
+                                "let mut {} = {}.py_dict_guard();",
                                 guard, cont_expr
                             ));
                             self.push_line(&format!("{}.shift_remove(&{});", guard, idx_expr));
@@ -776,7 +831,7 @@ impl<'a> Codegen<'a> {
                         self.push_line("{");
                         self.indent += 1;
                         self.push_line(&format!(
-                            "let mut {} = {}.lock().expect(\"list mutex poisoned\");",
+                            "let mut {} = {}.py_list_guard();",
                             guard, cont_expr
                         ));
                         self.push_line(&format!("let {} = {}.len();", len_tmp, guard));
@@ -969,15 +1024,16 @@ impl<'a> Codegen<'a> {
                             let middle_items: Vec<String> = (middle_start..middle_end)
                                 .map(|idx| format!("{tuple_src}.{idx}.clone()"))
                                 .collect();
-                            let star_list_expr = if middle_items.is_empty() {
-                                format!(
-                                    "Arc::new(Mutex::new(Vec::<{}>::new()))",
-                                    self.rust_type(&middle_ty)
-                                )
+                            let star_storage = ListStorage::SharedCell;
+                            let star_base = if middle_items.is_empty() {
+                                format!("Vec::<{}>::new()", self.rust_type(&middle_ty))
                             } else {
-                                format!("Arc::new(Mutex::new(vec![{}]))", middle_items.join(", "))
+                                format!("vec![{}]", middle_items.join(", "))
                             };
+                            let star_list_expr =
+                                self.wrap_list_storage_expr(&star_base, star_storage);
                             let star_tmp = self.new_tmp();
+                            self.set_list_storage_for_temp(&star_tmp, star_storage);
                             self.push_line(&format!("let {} = {};", star_tmp, star_list_expr));
                             let star_source = Expr {
                                 kind: ExprKind::Name(star_tmp),
@@ -1028,7 +1084,7 @@ impl<'a> Codegen<'a> {
                                     ));
                                 } else {
                                     self.push_line(&format!(
-                                        "let {} = {}.lock().expect(\"list mutex poisoned\").len();",
+                                        "let {} = {}.py_list_guard().len();",
                                         len_tmp, src_expr
                                     ));
                                 }
@@ -1205,6 +1261,18 @@ impl<'a> Codegen<'a> {
         Type::Unknown
     }
 
+    /// Sync list/dict storage metadata for a newly bound local from its RHS.
+    fn sync_binding_container_storage_from_value(&mut self, name: &str, value: &Expr) {
+        if matches!(value.ty.as_ref(), Some(Type::List(_))) {
+            let storage = self.list_storage_for_expr(value);
+            self.set_list_storage_for_temp(name, storage);
+        }
+        if matches!(value.ty.as_ref(), Some(Type::Dict(_, _))) {
+            let storage = self.dict_storage_for_expr(value);
+            self.set_dict_storage_for_temp(name, storage);
+        }
+    }
+
     pub(super) fn gen_empty_list_with_hint(
         &mut self,
         name: &str,
@@ -1294,7 +1362,7 @@ impl<'a> Codegen<'a> {
                 rhs_expr
             };
             format!(
-                "{{ let {rhs_tmp} = {rhs_init}; let {rhs_guard} = {rhs_tmp}.lock().expect(\"list mutex poisoned\"); {rhs_guard}.iter().cloned().collect::<Vec<_>>() }}",
+                "{{ let {rhs_tmp} = {rhs_init}; let {rhs_guard} = {rhs_tmp}.py_list_guard(); {rhs_guard}.iter().cloned().collect::<Vec<_>>() }}",
                 rhs_tmp = rhs_tmp,
                 rhs_init = rhs_init,
                 rhs_guard = rhs_guard
@@ -1314,7 +1382,7 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         self.push_line(&format!("let {} = {};", rhs_tmp, rhs_items));
         self.push_line(&format!(
-            "let mut {} = {}.lock().expect(\"list mutex poisoned\");",
+            "let mut {} = {}.py_list_guard();",
             target_guard, name
         ));
         self.push_line(&format!("{}.extend({});", target_guard, rhs_tmp));
@@ -1390,7 +1458,7 @@ impl<'a> Codegen<'a> {
                                 let tmp = self.new_tmp();
                                 let guard = self.new_tmp();
                                 return Ok(Some(format!(
-                                    "{{ let {tmp} = {arg}; let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); {guard}.clone() }}",
+                                    "{{ let {tmp} = {arg}; let {guard} = {tmp}.py_dict_guard(); {guard}.clone() }}",
                                     tmp = tmp,
                                     arg = arg_expr,
                                     guard = guard

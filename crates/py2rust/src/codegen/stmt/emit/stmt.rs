@@ -339,11 +339,11 @@ impl<'a> Codegen<'a> {
                 Type::Float => format!("{}.as_ref().is_some_and(|v| *v != 0.0)", test_expr),
                 Type::Str => format!("{}.as_ref().is_some_and(|v| !v.is_empty())", test_expr),
                 Type::List(_) => format!(
-                    "{}.as_ref().is_some_and(|v| !v.lock().expect(\"list mutex poisoned\").is_empty())",
+                    "{}.as_ref().is_some_and(|v| !v.py_list_guard().is_empty())",
                     test_expr
                 ),
                 Type::Dict(_, _) => format!(
-                    "{}.as_ref().is_some_and(|v| !v.lock().expect(\"dict mutex poisoned\").is_empty())",
+                    "{}.as_ref().is_some_and(|v| !v.py_dict_guard().is_empty())",
                     test_expr
                 ),
                 Type::Set(_) => format!("{}.as_ref().is_some_and(|v| !v.is_empty())", test_expr),
@@ -364,20 +364,14 @@ impl<'a> Codegen<'a> {
                 if matches!(self.list_storage_for_expr(test), ListStorage::Local) {
                     format!("!{}.is_empty()", test_expr)
                 } else {
-                    format!(
-                        "!{}.lock().expect(\"list mutex poisoned\").is_empty()",
-                        test_expr
-                    )
+                    format!("!{}.py_list_guard().is_empty()", test_expr)
                 }
             }
             Some(Type::Dict(_, _)) => {
                 if matches!(self.dict_storage_for_expr(test), DictStorage::Local) {
                     format!("!{}.is_empty()", test_expr)
                 } else {
-                    format!(
-                        "!{}.lock().expect(\"dict mutex poisoned\").is_empty()",
-                        test_expr
-                    )
+                    format!("!{}.py_dict_guard().is_empty()", test_expr)
                 }
             }
             Some(Type::Set(_)) => format!("!{}.is_empty()", test_expr),
@@ -586,6 +580,8 @@ impl<'a> Codegen<'a> {
                 if self.current_function.is_none() && self.is_global(name) {
                     let expected = self.ctx.globals.get(name).cloned();
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
+                    let expr =
+                        self.coerce_container_to_global_storage(expr, value, expected.as_ref());
                     let expr = self.wrap_global_value(expr, value, expected.as_ref());
                     let gname = self.global_name(name);
                     let tmp = self.new_tmp();

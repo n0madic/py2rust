@@ -7,6 +7,7 @@ impl<'a> Codegen<'a> {
     /// Lower list method calls.
     pub(super) fn gen_list_attr_call(
         &mut self,
+        call_expr: &Expr,
         value: &Expr,
         attr: &str,
         args: &[Expr],
@@ -20,23 +21,14 @@ impl<'a> Codegen<'a> {
                 let item_expr = self.gen_expr_with_expected(&args[0], Some(inner.as_ref()))?;
                 let target = if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
-                        format!(
-                            "{}.lock().expect(\"list mutex poisoned\")",
-                            self.global_lock_expr(name)
-                        )
+                        format!("{}.py_list_guard()", self.global_lock_expr(name))
                     } else if self.is_local_list_name(name) {
                         return Ok(format!("{}.push({})", name, item_expr));
                     } else {
-                        format!(
-                            "{}.lock().expect(\"list mutex poisoned\")",
-                            self.gen_expr(value)?
-                        )
+                        format!("{}.py_list_guard()", self.gen_expr(value)?)
                     }
                 } else {
-                    format!(
-                        "{}.lock().expect(\"list mutex poisoned\")",
-                        self.gen_expr(value)?
-                    )
+                    format!("{}.py_list_guard()", self.gen_expr(value)?)
                 };
                 return Ok(format!("{}.push({})", target, item_expr));
             }
@@ -46,20 +38,14 @@ impl<'a> Codegen<'a> {
                 let mut target = None;
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
-                        target = Some(format!(
-                            "{}.lock().expect(\"list mutex poisoned\")",
-                            self.global_lock_expr(name)
-                        ));
+                        target = Some(format!("{}.py_list_guard()", self.global_lock_expr(name)));
                     } else if self.is_local_list_name(name) {
                         target = Some(name.clone());
                     }
                 }
                 let target = match target {
                     Some(expr) => expr,
-                    None => format!(
-                        "{}.lock().expect(\"list mutex poisoned\")",
-                        self.gen_expr(value)?
-                    ),
+                    None => format!("{}.py_list_guard()", self.gen_expr(value)?),
                 };
                 if args.is_empty() {
                     return Ok(format!("{{ {}.extend(std::iter::empty()); }}", target));
@@ -89,7 +75,7 @@ impl<'a> Codegen<'a> {
                         return Ok(format!("{}.extend({}.iter().cloned())", target, arg_expr));
                     }
                     return Ok(format!(
-                        "{}.extend({}.lock().expect(\"list mutex poisoned\").iter().cloned())",
+                        "{}.extend({}.py_list_guard().iter().cloned())",
                         target, arg_expr
                     ));
                 }
@@ -190,7 +176,7 @@ impl<'a> Codegen<'a> {
                         let len_tmp = self.new_tmp();
                         let idx_tmp = self.new_tmp();
                         return Ok(format!(
-                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.lock().expect(\"list mutex poisoned\"); let {len_tmp} = {guard}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {guard}.insert({idx_tmp}, {val}); }}",
+                            "{{ let {outer} = {lock}; let mut {guard} = {outer}.py_list_guard(); let {len_tmp} = {guard}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {guard}.insert({idx_tmp}, {val}); }}",
                             outer = outer,
                             guard = guard,
                             lock = self.global_lock_expr(name),
@@ -208,7 +194,7 @@ impl<'a> Codegen<'a> {
                     let len_tmp = self.new_tmp();
                     let idx_tmp = self.new_tmp();
                     return Ok(format!(
-                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); let {len_tmp} = {guard}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {guard}.insert({idx_tmp}, {val}); }}",
+                        "{{ let {tmp} = {target}; let mut {guard} = {tmp}.py_list_guard(); let {len_tmp} = {guard}.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); {guard}.insert({idx_tmp}, {val}); }}",
                         tmp = tmp,
                         guard = guard,
                         target = target_expr,
@@ -221,7 +207,7 @@ impl<'a> Codegen<'a> {
                 let len_tmp = self.new_tmp();
                 let idx_tmp = self.new_tmp();
                 return Ok(format!(
-                    "{{ let mut guard = {target}.lock().expect(\"list mutex poisoned\"); let {len_tmp} = guard.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); guard.insert({idx_tmp}, {val}); }}",
+                    "{{ let mut guard = {target}.py_list_guard(); let {len_tmp} = guard.len(); let {idx_tmp} = py_insert_index({idx_raw}, {len_tmp}); guard.insert({idx_tmp}, {val}); }}",
                     len_tmp = len_tmp,
                     idx_tmp = idx_tmp,
                     idx_raw = idx_raw,
@@ -253,30 +239,36 @@ impl<'a> Codegen<'a> {
                 if !args.is_empty() {
                     return Err(self.error(value.span, "list.copy() expects no arguments"));
                 }
+                let storage = self.list_storage_for_expr(call_expr);
                 if let ExprKind::Name(name) = &value.kind {
                     if self.is_global(name) {
-                        return Ok(format!(
-                            "Arc::new(Mutex::new({}.lock().expect(\"list mutex poisoned\").clone()))",
-                            self.global_lock_expr(name)
-                        ));
+                        let cloned =
+                            format!("{}.py_list_guard().clone()", self.global_lock_expr(name));
+                        return Ok(self.wrap_list_storage_expr(&cloned, storage));
                     }
                     if self.is_local_list_name(name) {
-                        return Ok(format!("Arc::new(Mutex::new({}.clone()))", name));
+                        let cloned = format!("{name}.clone()");
+                        return Ok(self.wrap_list_storage_expr(&cloned, storage));
                     }
                 }
                 return match self.resolve_attr_value_target(value)? {
-                    AttrValueTarget::GlobalName(name) => Ok(format!(
-                        "Arc::new(Mutex::new({}.lock().expect(\"list mutex poisoned\").clone()))",
-                        self.global_lock_expr(&name)
-                    )),
-                    AttrValueTarget::Name(name) => Ok(format!(
-                        "Arc::new(Mutex::new({}.lock().expect(\"list mutex poisoned\").clone()))",
-                        name
-                    )),
-                    AttrValueTarget::Expr(target) => Ok(format!(
-                        "Arc::new(Mutex::new({}.lock().expect(\"list mutex poisoned\").clone()))",
-                        target
-                    )),
+                    AttrValueTarget::GlobalName(name) => {
+                        let cloned =
+                            format!("{}.py_list_guard().clone()", self.global_lock_expr(&name));
+                        Ok(self.wrap_list_storage_expr(&cloned, storage))
+                    }
+                    AttrValueTarget::Name(name) => {
+                        let cloned = if self.is_local_list_name(&name) {
+                            format!("{name}.clone()")
+                        } else {
+                            format!("{name}.py_list_guard().clone()")
+                        };
+                        Ok(self.wrap_list_storage_expr(&cloned, storage))
+                    }
+                    AttrValueTarget::Expr(target) => {
+                        let cloned = format!("{target}.py_list_guard().clone()");
+                        Ok(self.wrap_list_storage_expr(&cloned, storage))
+                    }
                 };
             }
         }

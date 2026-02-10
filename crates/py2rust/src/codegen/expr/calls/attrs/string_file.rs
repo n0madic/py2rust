@@ -6,6 +6,7 @@ impl<'a> Codegen<'a> {
     /// Lower string method calls on `str` values.
     pub(super) fn gen_str_attr_call(
         &mut self,
+        call_expr: &Expr,
         value: &Expr,
         attr: &str,
         args: &[Expr],
@@ -125,7 +126,8 @@ impl<'a> Codegen<'a> {
                         self.gen_expr(&args[1])?
                     )
                 };
-                return Ok(format!("Arc::new(Mutex::new({}))", split_expr));
+                let storage = self.list_storage_for_expr(call_expr);
+                return Ok(self.wrap_list_storage_expr(&split_expr, storage));
             }
             if attr == "join" {
                 if !keywords.is_empty() {
@@ -283,6 +285,7 @@ impl<'a> Codegen<'a> {
     /// Lower file-like helper methods for `__py_file` values.
     pub(super) fn gen_file_attr_call(
         &mut self,
+        call_expr: &Expr,
         value: &Expr,
         attr: &str,
         args: &[Expr],
@@ -321,7 +324,8 @@ impl<'a> Codegen<'a> {
                     }
                     let lines_expr =
                         self.wrap_result(format!("py_file_readlines(&mut {})", file_expr));
-                    return Ok(format!("Arc::new(Mutex::new({}))", lines_expr));
+                    let storage = self.list_storage_for_expr(call_expr);
+                    return Ok(self.wrap_list_storage_expr(&lines_expr, storage));
                 }
                 if attr == "write" {
                     if args.len() != 1 {

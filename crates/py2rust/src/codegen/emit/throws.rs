@@ -3,8 +3,8 @@
 use super::super::*;
 
 impl<'a> Codegen<'a> {
-    /// Determine whether top-level statements can throw.
-    pub(super) fn analyze_top_level_throws(&self, stmts: &[Stmt]) -> bool {
+    /// Determine whether top-level statement references can throw.
+    pub(super) fn analyze_top_level_throws_refs(&self, stmts: &[&Stmt]) -> bool {
         for stmt in stmts {
             if self.stmt_can_throw(stmt) {
                 return true;

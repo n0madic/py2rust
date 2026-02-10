@@ -4,3 +4,4 @@ CLAUDE.md
 *.log
 *.tmp
 .claude/
+perf

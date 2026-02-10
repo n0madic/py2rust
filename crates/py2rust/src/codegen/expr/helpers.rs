@@ -437,10 +437,7 @@ impl<'a> Codegen<'a> {
                     // Clone the Arc to avoid moving out of the source expression.
                     setup: vec![
                         format!("let {} = {}.clone()", tmp, rendered),
-                        format!(
-                            "let {} = {}.lock().expect(\"list mutex poisoned\")",
-                            guard, tmp
-                        ),
+                        format!("let {} = {}.py_list_guard()", guard, tmp),
                     ],
                     expr: iter_expr,
                 })
@@ -468,10 +465,7 @@ impl<'a> Codegen<'a> {
                     // Clone the Arc to avoid moving out of the source expression.
                     setup: vec![
                         format!("let {} = {}.clone()", tmp, rendered),
-                        format!(
-                            "let {} = {}.lock().expect(\"dict mutex poisoned\")",
-                            guard, tmp
-                        ),
+                        format!("let {} = {}.py_dict_guard()", guard, tmp),
                     ],
                     expr: iter_expr,
                 })
@@ -656,10 +650,7 @@ impl<'a> Codegen<'a> {
                     } else {
                         ".iter().cloned()"
                     };
-                    return Ok(format!(
-                        "{}.lock().expect(\"list mutex poisoned\"){}",
-                        rendered, iter_method
-                    ));
+                    return Ok(format!("{}.py_list_guard(){}", rendered, iter_method));
                 }
 
                 // Deferred capture: lock per-iteration to enable storing/returning
@@ -673,7 +664,7 @@ impl<'a> Codegen<'a> {
                 };
                 // Lock the list per-iteration to avoid holding a guard across expression boundaries.
                 Ok(format!(
-                    "{{ let {tmp} = {expr}.clone(); let mut {idx}: usize = 0; std::iter::from_fn(move || {{ let {guard} = {tmp}.lock().expect(\"list mutex poisoned\"); if {idx} < {guard}.len() {{ let item = {item}; {idx} += 1; Some(item) }} else {{ None }} }}) }}",
+                    "{{ let {tmp} = {expr}.clone(); let mut {idx}: usize = 0; std::iter::from_fn(move || {{ let {guard} = {tmp}.py_list_guard(); if {idx} < {guard}.len() {{ let item = {item}; {idx} += 1; Some(item) }} else {{ None }} }}) }}",
                     tmp = tmp,
                     expr = rendered,
                     guard = guard,
@@ -703,17 +694,14 @@ impl<'a> Codegen<'a> {
                 }
                 // For immediate consumption, keep the lock for the iterator lifetime.
                 if context == IterContext::ImmediateConsumption {
-                    return Ok(format!(
-                        "{}.lock().expect(\"dict mutex poisoned\").{}",
-                        rendered, iter_method
-                    ));
+                    return Ok(format!("{}.py_dict_guard().{}", rendered, iter_method));
                 }
                 // Snapshot keys to avoid holding the lock across escaped iterators.
                 let tmp = self.new_tmp();
                 let guard = self.new_tmp();
                 let keys = self.new_tmp();
                 Ok(format!(
-                    "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.lock().expect(\"dict mutex poisoned\"); let {keys} = {guard}.{iter}.collect::<Vec<_>>(); {keys}.into_iter() }}",
+                    "{{ let {tmp} = {expr}.clone(); let {guard} = {tmp}.py_dict_guard(); let {keys} = {guard}.{iter}.collect::<Vec<_>>(); {keys}.into_iter() }}",
                     tmp = tmp,
                     expr = rendered,
                     guard = guard,
@@ -912,10 +900,7 @@ impl<'a> Codegen<'a> {
             if matches!(self.list_storage_for_expr(expr), ListStorage::Local) {
                 return Ok(format!("&{}", rendered));
             }
-            return Ok(format!(
-                "{}.lock().expect(\"list mutex poisoned\")",
-                rendered
-            ));
+            return Ok(format!("{}.py_list_guard()", rendered));
         }
         Ok(rendered)
     }

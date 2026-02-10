@@ -9,8 +9,8 @@ impl<'a> Codegen<'a> {
     /// Collect list storage strategies for a block of statements.
     ///
     /// This analysis is conservative: if a list can escape or be aliased, it
-    /// is marked Shared and emitted as Arc<Mutex<Vec<T>>>. Only non-escaping
-    /// lists initialized from fresh literals/comprehensions are marked Local.
+    /// is marked shared (cell or sync). Only non-escaping lists initialized
+    /// from fresh literals/comprehensions are marked Local.
     pub(in crate::codegen) fn collect_list_storage_for_stmts(
         &self,
         stmts: &[Stmt],
@@ -18,6 +18,23 @@ impl<'a> Codegen<'a> {
     ) -> HashMap<String, ListStorage> {
         let mut storage = HashMap::new();
         self.collect_list_storage_in_stmts(stmts, shared_globals, &mut storage);
+        storage
+    }
+
+    /// Collect list storage strategies from statement references without cloning.
+    pub(in crate::codegen) fn collect_list_storage_for_stmt_refs(
+        &self,
+        stmts: &[&Stmt],
+        shared_globals: &HashSet<String>,
+    ) -> HashMap<String, ListStorage> {
+        let mut storage = HashMap::new();
+        for stmt in stmts {
+            self.collect_list_storage_in_stmts(
+                std::slice::from_ref(*stmt),
+                shared_globals,
+                &mut storage,
+            );
+        }
         storage
     }
 
@@ -38,8 +55,7 @@ impl<'a> Codegen<'a> {
                     // Alias assignment: let x = y
                     if let ExprKind::Name(src) = &value.kind {
                         if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                            self.mark_list_shared(src, storage);
-                            self.mark_list_shared(name, storage);
+                            self.promote_list_alias(name, src, shared_globals, storage);
                         }
                     }
                 }
@@ -48,8 +64,7 @@ impl<'a> Codegen<'a> {
                         self.note_list_storage_assignment(name, value, shared_globals, storage);
                         if let ExprKind::Name(src) = &value.kind {
                             if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                                self.mark_list_shared(src, storage);
-                                self.mark_list_shared(name, storage);
+                                self.promote_list_alias(name, src, shared_globals, storage);
                             }
                         }
                     }
@@ -70,7 +85,7 @@ impl<'a> Codegen<'a> {
         storage: &mut HashMap<String, ListStorage>,
     ) {
         if shared_globals.contains(name) {
-            self.mark_list_shared(name, storage);
+            self.mark_list_shared_sync(name, storage);
             return;
         }
         if !matches!(value.ty.as_ref(), Some(Type::List(_))) {
@@ -79,7 +94,7 @@ impl<'a> Codegen<'a> {
         if self.is_fresh_list_expr(value) {
             self.mark_list_local_if_absent(name, storage);
         } else {
-            self.mark_list_shared(name, storage);
+            self.mark_list_shared_cell(name, storage);
         }
     }
 
@@ -130,17 +145,62 @@ impl<'a> Codegen<'a> {
     }
 
     /// Mark list operands used in identity comparisons as shared.
-    fn mark_identity_list_operand(&self, expr: &Expr, storage: &mut HashMap<String, ListStorage>) {
+    fn mark_identity_list_operand(
+        &self,
+        expr: &Expr,
+        shared_globals: &HashSet<String>,
+        storage: &mut HashMap<String, ListStorage>,
+    ) {
         if matches!(expr.ty.as_ref(), Some(Type::List(_))) {
             if let ExprKind::Name(name) = &expr.kind {
-                self.mark_list_shared(name, storage);
+                self.mark_list_shared_by_scope(name, shared_globals, storage);
             }
         }
     }
 
-    /// Mark a list variable as shared.
-    fn mark_list_shared(&self, name: &str, storage: &mut HashMap<String, ListStorage>) {
-        storage.insert(name.to_string(), ListStorage::Shared);
+    /// Mark a list variable as shared with single-threaded cell storage.
+    fn mark_list_shared_cell(&self, name: &str, storage: &mut HashMap<String, ListStorage>) {
+        storage.insert(name.to_string(), ListStorage::SharedCell);
+    }
+
+    /// Mark a list variable as shared with sync storage.
+    fn mark_list_shared_sync(&self, name: &str, storage: &mut HashMap<String, ListStorage>) {
+        storage.insert(name.to_string(), ListStorage::SharedSync);
+    }
+
+    /// Mark a list variable as shared based on whether it is global/sync-bound.
+    fn mark_list_shared_by_scope(
+        &self,
+        name: &str,
+        shared_globals: &HashSet<String>,
+        storage: &mut HashMap<String, ListStorage>,
+    ) {
+        if shared_globals.contains(name) {
+            self.mark_list_shared_sync(name, storage);
+        } else {
+            self.mark_list_shared_cell(name, storage);
+        }
+    }
+
+    /// Promote alias-connected list variables; sync storage wins over cell storage.
+    fn promote_list_alias(
+        &self,
+        lhs: &str,
+        rhs: &str,
+        shared_globals: &HashSet<String>,
+        storage: &mut HashMap<String, ListStorage>,
+    ) {
+        let lhs_sync = shared_globals.contains(lhs)
+            || matches!(storage.get(lhs), Some(ListStorage::SharedSync));
+        let rhs_sync = shared_globals.contains(rhs)
+            || matches!(storage.get(rhs), Some(ListStorage::SharedSync));
+        if lhs_sync || rhs_sync {
+            self.mark_list_shared_sync(lhs, storage);
+            self.mark_list_shared_sync(rhs, storage);
+        } else {
+            self.mark_list_shared_cell(lhs, storage);
+            self.mark_list_shared_cell(rhs, storage);
+        }
     }
 
     /// Mark a list variable as local if it hasn't already been forced shared.
@@ -202,7 +262,8 @@ impl<'codegen, 'ctx, 'src> StorageExprCallbacks<ListUseContext>
         if matches!(ctx, ListUseContext::Escape) && matches!(expr.ty.as_ref(), Some(Type::List(_)))
         {
             if let ExprKind::Name(name) = &expr.kind {
-                self.codegen.mark_list_shared(name, self.storage);
+                self.codegen
+                    .mark_list_shared_by_scope(name, self.shared_globals, self.storage);
             }
         }
         match &expr.kind {
@@ -211,8 +272,10 @@ impl<'codegen, 'ctx, 'src> StorageExprCallbacks<ListUseContext>
                 left,
                 right,
             } => {
-                self.codegen.mark_identity_list_operand(left, self.storage);
-                self.codegen.mark_identity_list_operand(right, self.storage);
+                self.codegen
+                    .mark_identity_list_operand(left, self.shared_globals, self.storage);
+                self.codegen
+                    .mark_identity_list_operand(right, self.shared_globals, self.storage);
             }
             ExprKind::CompareChain {
                 left,
@@ -223,8 +286,16 @@ impl<'codegen, 'ctx, 'src> StorageExprCallbacks<ListUseContext>
                 let mut prev = left.as_ref();
                 for (op, cmp) in ops.iter().zip(comparators.iter()) {
                     if matches!(op, CmpOp::Is | CmpOp::IsNot) {
-                        self.codegen.mark_identity_list_operand(prev, self.storage);
-                        self.codegen.mark_identity_list_operand(cmp, self.storage);
+                        self.codegen.mark_identity_list_operand(
+                            prev,
+                            self.shared_globals,
+                            self.storage,
+                        );
+                        self.codegen.mark_identity_list_operand(
+                            cmp,
+                            self.shared_globals,
+                            self.storage,
+                        );
                     }
                     prev = cmp;
                 }
