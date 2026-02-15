@@ -635,18 +635,156 @@ impl ThrowAnalyzer {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::span::Span;
+    use crate::types::TypeRef;
+
+    /// Helper to create a minimal raise statement.
+    fn raise_stmt() -> Stmt {
+        Stmt {
+            kind: StmtKind::Raise {
+                exc: Some(Expr {
+                    kind: ExprKind::Call {
+                        func: Box::new(Expr {
+                            kind: ExprKind::Name("ValueError".to_string()),
+                            span: Span::new(0, 0),
+                            ty: None,
+                        }),
+                        args: vec![Expr {
+                            kind: ExprKind::Literal(Literal::Str("test".to_string())),
+                            span: Span::new(0, 0),
+                            ty: Some(Type::Str),
+                        }],
+                        keywords: vec![],
+                    },
+                    span: Span::new(0, 0),
+                    ty: None,
+                }),
+                cause: None,
+            },
+            span: Span::new(0, 0),
+        }
+    }
+
+    /// Helper to create a function item.
+    fn make_func(name: &str, body: Vec<Stmt>) -> Item {
+        Item::Function(Function {
+            name: name.to_string(),
+            params: vec![],
+            ret: TypeRef::Unknown,
+            body,
+            span: Span::new(0, 0),
+        })
+    }
+
+    /// Helper to create a call expression.
+    fn call_expr(name: &str) -> Expr {
+        Expr {
+            kind: ExprKind::Call {
+                func: Box::new(Expr {
+                    kind: ExprKind::Name(name.to_string()),
+                    span: Span::new(0, 0),
+                    ty: None,
+                }),
+                args: vec![],
+                keywords: vec![],
+            },
+            span: Span::new(0, 0),
+            ty: None,
+        }
+    }
+
     #[test]
     fn test_explicit_raise_marks_throwing() {
-        // TODO: Add test when lowering is implemented
+        let program = Program {
+            items: vec![make_func("thrower", vec![raise_stmt()])],
+        };
+        let ctx = TypeContext {
+            classes: HashMap::new(),
+            unions: HashMap::new(),
+            functions: HashMap::new(),
+            globals: HashMap::new(),
+        };
+        let mut analyzer = ThrowAnalyzer::new(&ctx);
+        let result = analyzer.analyze_program(&program);
+
+        assert_eq!(result.get("thrower"), Some(&true));
     }
 
     #[test]
     fn test_call_propagation() {
-        // TODO: Add test when lowering is implemented
+        // Function `caller` calls `thrower` which raises, so `caller` should also throw.
+        let program = Program {
+            items: vec![
+                make_func("thrower", vec![raise_stmt()]),
+                make_func(
+                    "caller",
+                    vec![Stmt {
+                        kind: StmtKind::Expr(call_expr("thrower")),
+                        span: Span::new(0, 0),
+                    }],
+                ),
+            ],
+        };
+        let ctx = TypeContext {
+            classes: HashMap::new(),
+            unions: HashMap::new(),
+            functions: HashMap::new(),
+            globals: HashMap::new(),
+        };
+        let mut analyzer = ThrowAnalyzer::new(&ctx);
+        let result = analyzer.analyze_program(&program);
+
+        assert_eq!(result.get("thrower"), Some(&true));
+        assert_eq!(result.get("caller"), Some(&true));
     }
 
     #[test]
     fn test_try_catch_blocks_propagation() {
-        // TODO: Add test when lowering is implemented
+        // Function `safe` wraps a call to `thrower` in try/except Exception,
+        // so `safe` should NOT be marked as throwing.
+        let program = Program {
+            items: vec![
+                make_func("thrower", vec![raise_stmt()]),
+                make_func(
+                    "safe",
+                    vec![Stmt {
+                        kind: StmtKind::Try {
+                            body: vec![Stmt {
+                                kind: StmtKind::Expr(call_expr("thrower")),
+                                span: Span::new(0, 0),
+                            }],
+                            handlers: vec![ExceptHandler {
+                                exc_types: Some(vec!["Exception".to_string()]),
+                                name: None,
+                                body: vec![Stmt {
+                                    kind: StmtKind::Expr(Expr {
+                                        kind: ExprKind::Literal(Literal::None),
+                                        span: Span::new(0, 0),
+                                        ty: Some(Type::None),
+                                    }),
+                                    span: Span::new(0, 0),
+                                }],
+                                span: Span::new(0, 0),
+                            }],
+                            orelse: vec![],
+                            finalbody: vec![],
+                        },
+                        span: Span::new(0, 0),
+                    }],
+                ),
+            ],
+        };
+        let ctx = TypeContext {
+            classes: HashMap::new(),
+            unions: HashMap::new(),
+            functions: HashMap::new(),
+            globals: HashMap::new(),
+        };
+        let mut analyzer = ThrowAnalyzer::new(&ctx);
+        let result = analyzer.analyze_program(&program);
+
+        assert_eq!(result.get("thrower"), Some(&true));
+        assert_eq!(result.get("safe"), Some(&false));
     }
 }

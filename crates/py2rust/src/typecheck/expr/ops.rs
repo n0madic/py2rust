@@ -78,13 +78,13 @@ impl<'a> TypeChecker<'a> {
         // Keep unknown arithmetic permissive, preserving string concat special-case.
         if matches!(left_ty, Type::Unknown) && matches!(right_ty, Type::Unknown) {
             // CPython-compat divergence:
-            // Fully dynamic Unknown+Unknown arithmetic is defaulted to numeric
-            // inference so nested lambdas/closures can obtain concrete callable
-            // shapes for Rust codegen.
+            // For Add, both operands Unknown could be string concat, so keep Unknown
+            // to let codegen handle it with fallback. Other arithmetic ops can safely
+            // default to numeric since strings don't support them.
             let inferred = match op {
+                BinOp::Add => Type::Unknown,
                 BinOp::Div => Type::Float,
-                BinOp::Add
-                | BinOp::Sub
+                BinOp::Sub
                 | BinOp::Mul
                 | BinOp::Mod
                 | BinOp::Pow
@@ -95,12 +95,14 @@ impl<'a> TypeChecker<'a> {
                 | BinOp::ShiftLeft
                 | BinOp::ShiftRight => Type::Int,
             };
-            self.maybe_update_from_expr(left, &inferred);
-            self.maybe_update_from_expr(right, &inferred);
-            left_ty = inferred.clone();
-            right_ty = inferred.clone();
-            left.ty = Some(inferred.clone());
-            right.ty = Some(inferred.clone());
+            if !matches!(inferred, Type::Unknown) {
+                self.maybe_update_from_expr(left, &inferred);
+                self.maybe_update_from_expr(right, &inferred);
+                left_ty = inferred.clone();
+                right_ty = inferred.clone();
+                left.ty = Some(inferred.clone());
+                right.ty = Some(inferred.clone());
+            }
         }
         if matches!(left_ty, Type::Unknown) || matches!(right_ty, Type::Unknown) {
             if matches!(op, BinOp::Add)

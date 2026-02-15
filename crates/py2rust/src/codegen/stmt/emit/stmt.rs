@@ -636,14 +636,14 @@ impl<'a> Codegen<'a> {
                         } else {
                             let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                             (
-                                self.maybe_clone_list_expr(expr, value, declared.as_ref()),
+                                self.maybe_clone_list_expr(expr, value, declared.as_ref(), false),
                                 false,
                             )
                         }
                     } else {
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                         (
-                            self.maybe_clone_list_expr(expr, value, declared.as_ref()),
+                            self.maybe_clone_list_expr(expr, value, declared.as_ref(), false),
                             false,
                         )
                     };
@@ -1306,14 +1306,14 @@ impl<'a> Codegen<'a> {
                     } else {
                         let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                         (
-                            self.maybe_clone_list_expr(expr, value, declared.as_ref()),
+                            self.maybe_clone_list_expr(expr, value, declared.as_ref(), false),
                             false,
                         )
                     }
                 } else {
                     let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                     (
-                        self.maybe_clone_list_expr(expr, value, declared.as_ref()),
+                        self.maybe_clone_list_expr(expr, value, declared.as_ref(), false),
                         false,
                     )
                 };

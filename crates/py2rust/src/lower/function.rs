@@ -226,87 +226,28 @@ impl<'a> Lowerer<'a> {
         // positional-only args, regular args, optional *args, keyword-only args, optional **kwargs.
         let mut params = Vec::new();
         for (idx, arg) in func.args.posonlyargs.iter().enumerate() {
-            let def = &arg.def;
-            let name_str = self.ident(def.arg.as_str());
-            let default = match &arg.default {
-                Some(expr) => Some(self.lower_expr(expr)?),
-                None => None,
-            };
-
-            // Special handling for `self` parameter in methods
-            if idx == 0 && name_str == "self" {
-                if let Some(self_name) = self_type {
-                    let ann = if let Some(ann_expr) = &def.annotation {
-                        self.lower_type_ref(ann_expr)?
-                    } else {
-                        // Infer self type as the class name
-                        TypeRef::Name(self_name.to_string())
-                    };
-                    params.push(Param {
-                        name: name_str,
-                        kind: ParamKind::PositionalOnly,
-                        ann,
-                        default: None,
-                        span: Span::from(def.range),
-                    });
-                    continue;
-                }
-            }
-
-            // Regular parameters
-            let ann = match &def.annotation {
-                Some(expr) => self.lower_type_ref(expr)?,
-                None => TypeRef::Unknown,
-            };
-            params.push(Param {
-                name: name_str,
-                kind: ParamKind::PositionalOnly,
-                ann,
-                default,
-                span: Span::from(def.range),
-            });
+            let param = self.lower_param_with_self_inference(
+                &arg.def,
+                arg.default.as_deref(),
+                idx,
+                ParamKind::PositionalOnly,
+                self_type,
+                true, // always eligible for self in posonlyargs
+            )?;
+            params.push(param);
         }
         for (idx, arg) in func.args.args.iter().enumerate() {
-            let def = &arg.def;
-            let name_str = self.ident(def.arg.as_str());
-            let default = match &arg.default {
-                Some(expr) => Some(self.lower_expr(expr)?),
-                None => None,
-            };
-
-            // Special handling for `self` parameter in methods.
-            // In this group, idx == 0 means first positional-or-keyword argument.
-            if idx == 0 && name_str == "self" && func.args.posonlyargs.is_empty() {
-                if let Some(self_name) = self_type {
-                    let ann = if let Some(ann_expr) = &def.annotation {
-                        self.lower_type_ref(ann_expr)?
-                    } else {
-                        // Infer self type as the class name.
-                        TypeRef::Name(self_name.to_string())
-                    };
-                    params.push(Param {
-                        name: name_str,
-                        kind: ParamKind::PositionalOrKeyword,
-                        ann,
-                        default: None,
-                        span: Span::from(def.range),
-                    });
-                    continue;
-                }
-            }
-
-            // Positional-or-keyword parameters.
-            let ann = match &def.annotation {
-                Some(expr) => self.lower_type_ref(expr)?,
-                None => TypeRef::Unknown,
-            };
-            params.push(Param {
-                name: name_str,
-                kind: ParamKind::PositionalOrKeyword,
-                ann,
-                default,
-                span: Span::from(def.range),
-            });
+            // Self inference is only eligible when there are no positional-only args
+            let self_eligible = func.args.posonlyargs.is_empty();
+            let param = self.lower_param_with_self_inference(
+                &arg.def,
+                arg.default.as_deref(),
+                idx,
+                ParamKind::PositionalOrKeyword,
+                self_type,
+                self_eligible,
+            )?;
+            params.push(param);
         }
         // `*args`
         if let Some(vararg) = &func.args.vararg {
@@ -735,5 +676,55 @@ impl<'a> Lowerer<'a> {
             }
         }
         Ok(fields)
+    }
+
+    /// Lower a parameter with optional self-type inference for method first arguments.
+    ///
+    /// This extracts the duplicated logic between positional-only and positional-or-keyword
+    /// parameter groups for inferring `self` parameter types in class methods.
+    fn lower_param_with_self_inference(
+        &self,
+        def: &ast::Arg,
+        default_expr: Option<&ast::Expr>,
+        idx: usize,
+        kind: ParamKind,
+        self_type: Option<&str>,
+        self_eligible: bool,
+    ) -> Result<Param, CompileError> {
+        let name_str = self.ident(def.arg.as_str());
+        let default = match default_expr {
+            Some(expr) => Some(self.lower_expr(expr)?),
+            None => None,
+        };
+
+        // Infer `self` parameter type from the enclosing class.
+        if idx == 0 && name_str == "self" && self_eligible {
+            if let Some(self_name) = self_type {
+                let ann = if let Some(ann_expr) = &def.annotation {
+                    self.lower_type_ref(ann_expr)?
+                } else {
+                    TypeRef::Name(self_name.to_string())
+                };
+                return Ok(Param {
+                    name: name_str,
+                    kind,
+                    ann,
+                    default: None,
+                    span: Span::from(def.range),
+                });
+            }
+        }
+
+        let ann = match &def.annotation {
+            Some(expr) => self.lower_type_ref(expr)?,
+            None => TypeRef::Unknown,
+        };
+        Ok(Param {
+            name: name_str,
+            kind,
+            ann,
+            default,
+            span: Span::from(def.range),
+        })
     }
 }

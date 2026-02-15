@@ -124,6 +124,10 @@ impl<'a> Codegen<'a> {
                     && matches!(expr.ty.as_ref(), Some(Type::List(_)))
                     && matches!(&func.kind, ExprKind::Name(name) if name == "list" || name == "tuple")
             }
+            // TODO: Extend is_fresh_list_expr to recognize sorted(), reversed(), .copy()
+            // as fresh list expressions. This requires aligning the codegen for these
+            // builtins to respect the storage strategy (Local vs SharedCell) so the
+            // generated wrapper type matches the expected variable type.
             _ => false,
         }
     }

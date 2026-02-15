@@ -925,3 +925,73 @@ fn walk_except_handler_slice_mut<W: StmtWalkerMut + ?Sized>(
         walk_except_handler_mut(walker, handler);
     }
 }
+
+/// Compile-time verification that all HIR variants are covered by the visitor.
+///
+/// These functions are never called at runtime, but they MUST compile. If a new
+/// variant is added to `ExprKind` or `StmtKind` without updating the visitor
+/// macro and walker traits, the exhaustive match here will fail to compile.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify all ExprKind variants are accounted for.
+    /// If you add a new variant to ExprKind, you MUST also add it to
+    /// `define_expr_visitors!` and provide a default in `ExprWalkerMut`.
+    #[allow(dead_code, unreachable_code)]
+    fn assert_all_expr_variants_covered(kind: &ExprKind) {
+        match kind {
+            ExprKind::Literal(_) => {}
+            ExprKind::Name(_) => {}
+            ExprKind::Yield { .. } => {}
+            ExprKind::Call { .. } => {}
+            ExprKind::Starred { .. } => {}
+            ExprKind::Attr { .. } => {}
+            ExprKind::Binary { .. } => {}
+            ExprKind::Unary { .. } => {}
+            ExprKind::Compare { .. } => {}
+            ExprKind::CompareChain { .. } => {}
+            ExprKind::BoolOp { .. } => {}
+            ExprKind::List(_) => {}
+            ExprKind::Tuple(_) => {}
+            ExprKind::Dict(_) => {}
+            ExprKind::Set(_) => {}
+            ExprKind::Index { .. } => {}
+            ExprKind::Slice { .. } => {}
+            ExprKind::ListComp { .. } => {}
+            ExprKind::SetComp { .. } => {}
+            ExprKind::UnionCtor { .. } => {}
+            ExprKind::Lambda { .. } => {}
+            ExprKind::IfExpr { .. } => {}
+            ExprKind::Block { .. } => {}
+        }
+    }
+
+    /// Verify all StmtKind variants are accounted for.
+    /// If you add a new variant to StmtKind, you MUST also add it to
+    /// `define_stmt_visitors!` and provide a default in `StmtWalkerMut`.
+    #[allow(dead_code, unreachable_code)]
+    fn assert_all_stmt_variants_covered(kind: &StmtKind) {
+        match kind {
+            StmtKind::Let { .. } => {}
+            StmtKind::Assign { .. } => {}
+            StmtKind::Delete { .. } => {}
+            StmtKind::Class { .. } => {}
+            StmtKind::Return { .. } => {}
+            StmtKind::If { .. } => {}
+            StmtKind::While { .. } => {}
+            StmtKind::For { .. } => {}
+            StmtKind::Import { .. } => {}
+            StmtKind::ImportFrom { .. } => {}
+            StmtKind::Global { .. } => {}
+            StmtKind::Nonlocal { .. } => {}
+            StmtKind::Break => {}
+            StmtKind::Continue => {}
+            StmtKind::Expr(_) => {}
+            StmtKind::Assert { .. } => {}
+            StmtKind::Match { .. } => {}
+            StmtKind::Try { .. } => {}
+            StmtKind::Raise { .. } => {}
+        }
+    }
+}

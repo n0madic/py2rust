@@ -127,6 +127,11 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - Supported exception types: `Exception` (catch-all), `ValueError`, `TypeError`, `RuntimeError`, `KeyError`, `IndexError`, `AttributeError`, `ZeroDivisionError`, `NameError`, `AssertionError`, `StopIteration`, `NotImplementedError`, `IOError`, `OverflowError`.
 - Bare `raise` in except handler re-raises the current exception.
 - `raise X from Y` (exception chaining) is not supported and produces a compile error.
+- Mutex re-entrance limitation: `Rc<RefCell>` and `Arc<Mutex>` storage for lists/dicts cannot
+  handle recursive data structures or re-entrant access within the same guard scope. Self-comparisons
+  (e.g., `x == x`) use `ptr_eq` to short-circuit and avoid deadlocks or borrow panics.
+- Variables declared in try blocks are captured for use in both `else` and `finally` blocks via
+  `Option<T>` snapshot variables.
 
 ## Test Structure
 Runtime integration tests are in `crates/py2rust/tests/`:

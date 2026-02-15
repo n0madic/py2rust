@@ -24,12 +24,17 @@ impl<'a> Codegen<'a> {
         // after try handling to avoid borrow conflicts.
         let use_drop_finally = has_finally && (has_value_return || in_throwing_fn);
 
-        // Snapshot only try-local bindings that are actually referenced by else.
+        // Snapshot try-local bindings referenced by else or finally blocks.
         let else_used_names = self.collect_name_reads(orelse);
+        let finally_used_names = self.collect_name_reads(finalbody);
+        let combined_used: HashSet<String> = else_used_names
+            .union(&finally_used_names)
+            .cloned()
+            .collect();
         let try_vars: Vec<(String, Type)> = self
             .collect_try_block_vars(body)
             .into_iter()
-            .filter(|(name, _)| else_used_names.contains(name))
+            .filter(|(name, _)| combined_used.contains(name))
             .collect();
 
         if use_drop_finally {

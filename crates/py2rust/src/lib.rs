@@ -25,6 +25,7 @@ use crate::import_resolver::resolve_program_imports;
 use crate::lower::Lowerer;
 use crate::span::Span;
 use crate::typecheck::TypeChecker;
+use crate::types::Type;
 use rustpython_parser::ast;
 use rustpython_parser::Parse;
 
@@ -81,7 +82,10 @@ pub fn compile(
     // Phase 3: Type check
     let mut checker = TypeChecker::new(&program, source, filename)?;
     let ctx = checker.check_program(&mut program)?;
-    let warnings = checker.take_warnings();
+    let mut warnings = checker.take_warnings();
+
+    // Phase 3.5: Validate types - warn on remaining Unknown types
+    validate_types(&program, source, filename, &mut warnings);
 
     // Phase 4: Generate Rust code
     let rust = Codegen::new(&ctx, source, filename).emit_program(&program)?;
@@ -272,6 +276,95 @@ fn rename_user_main(program: &mut hir::Program) {
             }
             hir::Item::Stmt(stmt) => {
                 stmt.accept_mut(&mut renamer);
+            }
+            hir::Item::Union(_) => {}
+        }
+    }
+}
+
+/// Walk the HIR after type checking and emit warnings for remaining Unknown types.
+///
+/// This helps surface cases where type inference was insufficient, before they
+/// cause confusing codegen errors. Only warns (does not error) to avoid breaking
+/// programs that work today with Unknown fallbacks.
+fn validate_types(
+    program: &hir::Program,
+    source: &str,
+    filename: &str,
+    warnings: &mut Vec<Warning>,
+) {
+    fn check_expr(expr: &hir::Expr, source: &str, filename: &str, warnings: &mut Vec<Warning>) {
+        if matches!(expr.ty.as_ref(), Some(Type::Unknown)) {
+            // Skip common false positives: name references and call results often
+            // remain Unknown when the callee is a builtin with polymorphic returns.
+            let is_noise = matches!(
+                expr.kind,
+                hir::ExprKind::Name(_) | hir::ExprKind::Call { .. } | hir::ExprKind::Lambda { .. }
+            );
+            if !is_noise {
+                warnings.push(Warning::new(
+                    "expression has unresolved type (Unknown)",
+                    expr.span,
+                    source,
+                    filename,
+                ));
+            }
+        }
+    }
+
+    fn check_stmts(stmts: &[hir::Stmt], source: &str, filename: &str, warnings: &mut Vec<Warning>) {
+        for stmt in stmts {
+            match &stmt.kind {
+                hir::StmtKind::Let { value, .. } => check_expr(value, source, filename, warnings),
+                hir::StmtKind::Assign { value, .. } => {
+                    check_expr(value, source, filename, warnings)
+                }
+                hir::StmtKind::Expr(expr) => check_expr(expr, source, filename, warnings),
+                hir::StmtKind::Return { value: Some(expr) } => {
+                    check_expr(expr, source, filename, warnings)
+                }
+                hir::StmtKind::If { body, orelse, .. } => {
+                    check_stmts(body, source, filename, warnings);
+                    check_stmts(orelse, source, filename, warnings);
+                }
+                hir::StmtKind::While { body, .. } | hir::StmtKind::For { body, .. } => {
+                    check_stmts(body, source, filename, warnings);
+                }
+                hir::StmtKind::Try {
+                    body,
+                    handlers,
+                    orelse,
+                    finalbody,
+                } => {
+                    check_stmts(body, source, filename, warnings);
+                    for handler in handlers {
+                        check_stmts(&handler.body, source, filename, warnings);
+                    }
+                    check_stmts(orelse, source, filename, warnings);
+                    check_stmts(finalbody, source, filename, warnings);
+                }
+                hir::StmtKind::Match { cases, .. } => {
+                    for case in cases {
+                        check_stmts(&case.body, source, filename, warnings);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for item in &program.items {
+        match item {
+            hir::Item::Function(func) => {
+                check_stmts(&func.body, source, filename, warnings);
+            }
+            hir::Item::Class(class_def) => {
+                for method in &class_def.methods {
+                    check_stmts(&method.body, source, filename, warnings);
+                }
+            }
+            hir::Item::Stmt(stmt) => {
+                check_stmts(std::slice::from_ref(stmt), source, filename, warnings);
             }
             hir::Item::Union(_) => {}
         }

@@ -347,12 +347,19 @@ impl<'a> Codegen<'a> {
     }
 
     /// Clone shared/owned values to preserve Python assignment semantics.
+    ///
+    /// When `already_cloned` is true, the expression has already been cloned
+    /// (e.g., from an Optional unwrap path) and should not be cloned again.
     pub(crate) fn maybe_clone_list_expr(
         &self,
         expr: String,
         value_expr: &Expr,
         expected_ty: Option<&Type>,
+        already_cloned: bool,
     ) -> String {
+        if already_cloned {
+            return expr;
+        }
         let ty = match expected_ty {
             // When expected type is unknown (for example wide inline union annotations),
             // fall back to the expression type to preserve Python copy semantics.
@@ -368,9 +375,8 @@ impl<'a> Codegen<'a> {
                 Some(Type::List(_)) | Some(Type::Dict(_, _)) | Some(Type::Str) | Some(Type::Bytes)
             )
         {
-            // `gen_expr_with_expected` already clones after Optional unwrap; avoid
-            // emitting `.clone().clone()` when assignment/call sites request cloning too.
-            if expr.contains(".as_ref().expect(\"optional value is None\").clone()") {
+            // Detect already-cloned expressions to avoid `.clone().clone()`.
+            if expr.ends_with(".clone()") {
                 return expr;
             }
             return format!("{}.clone()", expr);

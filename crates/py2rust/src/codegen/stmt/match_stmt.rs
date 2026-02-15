@@ -27,6 +27,18 @@ impl<'a> Codegen<'a> {
             } else {
                 class_info.fields.keys().cloned().collect()
             };
+            // Validate that all referenced fields actually exist on the class.
+            for field in &fields_to_bind {
+                if !class_info.fields.contains_key(field) {
+                    return Err(self.error(
+                        case.span,
+                        format!(
+                            "__match_args__ references non-existent field '{}' on class '{}'",
+                            field, case.variant
+                        ),
+                    ));
+                }
+            }
             for (field, binding) in fields_to_bind.iter().zip(case.bindings.iter()) {
                 field_bindings.insert(field.clone(), binding.clone());
             }

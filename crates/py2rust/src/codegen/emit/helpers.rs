@@ -1,4 +1,8 @@
 // Helper function emission for generated Rust files.
+//
+// TODO: Convert runtime helper panics (time, regex, string helpers) to return
+// Result<T, PyError> instead of panicking. This requires propagating `?` through
+// all generated call sites and ensuring calling contexts return Result. (~30 sites)
 
 use super::super::*;
 
@@ -1985,7 +1989,7 @@ impl<T> Iterator for PyIter<T> {
 trait PyIteratorSendClose<T>: Iterator<Item = T> {
     fn send(&mut self, _value: T) -> T {
         self.next()
-            .unwrap_or_else(|| panic!("generator is exhausted"))
+            .unwrap_or_else(|| panic!("StopIteration"))
     }
     fn close(&mut self) {}
 }

@@ -205,7 +205,7 @@ impl<'a> Codegen<'a> {
                 BinOp::BitOr => "|",
                 BinOp::BitAnd => "&",
                 BinOp::BitXor => "^",
-                _ => unreachable!(),
+                _ => unreachable!("bitwise op matched above, got {:?}", op),
             };
             let left_is_set = matches!(left.ty.as_ref(), Some(Type::Set(_)));
             let right_is_set = matches!(right.ty.as_ref(), Some(Type::Set(_)));
@@ -230,7 +230,7 @@ impl<'a> Codegen<'a> {
             let op_str = match op {
                 BinOp::ShiftLeft => "<<",
                 BinOp::ShiftRight => ">>",
-                _ => unreachable!(),
+                _ => unreachable!("shift op matched above, got {:?}", op),
             };
             // Rust shifts expect RHS as u32/u64; cast to keep i64 RHS working.
             return Ok(format!(
@@ -334,6 +334,9 @@ impl<'a> Codegen<'a> {
             }
             return Ok(format!("({}.pow({} as u32))", left_expr, right_expr));
         }
+        // TODO: Avoid excessive cloning in tuple concatenation. When a tuple
+        // variable is consumed (last use), emit move instead of clone. This
+        // requires last-use analysis or at minimum detecting temporaries.
         if matches!(op, BinOp::Add) {
             if let (Some(Type::Tuple(left_items)), Some(Type::Tuple(right_items))) =
                 (left.ty.as_ref(), right.ty.as_ref())
@@ -401,7 +404,7 @@ impl<'a> Codegen<'a> {
             | BinOp::BitXor
             | BinOp::ShiftLeft
             | BinOp::ShiftRight => {
-                unreachable!()
+                unreachable!("non-standard arithmetic op handled above, got {:?}", op)
             }
         };
         let is_float = matches!(expr.ty.as_ref(), Some(Type::Float));
@@ -1081,7 +1084,7 @@ impl<'a> Codegen<'a> {
             CmpOp::GtEq => ">=",
             CmpOp::Is => "==",
             CmpOp::IsNot => "!=",
-            CmpOp::In | CmpOp::NotIn => unreachable!(),
+            CmpOp::In | CmpOp::NotIn => unreachable!("membership ops handled above"),
         };
         if matches!(left.ty.as_ref(), Some(Type::Int | Type::Float | Type::Bool))
             && matches!(
@@ -1257,6 +1260,10 @@ impl<'a> Codegen<'a> {
                     "{{ let {left_tmp} = ({left_expr}).clone(); let {left_guard} = {left_tmp}.py_list_guard(); let _right = &({right_expr}); {left_guard}.iter().eq(_right.iter()) }}"
                 )
             }
+            // LIMITATION: Rc<RefCell> and Arc<Mutex> storage cannot handle recursive
+            // data structures or re-entrant access. If the same list is compared
+            // to itself (e.g., `x == x`), we use ptr_eq to short-circuit and avoid
+            // deadlocks or RefCell borrow panics.
             (ListStorage::SharedCell, ListStorage::SharedCell) => {
                 let left_tmp = self.new_tmp();
                 let right_tmp = self.new_tmp();

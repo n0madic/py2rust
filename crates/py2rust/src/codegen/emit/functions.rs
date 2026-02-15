@@ -591,7 +591,7 @@ impl<'a> Codegen<'a> {
         self.push_line("if self.__emitted == 0 {");
         self.indent += 1;
         self.push_line(
-            "panic!(\"can't send non-None value to a just-started generator in this build\");",
+            "panic!(\"TypeError: can't send non-None value to a just-started generator\");",
         );
         self.indent -= 1;
         self.push_line("}");
@@ -599,7 +599,7 @@ impl<'a> Codegen<'a> {
         self.push_line("match self.next() {");
         self.indent += 1;
         self.push_line("Some(v) => v,");
-        self.push_line("None => panic!(\"generator is exhausted\"),");
+        self.push_line("None => panic!(\"StopIteration\"),");
         self.indent -= 1;
         self.push_line("}");
         self.indent -= 1;
