@@ -307,9 +307,12 @@ impl<'a> TypeChecker<'a> {
                     ..
                 } = &value.kind
                 {
+                    // Clone param metadata before mutable borrow of `value` in check_expr.
+                    let param_names_owned = params.clone();
+                    let param_kinds_owned = param_kinds.clone();
                     let placeholder = Type::Lambda {
-                        param_names: params.clone(),
-                        params: vec![Type::Unknown; params.len()],
+                        param_names: param_names_owned.clone(),
+                        params: vec![Type::Unknown; param_names_owned.len()],
                         param_kinds: Vec::new(),
                         has_defaults: Vec::new(),
                         ret: Box::new(Type::Unknown),
@@ -321,7 +324,7 @@ impl<'a> TypeChecker<'a> {
                             return Err(self
                                 .error(stmt.span, "Iterator[T] is only allowed as a return type"));
                         }
-                        Some(Self::normalize_lambda_expected(ty, param_kinds))
+                        Some(Self::normalize_lambda_expected(ty, &param_kinds_owned))
                     } else {
                         None
                     };
@@ -339,8 +342,46 @@ impl<'a> TypeChecker<'a> {
                         }
                         ty
                     };
-                    self.insert_var(name, declared, stmt.span)?;
+                    self.insert_var(name, declared.clone(), stmt.span)?;
                     self.lambda_defs.insert(name.clone(), value.clone());
+                    // Second-pass refinement: when the initial unannotated body check
+                    // refined one or more params (e.g., `v: Unknown → v: Value` via
+                    // `v._field` attribute access), side effects that ran BEFORE the
+                    // refinement (e.g., `visited.add(v)` before the for loop) saw the
+                    // wrong (Unknown) type. Re-run the body with the now-concrete param
+                    // types so those side effects can propagate the correct container
+                    // element type into the outer scope.
+                    //
+                    // The guard prevents infinite re-entry for recursive nested functions
+                    // (e.g., `build_topo` calling itself): the inner recursive call sees
+                    // the guard already active and returns Ok(Unknown), allowing the outer
+                    // re-check to complete and collect the correct side effects.
+                    // Second-pass refinement: if the initial body check refined any param
+                    // from Unknown to concrete (e.g., `v: Unknown → v: Value` via
+                    // attribute access), re-run the body with those concrete params.
+                    // This propagates side effects (e.g., `visited.add(v)`) that fired
+                    // before the refinement to correctly update outer-scope container types.
+                    if let Type::Lambda {
+                        params: refined_params,
+                        ..
+                    } = &declared
+                    {
+                        let any_param_refined =
+                            refined_params.iter().any(|p| !matches!(p, Type::Unknown));
+                        if any_param_refined {
+                            let expected_refined = Type::Lambda {
+                                param_names: param_names_owned.clone(),
+                                params: refined_params.clone(),
+                                param_kinds: param_kinds_owned.clone(),
+                                has_defaults: vec![false; param_names_owned.len()],
+                                ret: Box::new(Type::Unknown),
+                            };
+                            let _ = self.with_lambda_inference_guard(name, stmt.span, |tc| {
+                                let mut expr_clone = value.clone();
+                                tc.check_expr(&mut expr_clone, Some(&expected_refined))
+                            });
+                        }
+                    }
                     return Ok(());
                 }
                 let expected = if let Some(ann) = ann {
@@ -1440,6 +1481,7 @@ impl<'a> TypeChecker<'a> {
                 iter_item: None,
                 next_item: None,
                 match_args: class_def.match_args.clone(),
+                shared_mutable_fields: HashSet::new(),
             },
         );
 

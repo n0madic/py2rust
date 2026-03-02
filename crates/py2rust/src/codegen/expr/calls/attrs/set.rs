@@ -5,10 +5,12 @@ use crate::container::registry::{find_container_method, ContainerId};
 
 impl<'a> Codegen<'a> {
     /// Return true when the concrete Rust storage for this set uses `PyRepr`.
+    ///
+    /// Prioritizes local/global variable types over the receiver expression type,
+    /// because the Let statement may have been back-propagated to a more refined
+    /// type (e.g., `Set(Str)`) while the receiver expression still says `Set(Unknown)`.
     pub(crate) fn set_uses_pyrepr_storage(&self, value: &Expr, inner: &Type) -> bool {
-        if matches!(inner, Type::Unknown) {
-            return true;
-        }
+        // Check local/global variable types first — they may be refined beyond expr type.
         if let ExprKind::Name(name) = &value.kind {
             if let Some(Type::Set(local_inner)) = self.local_var_type(name) {
                 return matches!(local_inner.as_ref(), Type::Unknown);
@@ -17,7 +19,8 @@ impl<'a> Codegen<'a> {
                 return matches!(global_inner.as_ref(), Type::Unknown);
             }
         }
-        false
+        // Fall back to the receiver expression's element type.
+        matches!(inner, Type::Unknown)
     }
 
     /// Render one set item for method calls, preserving the receiver element type.
@@ -37,7 +40,14 @@ impl<'a> Codegen<'a> {
             let raw = self.gen_expr(item)?;
             return Ok(format!("PyRepr(format!(\"{{:?}}\", {}))", raw));
         }
-        self.gen_expr_with_expected(item, Some(inner))
+        let expr = self.gen_expr_with_expected(item, Some(inner))?;
+        // HashSet::insert takes ownership; clone non-Copy items so the caller
+        // can still use the variable after `.add(v)` (matches Python semantics).
+        if !self.is_copy_type(inner) {
+            Ok(format!("{}.clone()", expr))
+        } else {
+            Ok(expr)
+        }
     }
 
     /// Lower set method calls.

@@ -457,20 +457,68 @@ impl<'a> Codegen<'a> {
                         return Ok(());
                     }
                 }
-                let obj_expr = self.gen_expr(obj)?;
-                let expected = match obj.ty.as_ref() {
-                    Some(Type::Custom(class_name)) => self
-                        .ctx
-                        .classes
-                        .get(class_name)
-                        .and_then(|info| info.fields.get(attr))
-                        .cloned(),
-                    _ => None,
+                // Extract field type and shared-mutable status before calling gen_expr
+                // to avoid borrow checker conflicts with the self.ctx reference.
+                // Fall back to local variable type when the expression node's own
+                // `ty` is not set (e.g. for-loop variables over a typed list).
+                let receiver_class: Option<String> = match obj.ty.as_ref() {
+                    Some(Type::Custom(cn)) => Some(cn.clone()),
+                    _ => {
+                        if let ExprKind::Name(var_name) = &obj.kind {
+                            match self.local_var_type(var_name) {
+                                Some(Type::Custom(cn)) => Some(cn.clone()),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    }
                 };
+                let (expected, shared_ty) = match receiver_class.as_deref() {
+                    Some(class_name) => {
+                        let expected = self
+                            .ctx
+                            .classes
+                            .get(class_name)
+                            .and_then(|info| info.fields.get(attr))
+                            .cloned();
+                        let shared = self.shared_mutable_field_ty(class_name, attr);
+                        (expected, shared)
+                    }
+                    None => (None, None),
+                };
+                let obj_expr = self.gen_expr(obj)?;
                 let val_expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                 let val_expr =
                     self.maybe_clone_list_expr(val_expr, value, expected.as_ref(), false);
-                self.push_line(&format!("{}.{} = {};", obj_expr, attr, val_expr));
+                if let Some(field_ty) = shared_ty {
+                    // Write through the atomic wrapper so all clones see the update.
+                    match field_ty {
+                        Type::Float => {
+                            self.push_line(&format!(
+                                "{}.{}.store(f64::to_bits(({}) as f64), Ordering::Relaxed);",
+                                obj_expr, attr, val_expr
+                            ));
+                        }
+                        Type::Int => {
+                            self.push_line(&format!(
+                                "{}.{}.store({}, Ordering::Relaxed);",
+                                obj_expr, attr, val_expr
+                            ));
+                        }
+                        Type::Bool => {
+                            self.push_line(&format!(
+                                "{}.{}.store({}, Ordering::Relaxed);",
+                                obj_expr, attr, val_expr
+                            ));
+                        }
+                        _ => {
+                            self.push_line(&format!("{}.{} = {};", obj_expr, attr, val_expr));
+                        }
+                    }
+                } else {
+                    self.push_line(&format!("{}.{} = {};", obj_expr, attr, val_expr));
+                }
             }
             AssignTarget::Index {
                 value: container,

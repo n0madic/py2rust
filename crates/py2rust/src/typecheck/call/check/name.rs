@@ -955,7 +955,23 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                if refined_ret.contains_unknown() {
+                // Trigger a lambda body re-check when either:
+                // 1. The return type is still Unknown (needs inference), OR
+                // 2. Any parameter changed from Unknown to a concrete type (side-effects
+                //    inside the body — e.g., `visited.add(v)` — need to see the concrete
+                //    arg type so they can refine captured container variables in outer scope).
+                //
+                // Example: `build_topo(self)` where self: Value — the body re-check
+                // allows `visited.add(v)` to fire with v: Value, updating the outer
+                // scope's `visited: Set(Unknown)` → `Set(Value)`.
+                let any_param_newly_concrete =
+                    params
+                        .iter()
+                        .zip(refined_params.iter())
+                        .any(|(original, refined)| {
+                            matches!(original, Type::Unknown) && !matches!(refined, Type::Unknown)
+                        });
+                if refined_ret.contains_unknown() || any_param_newly_concrete {
                     if let Some(lambda_expr) = self.lambda_defs.get(name).cloned() {
                         let expected = Type::Lambda {
                             param_names: param_names.clone(),

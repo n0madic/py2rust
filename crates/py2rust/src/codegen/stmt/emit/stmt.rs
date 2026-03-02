@@ -1725,7 +1725,6 @@ impl<'a> Codegen<'a> {
                     .as_ref()
                     .and_then(|ty| self.iter_item_type_hint(ty))
                     .unwrap_or(Type::Unknown);
-
                 // Optimize local Vec iteration with while loop for simple name targets.
                 if matches!(target, ForTarget::Name(_))
                     && matches!(iter.ty.as_ref(), Some(Type::List(inner)) if matches!(self.list_storage_for_expr(iter), ListStorage::Local))

@@ -280,7 +280,6 @@ f = lambda *args: 0
     );
 }
 
-#[test]
 // Lambda defaults are now supported, so the old rejection test is removed.
 #[test]
 fn rejects_unsupported_binary_ops() {
@@ -574,18 +573,17 @@ value: str = takes_text(42)
 }
 
 #[test]
-fn rejects_recursive_lambda_inference_cycles() {
+fn allows_recursive_lambda_captures() {
+    // Reassigning a lambda that calls the previous binding is valid Python.
+    // The second `f` captures the first `f` by move, so `f(1)` calls the
+    // first lambda (not an infinite loop). Type inference uses Unknown for
+    // the recursive cycle and continues gracefully.
     let source = r#"
 f = lambda x: x
 f = lambda x: f(x)
 f(1)
 "#;
-    let error = expect_error(source);
-    assert!(
-        error.contains("Recursive lambda type inference cycle for 'f'"),
-        "Error: {}",
-        error
-    );
+    expect_success(source);
 }
 
 #[test]

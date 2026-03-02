@@ -60,6 +60,13 @@ pub struct ClassInfo {
     /// Pattern matching field order (from __match_args__).
     /// If None, use field declaration order.
     pub match_args: Option<Vec<String>>,
+    /// Scalar fields that are assigned outside `__init__` and therefore need
+    /// `Arc<Atomic*>` storage so that all clones share the same underlying value.
+    ///
+    /// This is required for Python reference semantics: when a Value object is
+    /// cloned (e.g. captured in a closure or stored in a list), mutations to
+    /// `data` or `grad` must propagate to all copies (as in Python's object model).
+    pub shared_mutable_fields: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]

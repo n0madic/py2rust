@@ -30,6 +30,10 @@ impl<'a> Codegen<'a> {
         self.push_line("use std::rc::Rc;");
         // Arc/Mutex are required for list semantics and globals.
         self.push_line("use std::sync::{Arc, Mutex, OnceLock};");
+        // Atomic types for shared mutable scalar fields (Arc<AtomicU64> etc.).
+        if self.uses.shared_mutable_fields {
+            self.push_line("use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};");
+        }
         self.push_line("const __NAME__: &str = \"__main__\";");
         self.push_line("");
     }

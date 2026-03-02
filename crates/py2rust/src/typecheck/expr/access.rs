@@ -172,28 +172,37 @@ impl<'a> TypeChecker<'a> {
         }
         if matches!(value_ty, Type::Unknown) {
             if let ExprKind::Name(name) = &value.kind {
-                if let Some(class_name) = self.current_class.as_ref() {
+                // Clone early to release the immutable borrow on `self` before
+                // calling `set_var_type` (which takes `&mut self`).
+                let class_name_opt = self.current_class.clone();
+                if let Some(class_name) = class_name_opt {
                     let prop_ty = self
                         .ctx
                         .classes
-                        .get(class_name)
+                        .get(&class_name)
                         .and_then(|info| info.properties.get(attr))
                         .map(|prop| prop.ty.clone());
                     let class_attr_ty = self
                         .ctx
                         .classes
-                        .get(class_name)
+                        .get(&class_name)
                         .and_then(|info| info.class_attrs.get(attr))
                         .map(|attr_info| attr_info.ty.clone());
                     let field_ty = self
                         .ctx
                         .classes
-                        .get(class_name)
+                        .get(&class_name)
                         .and_then(|info| info.fields.get(attr))
                         .cloned();
                     if let Some(ty) = prop_ty.or(class_attr_ty).or(field_ty) {
                         // Infer unknown parameter types inside dunder methods.
                         self.set_var_type(name, Type::Custom(class_name.clone()));
+                        // Also stamp the receiver node's type so that codegen can
+                        // determine the receiver class from the HIR expression directly
+                        // (e.g. for shared_mutable_field_ty in gen_attr_expr).  Without
+                        // this, augmented-assignment RHS clones (assign_target_expr) end
+                        // up with ty=Unknown even though the scope was just updated.
+                        value.ty = Some(Type::Custom(class_name));
                         return Ok(ty);
                     }
                 }

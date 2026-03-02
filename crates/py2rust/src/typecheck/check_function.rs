@@ -105,6 +105,13 @@ impl<'a> TypeChecker<'a> {
         for stmt in &mut func.body {
             self.check_stmt(stmt, Some(&func.ret))?;
         }
+        // Back-propagate refined container types from scope to Let expressions.
+        // When `visited = set()` is later refined to `Set(Value)` via `.add(v)`,
+        // the Let's expr.ty still says `Set(Unknown)`. This pass fixes that so
+        // codegen emits `HashSet<Value>` instead of `HashSet<PyRepr>`.
+        if let Some(scope) = self.scopes.last() {
+            Self::propagate_refined_types_to_lets(&mut func.body, scope);
+        }
         let inferred_yield = self
             .generator_yield_stack
             .pop()
@@ -703,10 +710,11 @@ impl<'a> TypeChecker<'a> {
                     } else if let Some(current) = params.get(idx) {
                         // Refine params with nested Unknown (e.g. List(List(Unknown)))
                         // using body-inferred types.
-                        if current.contains_unknown() && !inferred.contains_unknown() {
-                            if idx < params.len() {
-                                params[idx] = inferred;
-                            }
+                        if current.contains_unknown()
+                            && !inferred.contains_unknown()
+                            && idx < params.len()
+                        {
+                            params[idx] = inferred;
                         }
                     }
                 }
@@ -796,5 +804,54 @@ impl<'a> TypeChecker<'a> {
         self.function_scopes.pop();
         self.current_class = prev_class;
         Ok(())
+    }
+
+    /// Walk `Let` statements and update stale `Unknown`-containing expression types
+    /// from the scope's refined variable types.
+    ///
+    /// This handles the case where `visited = set()` initially gets `Set(Unknown)`,
+    /// but later `.add(v)` refines the scope entry to `Set(Value)`. Without this
+    /// pass, codegen reads the stale `Set(Unknown)` from the `Let` expression and
+    /// emits `HashSet<PyRepr>` instead of `HashSet<Value>`.
+    fn propagate_refined_types_to_lets(stmts: &mut [Stmt], scope: &HashMap<String, Type>) {
+        for stmt in stmts.iter_mut() {
+            match &mut stmt.kind {
+                StmtKind::Let { name, value, .. } => {
+                    if let Some(scope_ty) = scope.get(name) {
+                        if let Some(expr_ty) = &value.ty {
+                            if expr_ty.contains_unknown() && !scope_ty.contains_unknown() {
+                                value.ty = Some(scope_ty.clone());
+                            }
+                        }
+                    }
+                }
+                StmtKind::If { body, orelse, .. } => {
+                    Self::propagate_refined_types_to_lets(body, scope);
+                    Self::propagate_refined_types_to_lets(orelse, scope);
+                }
+                StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+                    Self::propagate_refined_types_to_lets(body, scope);
+                }
+                StmtKind::Match { cases, .. } => {
+                    for case in cases {
+                        Self::propagate_refined_types_to_lets(&mut case.body, scope);
+                    }
+                }
+                StmtKind::Try {
+                    body,
+                    handlers,
+                    orelse,
+                    finalbody,
+                } => {
+                    Self::propagate_refined_types_to_lets(body, scope);
+                    for handler in handlers {
+                        Self::propagate_refined_types_to_lets(&mut handler.body, scope);
+                    }
+                    Self::propagate_refined_types_to_lets(orelse, scope);
+                    Self::propagate_refined_types_to_lets(finalbody, scope);
+                }
+                _ => {}
+            }
+        }
     }
 }

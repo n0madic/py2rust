@@ -148,6 +148,7 @@ impl<'a> TypeChecker<'a> {
                         iter_item: None,
                         next_item: None,
                         match_args: class_def.match_args.clone(),
+                        shared_mutable_fields: HashSet::new(),
                     },
                 );
             }
@@ -505,6 +506,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Phase 3.5: Detect scalar fields mutated outside __init__.
+        // These need Arc<Atomic*> storage so all clones share the underlying value,
+        // matching Python's reference-type object semantics for mutable fields.
+        self.detect_shared_mutable_fields(program);
+
         // Run exception analysis AFTER type checking
         // This determines which functions can throw exceptions and need Result return types
         let mut throw_analyzer = throws::ThrowAnalyzer::new(&self.ctx);
@@ -527,6 +533,136 @@ impl<'a> TypeChecker<'a> {
 
         self.scopes.pop();
         Ok(self.ctx.clone())
+    }
+
+    /// Detect scalar class fields that are mutated (assigned to) outside `__init__`.
+    ///
+    /// Python objects are reference types: all clones of an object share the same
+    /// underlying data. Rust's `Clone` copies plain scalar fields, breaking this
+    /// invariant for fields like `Value.grad` or `Value.data` that are updated
+    /// after construction (e.g., in `backward()` or in the training optimizer loop).
+    ///
+    /// We scan ALL code in the program (class methods other than `__init__`,
+    /// top-level statements, and top-level functions) for `expr.field = ...`
+    /// assignments where `expr` has a custom class type. When a scalar field
+    /// (Float, Int, Bool) is written this way, we mark it in
+    /// `ClassInfo::shared_mutable_fields`. Codegen then emits `Arc<Atomic*>`
+    /// storage for these fields so all clones share one value.
+    fn detect_shared_mutable_fields(&mut self, program: &Program) {
+        // Map: class_name -> set of field names that are mutated outside __init__.
+        let mut mutations: HashMap<String, HashSet<String>> = HashMap::new();
+
+        for item in &program.items {
+            match item {
+                Item::Class(class_def) => {
+                    // Scan all methods except __init__.
+                    for method in &class_def.methods {
+                        if method.name == "__init__" {
+                            continue;
+                        }
+                        Self::collect_typed_field_assigns(
+                            &method.body,
+                            &mut mutations,
+                            Some(&class_def.name),
+                        );
+                    }
+                }
+                Item::Function(func) => {
+                    // Top-level functions may assign to custom-type object fields.
+                    Self::collect_typed_field_assigns(&func.body, &mut mutations, None);
+                }
+                Item::Stmt(stmt) => {
+                    // Top-level statements (e.g., training loop) may update p.data.
+                    Self::collect_typed_field_assigns(
+                        std::slice::from_ref(stmt.as_ref()),
+                        &mut mutations,
+                        None,
+                    );
+                }
+                Item::Union(_) => {}
+            }
+        }
+
+        // Retain only scalar fields that actually exist in each class.
+        for (class_name, mut fields) in mutations {
+            if let Some(class_info) = self.ctx.classes.get_mut(&class_name) {
+                let class_fields = class_info.fields.clone();
+                fields.retain(|f| {
+                    matches!(
+                        class_fields.get(f),
+                        Some(Type::Float) | Some(Type::Int) | Some(Type::Bool)
+                    )
+                });
+                class_info.shared_mutable_fields = fields;
+            }
+        }
+    }
+
+    /// Recursively collect typed field assignments in a statement list.
+    ///
+    /// Two detection strategies:
+    /// - When `self_class` is `Some(name)`: look for `self.<field> = ...` patterns
+    ///   (for class methods, where we know the receiver type from context).
+    /// - When `self_class` is `None`: look for `expr.<field> = ...` where `expr.ty`
+    ///   is a known custom class type (for standalone functions / top-level code).
+    fn collect_typed_field_assigns(
+        stmts: &[Stmt],
+        mutations: &mut HashMap<String, HashSet<String>>,
+        self_class: Option<&str>,
+    ) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Assign { target, .. } => {
+                    if let AssignTarget::Attr { value, attr } = target.as_ref() {
+                        // Strategy 1: `self.<field> = ...` inside a class method.
+                        if let Some(class_name) = self_class {
+                            if matches!(&value.kind, ExprKind::Name(n) if n == "self") {
+                                mutations
+                                    .entry(class_name.to_string())
+                                    .or_default()
+                                    .insert(attr.clone());
+                                continue;
+                            }
+                        }
+                        // Strategy 2: typed receiver outside a class method.
+                        if let Some(Type::Custom(class_name)) = &value.ty {
+                            mutations
+                                .entry(class_name.clone())
+                                .or_default()
+                                .insert(attr.clone());
+                        }
+                    }
+                }
+                StmtKind::If { body, orelse, .. } => {
+                    Self::collect_typed_field_assigns(body, mutations, self_class);
+                    Self::collect_typed_field_assigns(orelse, mutations, self_class);
+                }
+                StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+                    Self::collect_typed_field_assigns(body, mutations, self_class);
+                }
+                StmtKind::Try {
+                    body,
+                    handlers,
+                    orelse,
+                    finalbody,
+                } => {
+                    Self::collect_typed_field_assigns(body, mutations, self_class);
+                    for handler in handlers {
+                        Self::collect_typed_field_assigns(&handler.body, mutations, self_class);
+                    }
+                    Self::collect_typed_field_assigns(orelse, mutations, self_class);
+                    Self::collect_typed_field_assigns(finalbody, mutations, self_class);
+                }
+                StmtKind::Match { cases, .. } => {
+                    for case in cases {
+                        Self::collect_typed_field_assigns(&case.body, mutations, self_class);
+                    }
+                }
+                // Note: nested `def` inside function bodies are not a StmtKind variant;
+                // they're lifted to top-level Items during lowering, so no case is needed.
+                _ => {}
+            }
+        }
     }
 
     /// Walk all expressions in the program collecting argument types at call sites
@@ -1135,10 +1271,10 @@ impl<'a> TypeChecker<'a> {
                 // If env already has a more specific type (from backward propagation
                 // through function params), update the value's type to match.
                 if let Some(env_ty) = env.get(name.as_str()) {
-                    if !env_ty.contains_unknown() {
-                        if value.ty.as_ref().map_or(true, |t| t.contains_unknown()) {
-                            value.ty = Some(env_ty.clone());
-                        }
+                    if !env_ty.contains_unknown()
+                        && value.ty.as_ref().is_none_or(|t| t.contains_unknown())
+                    {
+                        value.ty = Some(env_ty.clone());
                     }
                 }
                 // Track this variable's type for downstream Name expressions.
@@ -1161,11 +1297,10 @@ impl<'a> TypeChecker<'a> {
             StmtKind::Expr(expr) => {
                 Self::refresh_types_in_expr(expr, functions, env);
             }
-            StmtKind::Return { value } => {
-                if let Some(v) = value {
-                    Self::refresh_types_in_expr(v, functions, env);
-                }
+            StmtKind::Return { value: Some(v), .. } => {
+                Self::refresh_types_in_expr(v, functions, env);
             }
+            StmtKind::Return { value: None, .. } => {}
             StmtKind::For { iter, body, .. } => {
                 Self::refresh_types_in_expr(iter, functions, env);
                 Self::refresh_types_in_stmts(body, functions, env);
@@ -1207,7 +1342,7 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Name(name) => {
                 // Update Name type from environment if we have a newer type.
                 if let Some(ty) = env.get(name.as_str()) {
-                    if expr.ty.as_ref().map_or(true, |t| t.contains_unknown()) {
+                    if expr.ty.as_ref().is_none_or(|t| t.contains_unknown()) {
                         expr.ty = Some(ty.clone());
                     }
                 }
@@ -1233,7 +1368,7 @@ impl<'a> TypeChecker<'a> {
                                 if let Some(param_ty) = sig.params.get(i) {
                                     if !param_ty.contains_unknown() {
                                         let current_unknown =
-                                            arg.ty.as_ref().map_or(true, |t| t.contains_unknown());
+                                            arg.ty.as_ref().is_none_or(|t| t.contains_unknown());
                                         if current_unknown {
                                             arg.ty = Some(param_ty.clone());
                                             env.insert(arg_name.clone(), param_ty.clone());
@@ -1712,10 +1847,10 @@ impl<'a> TypeChecker<'a> {
                 }
                 ExprKind::Unary { expr: inner, .. } => contains_float_literal(inner),
                 ExprKind::Call { func, args, .. } => {
-                    contains_float_literal(func) || args.iter().any(|a| contains_float_literal(a))
+                    contains_float_literal(func) || args.iter().any(contains_float_literal)
                 }
                 ExprKind::Tuple(items) | ExprKind::List(items) => {
-                    items.iter().any(|i| contains_float_literal(i))
+                    items.iter().any(contains_float_literal)
                 }
                 _ => false,
             }
@@ -1830,17 +1965,20 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Run a lambda inference pass guarded against recursive re-entry for the same name.
-    pub(super) fn with_lambda_inference_guard<T>(
+    ///
+    /// When a recursive lambda (e.g., `build_topo` calls itself) triggers re-inference,
+    /// the inner recursive call would cycle back here. Rather than failing with an error,
+    /// we return `Ok(Type::Unknown)` so the body re-check can complete its side effects
+    /// (e.g., `set_var_type("visited", Set(Value))`) without erroring on the recursion.
+    pub(super) fn with_lambda_inference_guard(
         &mut self,
         name: &str,
-        span: Span,
-        f: impl FnOnce(&mut Self) -> Result<T, CompileError>,
-    ) -> Result<T, CompileError> {
+        _span: Span,
+        f: impl FnOnce(&mut Self) -> Result<Type, CompileError>,
+    ) -> Result<Type, CompileError> {
         if !self.active_lambda_inference.insert(name.to_string()) {
-            return Err(self.error(
-                span,
-                format!("Recursive lambda type inference cycle for '{name}'"),
-            ));
+            // Recursive re-entry: gracefully skip to allow outer re-check to finish.
+            return Ok(Type::Unknown);
         }
         let result = f(self);
         self.active_lambda_inference.remove(name);

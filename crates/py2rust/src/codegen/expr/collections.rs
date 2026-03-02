@@ -378,20 +378,23 @@ impl<'a> Codegen<'a> {
                         )));
                     }
                     let guard = self.new_tmp();
+                    let idx_tmp = self.new_tmp();
                     if is_local_name {
                         return Ok(self.wrap_result(format!(
-                            "{{ let list_ref = {base}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.py_list_guard(); py_list_get(&{guard}, {idx}) }}",
+                            "{{ let {idx_tmp} = {idx}; let list_ref = {base}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.py_list_guard(); py_list_get(&{guard}, {idx_tmp}) }}",
+                            idx_tmp = idx_tmp,
+                            idx = idx_expr,
                             base = base,
                             guard = guard,
-                            idx = idx_expr
                         )));
                     }
                     return Ok(self.wrap_result(format!(
-                        "{{ let {tmp} = {base}; let list_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.py_list_guard(); py_list_get(&{guard}, {idx}) }}",
+                        "{{ let {tmp} = {base}; let {idx_tmp} = {idx}; let list_ref = {tmp}.as_ref().expect(\"optional value is None\"); let {guard} = list_ref.py_list_guard(); py_list_get(&{guard}, {idx_tmp}) }}",
                         tmp = tmp,
                         base = base,
+                        idx_tmp = idx_tmp,
+                        idx = idx_expr,
                         guard = guard,
-                        idx = idx_expr
                     )));
                 }
                 if is_local_name {
@@ -484,12 +487,21 @@ impl<'a> Codegen<'a> {
             let idx_expr = self.gen_expr(index)?;
             self.uses.py_list_get = true;
             if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                let list_ref = if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
-                    format!("&{}", base)
-                } else {
-                    format!("&{}.py_list_guard()", base)
-                };
-                return Ok(self.wrap_result(format!("py_list_get({}, {})", list_ref, idx_expr)));
+                if matches!(self.list_storage_for_expr(value), ListStorage::Local) {
+                    return Ok(
+                        self.wrap_result(format!("py_list_get(&{base}, {idx})", idx = idx_expr))
+                    );
+                }
+                // Non-local (Arc<Mutex>) storage: pre-compute the index before acquiring the
+                // guard to prevent deadlock when the index expression calls py_len on the same
+                // list (e.g. `lst[i % len(lst)]` — py_len would re-lock the same mutex).
+                let idx_tmp = self.new_tmp();
+                return Ok(self.wrap_result(format!(
+                    "{{ let {idx_tmp} = {idx}; py_list_get(&{base}.py_list_guard(), {idx_tmp}) }}",
+                    idx_tmp = idx_tmp,
+                    idx = idx_expr,
+                    base = base
+                )));
             }
             return Ok(self.wrap_result(format!("py_list_get(&{}, {})", base, idx_expr)));
         }

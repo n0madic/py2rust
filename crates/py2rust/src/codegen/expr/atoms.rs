@@ -286,7 +286,42 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
-        Ok(format!("{}.{}", self.gen_expr(value)?, attr))
+        // Check for shared mutable fields (Arc<Atomic*>) before calling gen_expr
+        // to avoid borrow checker issues with the self.ctx reference.
+        //
+        // We check two sources for the receiver's class type:
+        // 1. The expression's own `ty` annotation (set by typechecking).
+        // 2. The local variable scope (fallback for cases where the expr node's
+        //    type is Unknown but the local variable's type was resolved, e.g.
+        //    for-loop variables over a typed list).
+        let receiver_class: Option<String> = match value.ty.as_ref() {
+            Some(Type::Custom(cn)) => Some(cn.clone()),
+            _ => {
+                if let ExprKind::Name(var_name) = &value.kind {
+                    match self.local_var_type(var_name) {
+                        Some(Type::Custom(cn)) => Some(cn.clone()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+        let shared_field_ty = receiver_class
+            .as_deref()
+            .and_then(|cn| self.shared_mutable_field_ty(cn, attr));
+        let obj_str = self.gen_expr(value)?;
+        let base = format!("{}.{}", obj_str, attr);
+        if let Some(field_ty) = shared_field_ty {
+            // Read the scalar value out of the atomic wrapper.
+            // AtomicU64 stores f64 bits; AtomicI64/AtomicBool are used directly.
+            return match field_ty {
+                Type::Float => Ok(format!("f64::from_bits({}.load(Ordering::Relaxed))", base)),
+                Type::Int | Type::Bool => Ok(format!("{}.load(Ordering::Relaxed)", base)),
+                _ => Ok(base),
+            };
+        }
+        Ok(base)
     }
 
     /// Lower a conditional (ternary) expression.

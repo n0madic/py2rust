@@ -433,8 +433,8 @@ impl<'a> Codegen<'a> {
         full_args: &[Expr],
         def: &Function,
     ) -> Result<String, CompileError> {
-        let mut pre_lines: Vec<String> = Vec::new();
-        let mut post_lines: Vec<String> = Vec::new();
+        let pre_lines: Vec<String> = Vec::new();
+        let post_lines: Vec<String> = Vec::new();
         let mut rendered_args = Vec::new();
 
         for (idx, arg) in full_args.iter().enumerate() {

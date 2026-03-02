@@ -74,17 +74,15 @@ impl<'a> TypeChecker<'a> {
                     // Refine name's type from List(List(Unknown)) to List(List(arg_ty)).
                     if let ExprKind::Index { value: outer, .. } = &value.kind {
                         if let ExprKind::Name(name) = &outer.kind {
-                            if let Some(var_ty) = self.lookup_var(name) {
-                                if let Type::List(outer_inner) = &var_ty {
-                                    if let Type::List(elem) = outer_inner.as_ref() {
-                                        if matches!(elem.as_ref(), Type::Unknown) {
-                                            self.set_var_type(
-                                                name,
-                                                Type::List(Box::new(Type::List(Box::new(
-                                                    arg_ty.clone(),
-                                                )))),
-                                            );
-                                        }
+                            if let Some(Type::List(outer_inner)) = self.lookup_var(name).as_ref() {
+                                if let Type::List(elem) = outer_inner.as_ref() {
+                                    if matches!(elem.as_ref(), Type::Unknown) {
+                                        self.set_var_type(
+                                            name,
+                                            Type::List(Box::new(Type::List(Box::new(
+                                                arg_ty.clone(),
+                                            )))),
+                                        );
                                     }
                                 }
                             }

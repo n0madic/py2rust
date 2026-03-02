@@ -133,6 +133,8 @@ pub(crate) struct Uses {
     pub(crate) py_random_choices: bool,
     /// Emit `NEXT_PY_ID` atomic counter for identity-based Hash/Eq on custom classes.
     pub(crate) needs_py_id: bool,
+    /// Emit `use std::sync::atomic::*` for `Arc<Atomic*>` shared mutable scalar fields.
+    pub(crate) shared_mutable_fields: bool,
 }
 
 /// Storage strategy for list values in generated Rust.
@@ -400,6 +402,20 @@ impl<'a> Codegen<'a> {
 
     pub(crate) fn local_var_type(&self, name: &str) -> Option<&Type> {
         self.local_vars.as_ref().and_then(|vars| vars.get(name))
+    }
+
+    /// Return the `Type` of a class field if it is a shared mutable field
+    /// (i.e., one that needs `Arc<Atomic*>` storage).
+    ///
+    /// Returns `None` when the field is either unknown, not a shared mutable field,
+    /// or the class itself is not found.
+    pub(crate) fn shared_mutable_field_ty(&self, class_name: &str, field: &str) -> Option<Type> {
+        let ci = self.ctx.classes.get(class_name)?;
+        if ci.shared_mutable_fields.contains(field) {
+            ci.fields.get(field).cloned()
+        } else {
+            None
+        }
     }
 
     /// Collect lambda default expressions from a statement, storing them keyed

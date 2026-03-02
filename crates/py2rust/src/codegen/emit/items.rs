@@ -49,7 +49,19 @@ impl<'a> Codegen<'a> {
             self.push_line("pub _py_id: u64,");
         }
         for (field, ty) in &class_info.fields {
-            let ty_str = self.rust_type(ty);
+            // Shared mutable fields use atomic types so all clones see the same value.
+            let is_shared = class_info.shared_mutable_fields.contains(field);
+            let ty_str = if is_shared {
+                self.uses.shared_mutable_fields = true;
+                match ty {
+                    Type::Float => "Arc<AtomicU64>".to_string(),
+                    Type::Int => "Arc<AtomicI64>".to_string(),
+                    Type::Bool => "Arc<AtomicBool>".to_string(),
+                    _ => self.rust_type(ty),
+                }
+            } else {
+                self.rust_type(ty)
+            };
             self.push_line(&format!("pub {}: {},", field, ty_str));
         }
         self.indent -= 1;
@@ -629,12 +641,31 @@ impl<'a> Codegen<'a> {
                 "_py_id: NEXT_PY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),",
             );
         }
-        for (field, _) in &class_info.fields {
+        for (field, ty) in &class_info.fields {
             // Safe: missing fields are rejected above during __init__ validation.
             let expr = field_inits
                 .get(field)
                 .expect("field init missing after __init__ validation");
-            self.push_line(&format!("{}: {},", field, expr));
+            // Shared mutable fields are wrapped in Arc<Atomic*> on construction.
+            let is_shared = class_info.shared_mutable_fields.contains(field);
+            let init_str = if is_shared {
+                match ty {
+                    Type::Float => {
+                        // Store f64 bits in AtomicU64 using to_bits() for exact representation.
+                        format!("Arc::new(AtomicU64::new(f64::to_bits(({}) as f64)))", expr)
+                    }
+                    Type::Int => {
+                        format!("Arc::new(AtomicI64::new({}))", expr)
+                    }
+                    Type::Bool => {
+                        format!("Arc::new(AtomicBool::new({}))", expr)
+                    }
+                    _ => expr.clone(),
+                }
+            } else {
+                expr.clone()
+            };
+            self.push_line(&format!("{}: {},", field, init_str));
         }
         self.indent -= 1;
         self.push_line("}");

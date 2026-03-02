@@ -646,23 +646,21 @@ impl<'a> Codegen<'a> {
                         });
                     if let Some(Type::Custom(class_name)) = value_ty.as_ref() {
                         if let Some(class_info) = self.ctx.classes.get(class_name.as_str()) {
-                            if let Some(field_ty) = class_info.fields.get(attr.as_str()) {
-                                if let Type::List(inner) = field_ty {
-                                    let tmp = self.new_tmp();
-                                    let guard = self.new_tmp();
-                                    let iter_expr = if self.is_copy_type(inner) {
-                                        format!("{}.iter().copied()", guard)
-                                    } else {
-                                        format!("{}.iter().cloned()", guard)
-                                    };
-                                    return Ok(IterSource {
-                                        setup: vec![
-                                            format!("let {} = {}.clone()", tmp, rendered),
-                                            format!("let {} = {}.py_list_guard()", guard, tmp),
-                                        ],
-                                        expr: iter_expr,
-                                    });
-                                }
+                            if let Some(Type::List(inner)) = class_info.fields.get(attr.as_str()) {
+                                let tmp = self.new_tmp();
+                                let guard = self.new_tmp();
+                                let iter_expr = if self.is_copy_type(inner) {
+                                    format!("{}.iter().copied()", guard)
+                                } else {
+                                    format!("{}.iter().cloned()", guard)
+                                };
+                                return Ok(IterSource {
+                                    setup: vec![
+                                        format!("let {} = {}.clone()", tmp, rendered),
+                                        format!("let {} = {}.py_list_guard()", guard, tmp),
+                                    ],
+                                    expr: iter_expr,
+                                });
                             }
                         }
                     }
@@ -791,36 +789,34 @@ impl<'a> Codegen<'a> {
                 if let ExprKind::Attr { value, attr } = &expr.kind {
                     if let Some(Type::Custom(class_name)) = value.ty.as_ref() {
                         if let Some(class_info) = self.ctx.classes.get(class_name.as_str()) {
-                            if let Some(field_ty) = class_info.fields.get(attr.as_str()) {
-                                if let Type::List(inner) = field_ty {
-                                    if context == IterContext::ImmediateConsumption {
-                                        let iter_method = if self.is_copy_type(inner) {
-                                            ".iter().copied()"
-                                        } else {
-                                            ".iter().cloned()"
-                                        };
-                                        return Ok(format!(
-                                            "{}.py_list_guard(){}",
-                                            rendered, iter_method
-                                        ));
-                                    }
-                                    let tmp = self.new_tmp();
-                                    let idx = self.new_tmp();
-                                    let guard = self.new_tmp();
-                                    let item_expr = if self.is_copy_type(inner) {
-                                        format!("{}[{}]", guard, idx)
+                            if let Some(Type::List(inner)) = class_info.fields.get(attr.as_str()) {
+                                if context == IterContext::ImmediateConsumption {
+                                    let iter_method = if self.is_copy_type(inner) {
+                                        ".iter().copied()"
                                     } else {
-                                        format!("{}[{}].clone()", guard, idx)
+                                        ".iter().cloned()"
                                     };
                                     return Ok(format!(
-                                        "{{ let {tmp} = {expr}.clone(); let mut {idx}: usize = 0; std::iter::from_fn(move || {{ let {guard} = {tmp}.py_list_guard(); if {idx} < {guard}.len() {{ let item = {item}; {idx} += 1; Some(item) }} else {{ None }} }}) }}",
-                                        tmp = tmp,
-                                        expr = rendered,
-                                        guard = guard,
-                                        idx = idx,
-                                        item = item_expr
+                                        "{}.py_list_guard(){}",
+                                        rendered, iter_method
                                     ));
                                 }
+                                let tmp = self.new_tmp();
+                                let idx = self.new_tmp();
+                                let guard = self.new_tmp();
+                                let item_expr = if self.is_copy_type(inner) {
+                                    format!("{}[{}]", guard, idx)
+                                } else {
+                                    format!("{}[{}].clone()", guard, idx)
+                                };
+                                return Ok(format!(
+                                    "{{ let {tmp} = {expr}.clone(); let mut {idx}: usize = 0; std::iter::from_fn(move || {{ let {guard} = {tmp}.py_list_guard(); if {idx} < {guard}.len() {{ let item = {item}; {idx} += 1; Some(item) }} else {{ None }} }}) }}",
+                                    tmp = tmp,
+                                    expr = rendered,
+                                    guard = guard,
+                                    idx = idx,
+                                    item = item_expr
+                                ));
                             }
                         }
                     }
