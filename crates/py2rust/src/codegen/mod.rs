@@ -131,6 +131,8 @@ pub(crate) struct Uses {
     pub(crate) py_random_shuffle: bool,
     pub(crate) py_random_gauss: bool,
     pub(crate) py_random_choices: bool,
+    /// Emit `NEXT_PY_ID` atomic counter for identity-based Hash/Eq on custom classes.
+    pub(crate) needs_py_id: bool,
 }
 
 /// Storage strategy for list values in generated Rust.

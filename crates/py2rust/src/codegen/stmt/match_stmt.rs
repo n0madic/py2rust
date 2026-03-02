@@ -44,8 +44,14 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        // Generate pattern for ALL fields (required by Rust), using bindings or _ for each
+        // Generate pattern for ALL fields (required by Rust), using bindings or _ for each.
         let mut bindings = Vec::new();
+        // Classes with identity-based Hash/Eq have a _py_id field that must be ignored.
+        let needs_py_id = !class_info.methods.contains_key("__eq__")
+            && !class_info.methods.contains_key("__hash__");
+        if needs_py_id {
+            bindings.push("_py_id: _".to_string());
+        }
         for (field, _) in class_info.fields.iter() {
             if let Some(binding) = field_bindings.get(field) {
                 if field == binding {

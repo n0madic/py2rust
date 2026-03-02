@@ -2770,6 +2770,12 @@ impl<'a> Codegen<'a> {
             || self.uses.py_urllib_response_getcode
             || self.uses.py_urllib_response_geturl;
 
+        // Atomic counter for identity-based Hash/Eq on custom classes.
+        if self.uses.needs_py_id {
+            self.push_line("static NEXT_PY_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);");
+            self.push_line("");
+        }
+
         // PyError enum is needed for exception handling.
         if self.needs_py_error() {
             self.emit_py_error_enum();

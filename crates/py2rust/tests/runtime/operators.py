@@ -193,6 +193,18 @@ def test_augmented_bitwise() -> None:
     assert e == 16, "64 >>= 2 should produce 16"
 
 
+# Python true division (/) always returns float, even for int operands.
+def test_truediv() -> None:
+    assert 1 / 2 == 0.5, "1 / 2 should be 0.5"
+    assert 10 / 3 == 10.0 / 3.0, "int truediv must match float truediv"
+    assert 6 / 2 == 3.0, "6 / 2 should be 3.0 (float)"
+    assert 7 / 2 == 3.5, "7 / 2 should be 3.5"
+    x: int = 9
+    y: int = 4
+    result: float = x / y
+    assert result == 2.25, "9 / 4 should be 2.25"
+
+
 # Run all operator tests in this file.
 test_membership()
 test_precedence()
@@ -200,5 +212,6 @@ test_set_ops()
 test_python_modulo_and_set_ordering()
 test_augmented_assignments()
 test_augmented_bitwise()
+test_truediv()
 
 print("All operator tests passed!")

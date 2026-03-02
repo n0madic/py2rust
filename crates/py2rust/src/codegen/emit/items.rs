@@ -33,9 +33,21 @@ impl<'a> Codegen<'a> {
             self.error(class_def.span, format!("Unknown class: {}", class_def.name))
         })?;
 
-        self.push_line("#[derive(Debug, Clone)]");
+        // Python classes without __eq__/__hash__ use identity-based comparison.
+        // We add a _py_id field and emit PartialEq/Eq/Hash/Debug manually.
+        let needs_py_id = !class_info.methods.contains_key("__eq__")
+            && !class_info.methods.contains_key("__hash__");
+        if needs_py_id {
+            self.uses.needs_py_id = true;
+            self.push_line("#[derive(Clone)]");
+        } else {
+            self.push_line("#[derive(Debug, Clone)]");
+        }
         self.push_line(&format!("pub struct {} {{", class_def.name));
         self.indent += 1;
+        if needs_py_id {
+            self.push_line("pub _py_id: u64,");
+        }
         for (field, ty) in &class_info.fields {
             let ty_str = self.rust_type(ty);
             self.push_line(&format!("pub {}: {},", field, ty_str));
@@ -51,7 +63,14 @@ impl<'a> Codegen<'a> {
         } else if class_info.fields.is_empty() {
             self.push_line(&format!("pub fn new() -> {} {{", class_def.name));
             self.indent += 1;
-            self.push_line(&format!("{} {{}}", class_def.name));
+            if needs_py_id {
+                self.push_line(&format!(
+                    "{} {{ _py_id: NEXT_PY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }}",
+                    class_def.name
+                ));
+            } else {
+                self.push_line(&format!("{} {{}}", class_def.name));
+            }
             self.indent -= 1;
             self.push_line("}");
         } else {
@@ -127,7 +146,42 @@ impl<'a> Codegen<'a> {
         // Emit operator trait implementations for classes with dunder methods.
         self.emit_operator_traits(&class_def.name, class_info)?;
 
+        // Emit identity-based PartialEq/Eq/Hash/Debug for classes without __eq__/__hash__.
+        if needs_py_id {
+            self.emit_identity_traits(&class_def.name);
+        }
+
         Ok(())
+    }
+
+    /// Emit identity-based PartialEq, Eq, Hash, and Debug implementations.
+    ///
+    /// Python classes without `__eq__`/`__hash__` compare by identity (like pointer
+    /// comparison). We use a `_py_id` field to simulate this. The custom Debug impl
+    /// prevents recursive graph printing that can cause hangs.
+    fn emit_identity_traits(&mut self, class_name: &str) {
+        self.push_line(&format!("impl PartialEq for {} {{", class_name));
+        self.indent += 1;
+        self.push_line("fn eq(&self, other: &Self) -> bool { self._py_id == other._py_id }");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line(&format!("impl Eq for {} {{}}", class_name));
+        self.push_line(&format!("impl std::hash::Hash for {} {{", class_name));
+        self.indent += 1;
+        self.push_line(
+            "fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self._py_id.hash(state); }",
+        );
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line(&format!("impl std::fmt::Debug for {} {{", class_name));
+        self.indent += 1;
+        self.push_line(&format!(
+            "fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ write!(f, \"{}(id={{}})\", self._py_id) }}",
+            class_name
+        ));
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
     }
 
     /// Emit std::ops trait implementations for classes that define dunder methods.
@@ -567,6 +621,14 @@ impl<'a> Codegen<'a> {
         }
         self.push_line(&format!("{} {{", class_def.name));
         self.indent += 1;
+        // Add identity id for classes without __eq__/__hash__.
+        if !class_info.methods.contains_key("__eq__")
+            && !class_info.methods.contains_key("__hash__")
+        {
+            self.push_line(
+                "_py_id: NEXT_PY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),",
+            );
+        }
         for (field, _) in &class_info.fields {
             // Safe: missing fields are rejected above during __init__ validation.
             let expr = field_inits

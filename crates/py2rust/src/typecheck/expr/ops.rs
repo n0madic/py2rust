@@ -264,6 +264,9 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Ok(Type::Int)
                     }
+                } else if matches!(op, BinOp::Div) {
+                    // Python TrueDiv (/) always returns float, even for int / int.
+                    Ok(Type::Float)
                 } else if matches!(left_ty, Type::Float) || matches!(right_ty, Type::Float) {
                     Ok(Type::Float)
                 } else {
