@@ -1606,7 +1606,19 @@ impl<'a> Codegen<'a> {
                             }
                         })
                     };
+                    // For fresh-return functions, force list expressions to use
+                    // local storage (Vec<T>) instead of Arc<Mutex<Vec<T>>>.
+                    let is_fresh_ret = self
+                        .current_function
+                        .as_ref()
+                        .is_some_and(|name| self.fresh_return_functions.contains(name));
+                    if is_fresh_ret {
+                        self.force_local_list_storage = true;
+                    }
                     let mut expr_str = self.gen_expr_with_expected(expr, expected.as_ref())?;
+                    if is_fresh_ret {
+                        self.force_local_list_storage = false;
+                    }
                     if matches!(expr.ty.as_ref(), Some(Type::Lambda { .. })) {
                         if let Some(expected_ty) = expected.as_ref() {
                             if matches!(expected_ty, Type::Lambda { .. }) {

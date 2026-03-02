@@ -384,8 +384,23 @@ impl<'a> Codegen<'a> {
                 keywords,
             } => {
                 if let ExprKind::Name(name) = &func.kind {
-                    return self
-                        .gen_list_ctor_from_call_with_storage(expr, name, args, keywords, storage);
+                    // list()/tuple() constructors.
+                    if let Some(rendered) = self
+                        .gen_list_ctor_from_call_with_storage(expr, name, args, keywords, storage)?
+                    {
+                        return Ok(Some(rendered));
+                    }
+                    // Calls to fresh-return functions: the function body already
+                    // returns Vec<T>, so wrap with storage as needed.
+                    if self.fresh_return_functions.contains(name) {
+                        // Temporarily force local storage so the call itself
+                        // doesn't get double-wrapped by gen_expr.
+                        let prev = self.force_local_list_storage;
+                        self.force_local_list_storage = true;
+                        let call_expr = self.gen_expr(expr)?;
+                        self.force_local_list_storage = prev;
+                        return Ok(Some(self.wrap_list_storage_expr(&call_expr, storage)));
+                    }
                 }
                 Ok(None)
             }

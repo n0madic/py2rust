@@ -108,6 +108,12 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - Compilation: `--compile`/`--run` use `rustc -C opt-level=3` for optimized binaries. Tests keep `opt-level=0` for fast compilation.
 - Read-only scalar globals (assigned exactly once, Int/Float/Bool) use `OnceLock<T>` without Mutex.
   Mutable globals still use `OnceLock<Mutex<T>>`. Detection in `analysis/globals.rs:collect_readonly_globals`.
+- Fresh-return function optimization: functions that always return freshly-constructed lists
+  (comprehensions, literals, list concat, `list()` calls, or calls to other fresh-return functions)
+  use `Vec<T>` return type instead of `Arc<Mutex<Vec<T>>>`. Detection in
+  `analysis/list_storage.rs:detect_fresh_return_functions` with fixpoint loop for transitive detection.
+  Callers that need shared storage wrap with `Arc::new(Mutex::new(...))` at the call site;
+  callers storing in Local variables receive `Vec<T>` directly.
 - Numeric literals are emitted with suffixes (`i64`/`f64`) to avoid ambiguity.
 - Mixed int/float arithmetic casts ints to f64 when result is float.
 - Optional truthiness follows Python semantics (`Some(0)`, `Some("")`, etc. are falsy).

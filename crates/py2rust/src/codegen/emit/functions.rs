@@ -313,6 +313,7 @@ impl<'a> Codegen<'a> {
             .get(&func.name)
             .is_some_and(|sig| sig.is_generator);
 
+        let is_fresh_return = self.fresh_return_functions.contains(&func.name);
         let mut ret_str = if is_generator {
             format!("__PyGen_{}", func.name)
         } else if matches!(ret_ty, Type::Unknown) {
@@ -325,7 +326,12 @@ impl<'a> Codegen<'a> {
             } else {
                 ret_ty.clone()
             };
-            self.rust_type(&ret_ty_resolved)
+            // Fresh-return functions use Vec<T> instead of Arc<Mutex<Vec<T>>>.
+            if is_fresh_return {
+                self.rust_type_fresh_return(&ret_ty_resolved)
+            } else {
+                self.rust_type(&ret_ty_resolved)
+            }
         };
         if !is_generator && matches!(ret_ty, Type::Unknown) {
             if let Some(ret_name) = identity_return_param(func) {

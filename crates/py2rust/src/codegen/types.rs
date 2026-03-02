@@ -174,6 +174,20 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Render a return type for fresh-return functions, using `Vec<T>` for list types.
+    /// Handles both direct `List<T>` and `Result<List<T>, E>` return types.
+    pub(crate) fn rust_type_fresh_return(&mut self, ty: &Type) -> String {
+        match ty {
+            Type::List(inner) => format!("Vec<{}>", self.rust_type(inner)),
+            Type::Result(ok, err) => {
+                let ok_str = self.rust_type_fresh_return(ok);
+                let err_str = self.rust_type(err);
+                format!("Result<{}, {}>", ok_str, err_str)
+            }
+            _ => self.rust_type(ty),
+        }
+    }
+
     /// Convert a Python Type to a Rust type, using the requested list storage.
     pub(crate) fn rust_type_for_list_storage(&mut self, ty: &Type, storage: ListStorage) -> String {
         match (ty, storage) {

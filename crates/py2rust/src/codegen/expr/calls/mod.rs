@@ -98,8 +98,22 @@ impl<'a> Codegen<'a> {
                     )
                 };
                 // Add ? operator if function can throw.
-                if sig.can_throw {
-                    return Ok(format!("({}?)", call));
+                let call = if sig.can_throw {
+                    format!("({}?)", call)
+                } else {
+                    call
+                };
+                // Fresh-return functions return Vec<T>; wrap with
+                // Arc<Mutex<>> unless we're in a local-list context.
+                if self.fresh_return_functions.contains(name) && !self.force_local_list_storage {
+                    let inner_ret = sig
+                        .ret
+                        .unwrap_result()
+                        .map(|(ok, _)| ok)
+                        .unwrap_or(&sig.ret);
+                    if matches!(inner_ret, Type::List(_)) {
+                        return Ok(format!("Arc::new(Mutex::new({}))", call));
+                    }
                 }
                 return Ok(call);
             }

@@ -29,7 +29,14 @@ impl<'a> Codegen<'a> {
         expr: &Expr,
         items: &[Expr],
     ) -> Result<String, CompileError> {
-        self.gen_list_expr_with_storage(expr, items, ListStorage::SharedCell)
+        let storage = if self.force_local_list_storage {
+            // Consume the flag so inner list expressions use normal storage.
+            self.force_local_list_storage = false;
+            ListStorage::Local
+        } else {
+            ListStorage::SharedCell
+        };
+        self.gen_list_expr_with_storage(expr, items, storage)
     }
 
     /// Lower a list literal with an explicit storage strategy.
@@ -772,14 +779,14 @@ impl<'a> Codegen<'a> {
         ifs: &[Expr],
         generators: &[CompClause],
     ) -> Result<String, CompileError> {
-        self.gen_list_comp_expr_with_storage(
-            elt,
-            target,
-            iter,
-            ifs,
-            generators,
-            ListStorage::SharedCell,
-        )
+        let storage = if self.force_local_list_storage {
+            // Consume the flag so inner list expressions use normal storage.
+            self.force_local_list_storage = false;
+            ListStorage::Local
+        } else {
+            ListStorage::SharedCell
+        };
+        self.gen_list_comp_expr_with_storage(elt, target, iter, ifs, generators, storage)
     }
 
     /// Lower list comprehension expressions with explicit storage.

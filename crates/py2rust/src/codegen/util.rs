@@ -78,6 +78,11 @@ impl<'a> Codegen<'a> {
                 return self.list_storage_for_name(name);
             }
         }
+        // Fresh-return flag forces Local for anonymous list expressions
+        // (literals, comprehensions, constructors) but not named variables.
+        if self.force_local_list_storage {
+            return ListStorage::Local;
+        }
         ListStorage::SharedCell
     }
 

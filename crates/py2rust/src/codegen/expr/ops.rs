@@ -156,7 +156,14 @@ impl<'a> Codegen<'a> {
             && matches!(left.ty.as_ref(), Some(Type::List(_)))
             && matches!(right.ty.as_ref(), Some(Type::List(_)))
         {
-            return self.gen_list_concat_expr_with_storage(left, right, ListStorage::SharedCell);
+            let storage = if self.force_local_list_storage {
+                // Consume the flag so inner expressions use normal storage.
+                self.force_local_list_storage = false;
+                ListStorage::Local
+            } else {
+                ListStorage::SharedCell
+            };
+            return self.gen_list_concat_expr_with_storage(left, right, storage);
         }
         if matches!(op, BinOp::Mul) {
             let left_is_str = matches!(left.ty.as_ref(), Some(Type::Str));

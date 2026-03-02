@@ -337,6 +337,14 @@ pub struct Codegen<'a> {
     /// suffix (`Vec::new()` instead of `Vec::<PyRepr>::new()`) to let Rust infer
     /// the element type from context (e.g. inside comprehension push() calls).
     pub(crate) infer_empty_list_type: bool,
+    /// Functions that always return freshly-constructed lists (literals,
+    /// comprehensions, list concat, etc.). These functions use `Vec<T>` return
+    /// type instead of `Arc<Mutex<Vec<T>>>` to avoid unnecessary wrapping.
+    pub(crate) fresh_return_functions: HashSet<String>,
+    /// When true, list expressions should be generated with `ListStorage::Local`
+    /// (i.e., plain `Vec<T>`) regardless of the normal storage strategy.
+    /// Set temporarily during Return codegen for fresh-return functions.
+    pub(crate) force_local_list_storage: bool,
 }
 
 /// Cached program-level analysis and item partitions used during emission.
@@ -349,6 +357,9 @@ struct ProgramFacts<'program> {
     /// Shared globals that are assigned exactly once and have a scalar (Copy) type.
     /// These use `OnceLock<T>` without Mutex for zero-overhead reads.
     readonly_globals: HashSet<String>,
+    /// Functions that always return freshly-constructed lists and can use `Vec<T>`
+    /// return type instead of `Arc<Mutex<Vec<T>>>`.
+    fresh_return_functions: HashSet<String>,
     name_compare_only: bool,
     main_list_elems: HashMap<String, Type>,
     main_dict_kv: HashMap<String, (Type, Type)>,
@@ -397,6 +408,8 @@ impl<'a> Codegen<'a> {
             recursive_fn_captures: HashMap::new(),
             already_mut_ref_captures: HashSet::new(),
             infer_empty_list_type: false,
+            fresh_return_functions: HashSet::new(),
+            force_local_list_storage: false,
         }
     }
 
@@ -523,6 +536,7 @@ impl<'a> Codegen<'a> {
         self.collect_uses(program)?;
         self.shared_globals = facts.shared_globals;
         self.readonly_globals = facts.readonly_globals;
+        self.fresh_return_functions = facts.fresh_return_functions;
         self.name_compare_only = facts.name_compare_only;
 
         // Phase 3: Generate code for all items
@@ -592,6 +606,7 @@ impl<'a> Codegen<'a> {
 
         let shared_globals = self.collect_shared_globals(program);
         let readonly_globals = self.collect_readonly_globals(program, &shared_globals);
+        let fresh_return_functions = self.detect_fresh_return_functions(program);
         let name_compare_only = self.analyze_name_compare_only(program);
         let main_list_elems = self.collect_list_elem_types_for_stmt_refs(&top_level_stmts);
         let main_dict_kv = self.collect_dict_kv_types_for_stmt_refs(&top_level_stmts);
@@ -607,6 +622,7 @@ impl<'a> Codegen<'a> {
             top_level_stmts,
             shared_globals,
             readonly_globals,
+            fresh_return_functions,
             name_compare_only,
             main_list_elems,
             main_dict_kv,

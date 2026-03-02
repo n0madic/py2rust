@@ -130,10 +130,21 @@ impl<'a> Codegen<'a> {
                 args,
                 keywords,
             } => {
-                keywords.is_empty()
+                // list()/tuple() constructors produce fresh lists.
+                if keywords.is_empty()
                     && args.len() <= 1
                     && matches!(expr.ty.as_ref(), Some(Type::List(_)))
                     && matches!(&func.kind, ExprKind::Name(name) if name == "list" || name == "tuple")
+                {
+                    return true;
+                }
+                // Calls to functions known to return fresh lists.
+                if let ExprKind::Name(name) = &func.kind {
+                    if self.fresh_return_functions.contains(name) {
+                        return true;
+                    }
+                }
+                false
             }
             // TODO: Extend is_fresh_list_expr to recognize sorted(), reversed(), .copy()
             // as fresh list expressions. This requires aligning the codegen for these
@@ -223,6 +234,73 @@ impl<'a> Codegen<'a> {
         storage
             .entry(name.to_string())
             .or_insert(ListStorage::Local);
+    }
+
+    /// Detect functions whose return type is `List` and all return statements
+    /// produce a fresh list value (literal, comprehension, list concat, etc.).
+    ///
+    /// Uses a fixpoint loop so that transitive fresh-return calls are detected:
+    /// if `softmax()` returns a fresh list and `attention()` returns `softmax(...)`,
+    /// then `attention()` is also detected as a fresh-return function.
+    pub(in crate::codegen) fn detect_fresh_return_functions(
+        &self,
+        program: &Program,
+    ) -> HashSet<String> {
+        let mut result = HashSet::new();
+        // Collect candidate functions: those with List return type
+        // (possibly wrapped in Result for throwing functions).
+        let mut candidates: Vec<&Function> = Vec::new();
+        for item in &program.items {
+            if let Item::Function(func) = item {
+                let ret_ty = self.ctx.functions.get(&func.name).map(|sig| &sig.ret);
+                let inner_ret =
+                    ret_ty.and_then(|t| t.unwrap_result().map(|(ok, _)| ok).or(Some(t)));
+                if matches!(inner_ret, Some(Type::List(_))) {
+                    candidates.push(func);
+                }
+            }
+        }
+        // Fixpoint loop: keep expanding until no new functions are added.
+        // 2 passes suffice for typical call depths.
+        for _ in 0..3 {
+            let prev_len = result.len();
+            for func in &candidates {
+                if result.contains(&func.name) {
+                    continue;
+                }
+                let returns = collect_return_exprs(&func.body);
+                if returns.is_empty() {
+                    continue;
+                }
+                if returns
+                    .iter()
+                    .all(|expr| self.is_fresh_list_expr_with_known(expr, &result))
+                {
+                    result.insert(func.name.clone());
+                }
+            }
+            if result.len() == prev_len {
+                break;
+            }
+        }
+        result
+    }
+
+    /// Like `is_fresh_list_expr`, but also recognizes calls to already-known
+    /// fresh-return functions for transitive detection.
+    fn is_fresh_list_expr_with_known(&self, expr: &Expr, known_fresh: &HashSet<String>) -> bool {
+        if self.is_fresh_list_expr(expr) {
+            return true;
+        }
+        // Check if this is a call to a known fresh-return function.
+        if let ExprKind::Call { func, .. } = &expr.kind {
+            if let ExprKind::Name(name) = &func.kind {
+                if known_fresh.contains(name) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Decide whether a call is safe to treat list arguments as non-escaping.
@@ -323,6 +401,67 @@ impl<'codegen, 'ctx, 'src> StorageExprCallbacks<ListUseContext>
         // Nested block expressions participate in the same storage map.
         self.codegen
             .collect_list_storage_in_stmts(stmts, self.shared_globals, self.storage);
+    }
+}
+
+/// Recursively walk statement trees and collect all return value expressions.
+fn collect_return_exprs(stmts: &[Stmt]) -> Vec<&Expr> {
+    let mut result = Vec::new();
+    for stmt in stmts {
+        collect_return_exprs_inner(&stmt.kind, &mut result);
+    }
+    result
+}
+
+/// Walk a single statement kind to collect return expressions.
+fn collect_return_exprs_inner<'a>(kind: &'a StmtKind, result: &mut Vec<&'a Expr>) {
+    match kind {
+        StmtKind::Return { value: Some(expr) } => {
+            result.push(expr);
+        }
+        StmtKind::Return { value: None } => {}
+        StmtKind::If { body, orelse, .. } => {
+            for s in body {
+                collect_return_exprs_inner(&s.kind, result);
+            }
+            for s in orelse {
+                collect_return_exprs_inner(&s.kind, result);
+            }
+        }
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+            for s in body {
+                collect_return_exprs_inner(&s.kind, result);
+            }
+        }
+        StmtKind::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+        } => {
+            for s in body {
+                collect_return_exprs_inner(&s.kind, result);
+            }
+            for handler in handlers {
+                for s in &handler.body {
+                    collect_return_exprs_inner(&s.kind, result);
+                }
+            }
+            for s in orelse {
+                collect_return_exprs_inner(&s.kind, result);
+            }
+            for s in finalbody {
+                collect_return_exprs_inner(&s.kind, result);
+            }
+        }
+        StmtKind::Match { cases, .. } => {
+            for case in cases {
+                for s in &case.body {
+                    collect_return_exprs_inner(&s.kind, result);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
