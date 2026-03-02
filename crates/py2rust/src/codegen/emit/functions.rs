@@ -151,7 +151,8 @@ impl<'a> Codegen<'a> {
         // Precompute dict storage strategy for this function's locals.
         self.local_dict_storage =
             Some(self.collect_dict_storage_for_stmts(&func.body, &self.shared_globals));
-        let mut_counts = collect_assign_counts(&func.body, |cn, m| self.user_method_is_mutating(cn, m));
+        let mut_counts =
+            collect_assign_counts(&func.body, |cn, m| self.user_method_is_mutating(cn, m));
         for stmt in &func.body {
             self.emit_stmt(stmt, &mut_counts)?;
         }
@@ -210,7 +211,9 @@ impl<'a> Codegen<'a> {
 
             // Initialize defaults and class attributes before running top-level code.
             self.emit_pre_main_inits(program)?;
-            let mut_counts = collect_assign_counts_for_stmt_refs(body, |cn, m| self.user_method_is_mutating(cn, m));
+            let mut_counts = collect_assign_counts_for_stmt_refs(body, |cn, m| {
+                self.user_method_is_mutating(cn, m)
+            });
             for stmt in body {
                 self.emit_stmt(stmt, &mut_counts)?;
             }
@@ -235,7 +238,9 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             // Initialize defaults and class attributes before running top-level code.
             self.emit_pre_main_inits(program)?;
-            let mut_counts = collect_assign_counts_for_stmt_refs(body, |cn, m| self.user_method_is_mutating(cn, m));
+            let mut_counts = collect_assign_counts_for_stmt_refs(body, |cn, m| {
+                self.user_method_is_mutating(cn, m)
+            });
             for stmt in body {
                 self.emit_stmt(stmt, &mut_counts)?;
             }
@@ -250,7 +255,8 @@ impl<'a> Codegen<'a> {
     fn function_signature(&mut self, func: &Function) -> Result<String, CompileError> {
         // Clear borrowed params from previous function.
         self.borrowed_params.clear();
-        let mut_counts = collect_assign_counts(&func.body, |cn, m| self.user_method_is_mutating(cn, m));
+        let mut_counts =
+            collect_assign_counts(&func.body, |cn, m| self.user_method_is_mutating(cn, m));
 
         let inferred_param_types = self
             .ctx
@@ -393,7 +399,8 @@ impl<'a> Codegen<'a> {
     ) -> Result<String, CompileError> {
         // Clear borrowed params from previous function.
         self.borrowed_params.clear();
-        let mut_counts = collect_assign_counts(&func.body, |cn, m| self.user_method_is_mutating(cn, m));
+        let mut_counts =
+            collect_assign_counts(&func.body, |cn, m| self.user_method_is_mutating(cn, m));
 
         let mut params = Vec::new();
         let kind = self

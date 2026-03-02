@@ -481,7 +481,10 @@ impl<'a> Codegen<'a> {
 /// - Index assignments: `list[i] = value` mutates the list
 /// - Method calls that mutate: built-in collection/file methods plus any user-defined
 ///   method that the caller determines takes `&mut self` (via `user_method_is_mutating`).
-fn collect_assign_counts_impl<'stmt, I, F>(stmts: I, user_method_is_mutating: F) -> HashMap<String, usize>
+fn collect_assign_counts_impl<'stmt, I, F>(
+    stmts: I,
+    user_method_is_mutating: F,
+) -> HashMap<String, usize>
 where
     I: IntoIterator<Item = &'stmt Stmt>,
     F: Fn(/*class_name:*/ &str, /*method_name:*/ &str) -> bool,
@@ -489,7 +492,11 @@ where
     let mut counts = HashMap::new();
     // Inner helper: visit an expression and record all mutation-inducing sub-expressions.
     // `umf` is the type-informed predicate for user-defined methods.
-    fn visit_expr(expr: &Expr, counts: &mut HashMap<String, usize>, umf: &dyn Fn(&str, &str) -> bool) {
+    fn visit_expr(
+        expr: &Expr,
+        counts: &mut HashMap<String, usize>,
+        umf: &dyn Fn(&str, &str) -> bool,
+    ) {
         match &expr.kind {
             ExprKind::Call {
                 func,
@@ -644,7 +651,11 @@ where
         }
     }
 
-    fn visit_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>, umf: &dyn Fn(&str, &str) -> bool) {
+    fn visit_stmt(
+        stmt: &Stmt,
+        counts: &mut HashMap<String, usize>,
+        umf: &dyn Fn(&str, &str) -> bool,
+    ) {
         fn record_target(target: &AssignTarget, counts: &mut HashMap<String, usize>) {
             match target {
                 AssignTarget::Name(name) => {

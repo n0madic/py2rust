@@ -682,6 +682,11 @@ impl<'a> Codegen<'a> {
     /// This is only used for local variables to emulate Python's dynamic rebind
     /// behavior when the static Rust type changes incompatibly.
     fn should_shadow_on_type_change(current_ty: &Type, new_ty: &Type) -> bool {
+        // If the incoming type is Unknown we have no evidence of an incompatible type
+        // change — keep the existing binding rather than creating a shadowing `let`.
+        if matches!(new_ty, Type::Unknown) {
+            return false;
+        }
         fn family(ty: &Type) -> &'static str {
             match ty {
                 Type::Int => "int",

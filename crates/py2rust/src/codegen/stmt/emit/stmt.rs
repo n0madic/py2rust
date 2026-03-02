@@ -1400,7 +1400,9 @@ impl<'a> Codegen<'a> {
                             self.already_mut_ref_captures.insert(cap_name.clone());
                         }
 
-                        let mut_counts = collect_assign_counts(stmts, |cn, m| self.user_method_is_mutating(cn, m));
+                        let mut_counts = collect_assign_counts(stmts, |cn, m| {
+                            self.user_method_is_mutating(cn, m)
+                        });
                         for stmt in stmts {
                             self.emit_stmt(stmt, &mut_counts)?;
                         }

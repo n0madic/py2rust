@@ -136,5 +136,11 @@ runtime_cases!(
         runtime_types_system_comprehensive,
         "types_system",
         "types_system.py"
+    ),
+    (
+        runtime_stdlib_random_comprehensive,
+        "stdlib_random",
+        "stdlib_random.py",
+        "All random tests passed!"
     )
 );
