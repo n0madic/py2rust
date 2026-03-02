@@ -164,6 +164,7 @@ impl<'tc, 'a, 'e> ExprVisitorMut<Result<Type, CompileError>> for CheckExprVisito
         params: &mut [String],
         param_kinds: &mut [ParamKind],
         has_defaults: &mut [bool],
+        _defaults: &mut [Option<Expr>],
         body: &mut Expr,
     ) -> Result<Type, CompileError> {
         self.tc.check_lambda_expr(

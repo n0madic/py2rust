@@ -127,6 +127,10 @@ pub(crate) struct Uses {
     pub(crate) py_bytes_from_str: bool,
     /// Force-emits `PyError` support for generated control-flow that references it directly.
     pub(crate) py_error: bool,
+    pub(crate) py_random_seed: bool,
+    pub(crate) py_random_shuffle: bool,
+    pub(crate) py_random_gauss: bool,
+    pub(crate) py_random_choices: bool,
 }
 
 /// Storage strategy for list values in generated Rust.
@@ -314,6 +318,19 @@ pub struct Codegen<'a> {
     pub(crate) local_dict_storage: Option<HashMap<String, DictStorage>>,
     /// Storage strategy for dict locals at top level (inside main).
     pub(crate) main_dict_storage: HashMap<String, DictStorage>,
+    /// Lambda default expressions keyed by variable name.
+    /// Populated when processing let/assign of lambda expressions.
+    pub(crate) lambda_defaults: HashMap<String, Vec<Option<Expr>>>,
+    /// Extra capture parameters for recursive nested functions.
+    /// Maps function name -> list of captured variable names to pass as `&mut` args.
+    pub(crate) recursive_fn_captures: HashMap<String, Vec<String>>,
+    /// Capture params that are already `&mut` refs in the current scope.
+    /// When set, recursive calls should pass these directly (not `&mut name`).
+    pub(crate) already_mut_ref_captures: HashSet<String>,
+    /// When true, empty lists with Unknown element types should omit the type
+    /// suffix (`Vec::new()` instead of `Vec::<PyRepr>::new()`) to let Rust infer
+    /// the element type from context (e.g. inside comprehension push() calls).
+    pub(crate) infer_empty_list_type: bool,
 }
 
 /// Cached program-level analysis and item partitions used during emission.
@@ -366,6 +383,10 @@ impl<'a> Codegen<'a> {
             main_list_storage: HashMap::new(),
             local_dict_storage: None,
             main_dict_storage: HashMap::new(),
+            lambda_defaults: HashMap::new(),
+            recursive_fn_captures: HashMap::new(),
+            already_mut_ref_captures: HashSet::new(),
+            infer_empty_list_type: false,
         }
     }
 
@@ -377,6 +398,30 @@ impl<'a> Codegen<'a> {
 
     pub(crate) fn local_var_type(&self, name: &str) -> Option<&Type> {
         self.local_vars.as_ref().and_then(|vars| vars.get(name))
+    }
+
+    /// Collect lambda default expressions from a statement, storing them keyed
+    /// by the assigned variable name for later use in call codegen.
+    fn collect_lambda_defaults_from_stmt(&mut self, stmt: &Stmt) {
+        match &stmt.kind {
+            StmtKind::Let { name, value, .. } => {
+                if let ExprKind::Lambda { defaults, .. } = &value.kind {
+                    if defaults.iter().any(|d| d.is_some()) {
+                        self.lambda_defaults.insert(name.clone(), defaults.clone());
+                    }
+                }
+            }
+            StmtKind::Assign { target, value, .. } => {
+                if let AssignTarget::Name(name) = target.as_ref() {
+                    if let ExprKind::Lambda { defaults, .. } = &value.kind {
+                        if defaults.iter().any(|d| d.is_some()) {
+                            self.lambda_defaults.insert(name.clone(), defaults.clone());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Return true when a name refers to a built-in Python exception variant.
@@ -513,6 +558,11 @@ impl<'a> Codegen<'a> {
                 }
                 Item::Stmt(stmt) => top_level_stmts.push(stmt.as_ref()),
             }
+        }
+
+        // Collect lambda default expressions from top-level assignments.
+        for stmt in &top_level_stmts {
+            self.collect_lambda_defaults_from_stmt(stmt);
         }
 
         let shared_globals = self.collect_shared_globals(program);

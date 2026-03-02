@@ -317,26 +317,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let mut generators = Vec::with_capacity(listcomp.generators.len());
                 for gen in &listcomp.generators {
-                    if gen.is_async {
-                        return Err(
-                            self.error(expr.range(), "Async comprehensions are not supported")
-                        );
-                    }
-                    let target = match &gen.target {
-                        ast::Expr::Name(name) => self.ident(name.id.as_str()),
-                        _ => {
-                            return Err(self.error(
-                                gen.target.range(),
-                                "Only simple targets are supported in comprehensions",
-                            ))
-                        }
-                    };
-                    let iter = Box::new(self.lower_expr(&gen.iter)?);
-                    let mut ifs = Vec::with_capacity(gen.ifs.len());
-                    for cond in &gen.ifs {
-                        ifs.push(self.lower_expr(cond)?);
-                    }
-                    generators.push(CompClause { target, iter, ifs });
+                    generators.push(self.lower_comp_generator(gen, expr.range())?);
                 }
                 let first = generators[0].clone();
                 ExprKind::ListComp {
@@ -354,26 +335,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let mut generators = Vec::with_capacity(setcomp.generators.len());
                 for gen in &setcomp.generators {
-                    if gen.is_async {
-                        return Err(
-                            self.error(expr.range(), "Async comprehensions are not supported")
-                        );
-                    }
-                    let target = match &gen.target {
-                        ast::Expr::Name(name) => self.ident(name.id.as_str()),
-                        _ => {
-                            return Err(self.error(
-                                gen.target.range(),
-                                "Only simple targets are supported in comprehensions",
-                            ))
-                        }
-                    };
-                    let iter = Box::new(self.lower_expr(&gen.iter)?);
-                    let mut ifs = Vec::with_capacity(gen.ifs.len());
-                    for cond in &gen.ifs {
-                        ifs.push(self.lower_expr(cond)?);
-                    }
-                    generators.push(CompClause { target, iter, ifs });
+                    generators.push(self.lower_comp_generator(gen, expr.range())?);
                 }
                 let first = generators[0].clone();
                 ExprKind::SetComp {
@@ -393,26 +355,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let mut generators = Vec::with_capacity(dictcomp.generators.len());
                 for gen in &dictcomp.generators {
-                    if gen.is_async {
-                        return Err(
-                            self.error(expr.range(), "Async comprehensions are not supported")
-                        );
-                    }
-                    let target = match &gen.target {
-                        ast::Expr::Name(name) => self.ident(name.id.as_str()),
-                        _ => {
-                            return Err(self.error(
-                                gen.target.range(),
-                                "Only simple targets are supported in comprehensions",
-                            ))
-                        }
-                    };
-                    let iter = Box::new(self.lower_expr(&gen.iter)?);
-                    let mut ifs = Vec::with_capacity(gen.ifs.len());
-                    for cond in &gen.ifs {
-                        ifs.push(self.lower_expr(cond)?);
-                    }
-                    generators.push(CompClause { target, iter, ifs });
+                    generators.push(self.lower_comp_generator(gen, expr.range())?);
                 }
                 let first = generators[0].clone();
                 let pair_expr = Expr {
@@ -455,26 +398,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let mut generators = Vec::with_capacity(genexp.generators.len());
                 for gen in &genexp.generators {
-                    if gen.is_async {
-                        return Err(
-                            self.error(expr.range(), "Async comprehensions are not supported")
-                        );
-                    }
-                    let target = match &gen.target {
-                        ast::Expr::Name(name) => self.ident(name.id.as_str()),
-                        _ => {
-                            return Err(self.error(
-                                gen.target.range(),
-                                "Only simple targets are supported in comprehensions",
-                            ))
-                        }
-                    };
-                    let iter = Box::new(self.lower_expr(&gen.iter)?);
-                    let mut ifs = Vec::with_capacity(gen.ifs.len());
-                    for cond in &gen.ifs {
-                        ifs.push(self.lower_expr(cond)?);
-                    }
-                    generators.push(CompClause { target, iter, ifs });
+                    generators.push(self.lower_comp_generator(gen, expr.range())?);
                 }
                 let first = generators[0].clone();
                 let list_comp_expr = Expr {
@@ -639,18 +563,22 @@ impl<'a> Lowerer<'a> {
                 let mut params = Vec::new();
                 let mut param_kinds = Vec::new();
                 let mut has_defaults = Vec::new();
+                let mut defaults = Vec::new();
                 for arg in &lam.args.args {
-                    if arg.default.is_some() {
-                        return Err(self.error(expr.range(), "Lambda defaults not supported"));
-                    }
                     params.push(self.ident(arg.def.arg.as_str()));
                     param_kinds.push(ParamKind::PositionalOrKeyword);
-                    has_defaults.push(false);
+                    let has_def = arg.default.is_some();
+                    has_defaults.push(has_def);
+                    defaults.push(match &arg.default {
+                        Some(expr) => Some(self.lower_expr(expr)?),
+                        None => None,
+                    });
                 }
                 ExprKind::Lambda {
                     params,
                     param_kinds,
                     has_defaults,
+                    defaults,
                     body: Box::new(self.lower_expr(&lam.body)?),
                 }
             }
@@ -681,6 +609,54 @@ impl<'a> Lowerer<'a> {
             kind,
             span,
             ty: None,
+        })
+    }
+
+    /// Lower a comprehension generator target, supporting both simple names
+    /// and tuple unpacking patterns (e.g., `for a, b in zip(xs, ys)`).
+    pub(super) fn lower_comp_generator(
+        &self,
+        gen: &ast::Comprehension,
+        parent_range: rustpython_parser::text_size::TextRange,
+    ) -> Result<CompClause, CompileError> {
+        if gen.is_async {
+            return Err(self.error(parent_range, "Async comprehensions are not supported"));
+        }
+        let (target, tuple_targets) = match &gen.target {
+            ast::Expr::Name(name) => (self.ident(name.id.as_str()), None),
+            ast::Expr::Tuple(tup) => {
+                let mut names = Vec::new();
+                for elt in &tup.elts {
+                    if let ast::Expr::Name(name) = elt {
+                        names.push(self.ident(name.id.as_str()));
+                    } else {
+                        return Err(self.error(
+                            elt.range(),
+                            "Only simple names are supported in comprehension tuple targets",
+                        ));
+                    }
+                }
+                // Use joined name as the combined target identifier
+                let joined = names.join("_");
+                (joined, Some(names))
+            }
+            _ => {
+                return Err(self.error(
+                    gen.target.range(),
+                    "Only simple targets or tuple targets are supported in comprehensions",
+                ))
+            }
+        };
+        let iter = Box::new(self.lower_expr(&gen.iter)?);
+        let mut ifs = Vec::with_capacity(gen.ifs.len());
+        for cond in &gen.ifs {
+            ifs.push(self.lower_expr(cond)?);
+        }
+        Ok(CompClause {
+            target,
+            tuple_targets,
+            iter,
+            ifs,
         })
     }
 }

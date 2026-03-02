@@ -110,6 +110,17 @@ impl<'a> Codegen<'a> {
                 matches!(left.ty.as_ref(), Some(Type::List(_)))
                     && matches!(right.ty.as_ref(), Some(Type::List(_)))
             }
+            // List repetition: [x] * n or n * [x] creates a fresh list.
+            ExprKind::Binary {
+                op: BinOp::Mul,
+                left,
+                right,
+            } => {
+                (matches!(left.ty.as_ref(), Some(Type::List(_)))
+                    && matches!(right.ty.as_ref(), Some(Type::Int)))
+                    || (matches!(right.ty.as_ref(), Some(Type::List(_)))
+                        && matches!(left.ty.as_ref(), Some(Type::Int)))
+            }
             ExprKind::Slice { value, .. } => {
                 matches!(expr.ty.as_ref(), Some(Type::List(_)))
                     && matches!(value.ty.as_ref(), Some(Type::List(_)))

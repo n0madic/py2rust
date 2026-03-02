@@ -52,10 +52,10 @@ impl<'a> Codegen<'a> {
             Type::List(inner) => {
                 if lambda_depth > 0 && matches!(inner.as_ref(), Type::Unknown) {
                     self.uses.py_repr = true;
-                    "Rc<RefCell<Vec<PyRepr>>>".to_string()
+                    "Arc<Mutex<Vec<PyRepr>>>".to_string()
                 } else {
                     format!(
-                        "Rc<RefCell<Vec<{}>>>",
+                        "Arc<Mutex<Vec<{}>>>",
                         self.rust_type_with_lambda_depth(inner, lambda_depth)
                     )
                 }
@@ -74,7 +74,7 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.rust_type_with_lambda_depth(v, lambda_depth)
                 };
-                format!("Rc<RefCell<IndexMap<{}, {}>>>", key_ty, val_ty)
+                format!("Arc<Mutex<IndexMap<{}, {}>>>", key_ty, val_ty)
             }
             Type::Tuple(items) => {
                 let parts: Vec<String> = items
@@ -180,10 +180,9 @@ impl<'a> Codegen<'a> {
             (Type::List(inner), ListStorage::Local) => {
                 format!("Vec<{}>", self.rust_type(inner))
             }
-            (Type::List(inner), ListStorage::SharedCell) => {
-                format!("Rc<RefCell<Vec<{}>>>", self.rust_type(inner))
-            }
-            (Type::List(inner), ListStorage::SharedSync) => {
+            // Both SharedCell and SharedSync now use Arc<Mutex<>> uniformly
+            // to avoid type mismatches between local and global storage.
+            (Type::List(inner), ListStorage::SharedCell | ListStorage::SharedSync) => {
                 format!("Arc<Mutex<Vec<{}>>>", self.rust_type(inner))
             }
             _ => self.rust_type(ty),
@@ -197,15 +196,8 @@ impl<'a> Codegen<'a> {
                 self.uses.index_map = true;
                 format!("IndexMap<{}, {}>", self.rust_type(k), self.rust_type(v))
             }
-            (Type::Dict(k, v), DictStorage::SharedCell) => {
-                self.uses.index_map = true;
-                format!(
-                    "Rc<RefCell<IndexMap<{}, {}>>>",
-                    self.rust_type(k),
-                    self.rust_type(v)
-                )
-            }
-            (Type::Dict(k, v), DictStorage::SharedSync) => {
+            // Both SharedCell and SharedSync now use Arc<Mutex<>> uniformly.
+            (Type::Dict(k, v), DictStorage::SharedCell | DictStorage::SharedSync) => {
                 self.uses.index_map = true;
                 format!(
                     "Arc<Mutex<IndexMap<{}, {}>>>",

@@ -274,6 +274,14 @@ impl<'a> Codegen<'a> {
                 generics.push(name.clone());
                 name
             } else {
+                // Replace any nested Unknown types with PyRepr for function
+                // signatures where `_` placeholders are not allowed.
+                let ty = if ty.contains_unknown() {
+                    self.uses.py_repr = true;
+                    ty.replace_unknown_with(&Type::Custom("PyRepr".to_string()))
+                } else {
+                    ty
+                };
                 // Convert to borrowed type for function parameters.
                 let borrowed = self.to_borrowed_param_type(&ty);
                 // Track if this parameter is borrowed.
@@ -304,7 +312,14 @@ impl<'a> Codegen<'a> {
         } else if matches!(ret_ty, Type::Unknown) {
             "()".to_string()
         } else {
-            self.rust_type(&ret_ty)
+            // Replace nested Unknown types with PyRepr for function signatures.
+            let ret_ty_resolved = if ret_ty.contains_unknown() {
+                self.uses.py_repr = true;
+                ret_ty.replace_unknown_with(&Type::Custom("PyRepr".to_string()))
+            } else {
+                ret_ty.clone()
+            };
+            self.rust_type(&ret_ty_resolved)
         };
         if !is_generator && matches!(ret_ty, Type::Unknown) {
             if let Some(ret_name) = identity_return_param(func) {

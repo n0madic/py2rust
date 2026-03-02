@@ -241,10 +241,28 @@ impl<'cg, 'a, 'm> StmtVisitor<Result<(), CompileError>> for EmitStmtVisitor<'cg,
 }
 
 impl<'a> Codegen<'a> {
-    fn gen_for_target(&self, target: &ForTarget) -> String {
+    fn gen_for_target(&self, target: &ForTarget, mut_counts: &HashMap<String, usize>) -> String {
         match target {
-            ForTarget::Name(name) => name.clone(),
-            ForTarget::Tuple(names) => format!("({})", names.join(", ")),
+            ForTarget::Name(name) => {
+                if mut_counts.get(name).copied().unwrap_or(0) > 0 {
+                    format!("mut {}", name)
+                } else {
+                    name.clone()
+                }
+            }
+            ForTarget::Tuple(names) => {
+                let parts: Vec<String> = names
+                    .iter()
+                    .map(|n| {
+                        if mut_counts.get(n).copied().unwrap_or(0) > 0 {
+                            format!("mut {}", n)
+                        } else {
+                            n.clone()
+                        }
+                    })
+                    .collect();
+                format!("({})", parts.join(", "))
+            }
         }
     }
 
@@ -326,7 +344,7 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn gen_condition_expr(&mut self, test: &Expr) -> Result<String, CompileError> {
+    pub(crate) fn gen_condition_expr(&mut self, test: &Expr) -> Result<String, CompileError> {
         let test_expr = self.gen_expr(test)?;
         let rendered = match test.ty.as_ref() {
             Some(Type::Bool) => test_expr,
@@ -382,9 +400,48 @@ impl<'a> Codegen<'a> {
                     "true".to_string()
                 }
             }
-            _ => test_expr,
+            _ => {
+                // Unknown-typed expressions that produce a String in generated Rust
+                // need str-truthiness wrapping (!expr.is_empty()) to be valid.
+                if self.expr_looks_like_string(test) {
+                    format!("!{}.is_empty()", test_expr)
+                } else {
+                    test_expr
+                }
+            }
         };
         Ok(rendered)
+    }
+
+    /// Heuristic: does this expression look like it produces a String at runtime?
+    /// Used for Unknown-typed expressions in boolean contexts.
+    fn expr_looks_like_string(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Call { func, .. } => {
+                if let ExprKind::Attr { value, attr } = &func.kind {
+                    // String methods that return str
+                    let str_methods = [
+                        "strip",
+                        "lstrip",
+                        "rstrip",
+                        "lower",
+                        "upper",
+                        "title",
+                        "capitalize",
+                        "replace",
+                        "join",
+                        "format",
+                    ];
+                    if str_methods.contains(&attr.as_str()) {
+                        return matches!(value.ty.as_ref(), Some(Type::Str))
+                            || self.expr_looks_like_string(value);
+                    }
+                }
+                false
+            }
+            ExprKind::Name(_) => matches!(expr.ty.as_ref(), Some(Type::Str)),
+            _ => false,
+        }
     }
 
     /// Detect Optional narrowing implied by a condition expression.
@@ -518,7 +575,7 @@ impl<'a> Codegen<'a> {
         let base = if let Some(override_expr) = self.name_override(name) {
             override_expr.to_string()
         } else if self.is_cell_local(name) || self.is_nonlocal_decl(name) {
-            format!("{}.borrow().clone()", name)
+            format!("{}.lock().unwrap().clone()", name)
         } else if self.is_global(name) {
             format!("{}.clone()", self.global_lock_expr(name))
         } else {
@@ -596,7 +653,7 @@ impl<'a> Codegen<'a> {
                 if self.is_cell_local(name) {
                     if ann.is_none() {
                         if let Some((expr, elem_ty)) = self.gen_empty_list_with_hint(name, value)? {
-                            let expr = format!("Rc::new(RefCell::new({}))", expr);
+                            let expr = format!("Arc::new(Mutex::new({}))", expr);
                             let mut_kw = mut_kw_for_name(name, mut_counts);
                             self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                             self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
@@ -660,7 +717,7 @@ impl<'a> Codegen<'a> {
                     } else {
                         expr
                     };
-                    let expr = format!("Rc::new(RefCell::new({}))", expr);
+                    let expr = format!("Arc::new(Mutex::new({}))", expr);
                     let mut_kw = mut_kw_for_name(name, mut_counts);
                     if let Some(declared) = declared.clone() {
                         // Wide inline unions resolve to Unknown during annotation lowering;
@@ -684,7 +741,7 @@ impl<'a> Codegen<'a> {
                             }
                             _ => self.rust_type(&declared),
                         };
-                        let wrapped = format!("Rc<RefCell<{}>>", ty_str);
+                        let wrapped = format!("Arc<Mutex<{}>>", ty_str);
                         self.push_line(&format!("let {}{}: {} = {};", mut_kw, name, wrapped, expr));
                         self.set_local_var_type(name, declared);
                     } else {
@@ -1237,6 +1294,15 @@ impl<'a> Codegen<'a> {
                                 let ty_str = if matches!(ty, Type::Unknown) {
                                     "()".to_string()
                                 } else {
+                                    // Replace nested Unknown types with PyRepr for fn signatures.
+                                    let ty = if ty.contains_unknown() {
+                                        self.uses.py_repr = true;
+                                        &ty.replace_unknown_with(&Type::Custom(
+                                            "PyRepr".to_string(),
+                                        ))
+                                    } else {
+                                        ty
+                                    };
                                     self.rust_type(ty)
                                 };
                                 param_parts.push(format!("{}: {}", param, ty_str));
@@ -1245,6 +1311,44 @@ impl<'a> Codegen<'a> {
                             for param in params {
                                 param_parts.push(format!("{}: ()", param));
                             }
+                        }
+                        // For recursive nested functions that capture outer variables,
+                        // add captured variables as explicit `&mut` parameters to the
+                        // standalone `fn`, since `fn` items cannot capture their environment.
+                        let mut capture_params: Vec<(String, String)> = Vec::new();
+                        for captured in &captured_clones {
+                            if let Some(ty) = self.local_var_type(captured).cloned() {
+                                // Replace nested Unknown types with PyRepr for fn signatures.
+                                let ty_resolved = if ty.contains_unknown() {
+                                    self.uses.py_repr = true;
+                                    ty.replace_unknown_with(&Type::Custom("PyRepr".to_string()))
+                                } else {
+                                    ty
+                                };
+                                // Use storage-aware type for lists/dicts so the inner
+                                // function param matches the outer variable's actual Rust
+                                // type (e.g. Vec<T> for Local storage instead of Arc<Mutex<Vec<T>>>).
+                                let ty_str = if matches!(ty_resolved, Type::List(_)) {
+                                    let storage = self.list_storage_for_name(captured);
+                                    self.rust_type_for_list_storage(&ty_resolved, storage)
+                                } else if matches!(ty_resolved, Type::Dict(_, _)) {
+                                    let storage = self.dict_storage_for_name(captured);
+                                    self.rust_type_for_dict_storage(&ty_resolved, storage)
+                                } else {
+                                    self.rust_type(&ty_resolved)
+                                };
+                                param_parts.push(format!("{}: &mut {}", captured, ty_str));
+                                capture_params.push((captured.clone(), ty_str));
+                            }
+                        }
+                        // Register extra capture args so call sites can append them.
+                        if !capture_params.is_empty() {
+                            let extra_args: Vec<String> = capture_params
+                                .iter()
+                                .map(|(name, _)| name.clone())
+                                .collect();
+                            self.recursive_fn_captures
+                                .insert(name.to_string(), extra_args);
                         }
                         let ret_str = if matches!(ret_ty, Type::Unknown) {
                             "()".to_string()
@@ -1258,12 +1362,55 @@ impl<'a> Codegen<'a> {
                             ret_str
                         ));
                         self.indent += 1;
+
+                        // Save outer scope and set up inner function scope so codegen
+                        // knows param types (e.g. `v: Value` → `v._children` is List).
+                        let saved_local_vars = self.local_vars.take();
+                        let saved_local_list_storage = self.local_list_storage.take();
+                        self.local_vars = Some(HashMap::new());
+                        self.local_list_storage = Some(HashMap::new());
+
+                        // Register function params.
+                        if let Some(Type::Lambda {
+                            params: param_tys, ..
+                        }) = value.ty.as_ref()
+                        {
+                            for (param, ty) in params.iter().zip(param_tys.iter()) {
+                                if !matches!(ty, Type::Unknown) {
+                                    self.set_local_var_type(param, ty.clone());
+                                }
+                            }
+                        }
+                        // Register captured variable types and storage strategies.
+                        // Also mark captures as already-mut-ref so recursive calls
+                        // pass them directly (not &mut name, which would double-ref).
+                        let saved_mut_ref_captures =
+                            std::mem::take(&mut self.already_mut_ref_captures);
+                        for (cap_name, _) in &capture_params {
+                            if let Some(old_vars) = saved_local_vars.as_ref() {
+                                if let Some(ty) = old_vars.get(cap_name) {
+                                    self.set_local_var_type(cap_name, ty.clone());
+                                }
+                            }
+                            if let Some(old_storage) = saved_local_list_storage.as_ref() {
+                                if let Some(storage) = old_storage.get(cap_name) {
+                                    self.set_list_storage_for_temp(cap_name, *storage);
+                                }
+                            }
+                            self.already_mut_ref_captures.insert(cap_name.clone());
+                        }
+
                         let mut_counts = collect_assign_counts(stmts);
                         for stmt in stmts {
                             self.emit_stmt(stmt, &mut_counts)?;
                         }
                         self.indent -= 1;
                         self.push_line("}");
+
+                        // Restore outer scope.
+                        self.local_vars = saved_local_vars;
+                        self.local_list_storage = saved_local_list_storage;
+                        self.already_mut_ref_captures = saved_mut_ref_captures;
                         return Ok(());
                     }
                 }
@@ -1377,7 +1524,18 @@ impl<'a> Codegen<'a> {
                 ) {
                     self.emit_unpack_assign(target, value, mut_counts)?;
                 } else {
-                    self.emit_simple_assign(target, value, mut_counts, false)?;
+                    // If the assign target is a simple name not yet declared in the
+                    // current scope, promote it to a `let` to handle Python's implicit
+                    // variable creation in for-loop bodies and top-level scopes.
+                    let allow_let = if let AssignTarget::Name(name) = target.as_ref() {
+                        self.local_var_type(name).is_none()
+                            && !self.is_global(name)
+                            && !self.is_cell_local(name)
+                            && !self.is_nonlocal_decl(name)
+                    } else {
+                        false
+                    };
+                    self.emit_simple_assign(target, value, mut_counts, allow_let)?;
                 }
             }
             StmtKind::Delete { target } => {
@@ -1561,7 +1719,7 @@ impl<'a> Codegen<'a> {
                 self.push_line("}");
             }
             StmtKind::For { target, iter, body } => {
-                let target_pattern = self.gen_for_target(target);
+                let target_pattern = self.gen_for_target(target, mut_counts);
                 let item_ty = iter
                     .ty
                     .as_ref()

@@ -381,6 +381,27 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // random module: seed takes an int, shuffle takes a list,
+            // gauss takes two floats, choices takes a list + optional weights keyword.
+            StdlibMethodId::RandomSeed => {
+                let seed_ty = self.check_expr(&mut args[0], Some(&Type::Int))?;
+                self.ensure_assignable(&seed_ty, &Type::Int, span)?;
+            }
+            StdlibMethodId::RandomShuffle => {
+                let _ = self.check_expr(&mut args[0], None)?;
+            }
+            StdlibMethodId::RandomGauss => {
+                let mu_ty = self.check_expr(&mut args[0], Some(&Type::Float))?;
+                self.ensure_assignable(&mu_ty, &Type::Float, span)?;
+                let sigma_ty = self.check_expr(&mut args[1], Some(&Type::Float))?;
+                self.ensure_assignable(&sigma_ty, &Type::Float, span)?;
+            }
+            StdlibMethodId::RandomChoices => {
+                let _ = self.check_expr(&mut args[0], None)?;
+                for kw in keywords.iter_mut() {
+                    let _ = self.check_expr(&mut kw.value, None)?;
+                }
+            }
         }
 
         Ok(Self::stdlib_method_return_type(spec.method_id))
@@ -491,6 +512,11 @@ impl<'a> TypeChecker<'a> {
             StdlibMethodId::UrllibRequestUrlopen => {
                 Type::Custom("__py_urllib_response".to_string())
             }
+            StdlibMethodId::RandomSeed | StdlibMethodId::RandomShuffle => Type::None,
+            StdlibMethodId::RandomGauss => Type::Float,
+            // random.choices returns a list; we use Unknown element type since
+            // the population element type varies based on call site.
+            StdlibMethodId::RandomChoices => Type::List(Box::new(Type::Unknown)),
         }
     }
 }

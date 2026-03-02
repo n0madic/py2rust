@@ -45,12 +45,12 @@ impl<'a> Codegen<'a> {
         }
         if let Some(override_expr) = self.name_override(name) {
             if self.is_cell_local(name) || self.is_nonlocal_decl(name) {
-                return Ok(format!("{}.borrow().clone()", override_expr));
+                return Ok(format!("{}.lock().unwrap().clone()", override_expr));
             }
             return Ok(override_expr.to_string());
         }
         if self.is_cell_local(name) || self.is_nonlocal_decl(name) {
-            return Ok(format!("{}.borrow().clone()", name));
+            return Ok(format!("{}.lock().unwrap().clone()", name));
         }
         if self.is_global(name) {
             // Global reads go through OnceLock + Mutex with context-rich expects.
@@ -296,9 +296,25 @@ impl<'a> Codegen<'a> {
         body: &Expr,
         orelse: &Expr,
     ) -> Result<String, CompileError> {
+        // Optimize compile-time constant conditions (e.g., isinstance folded to true/false).
+        // Emit only the live branch to avoid type errors in dead code.
+        if let ExprKind::Literal(Literal::Bool(val)) = &test.kind {
+            return if *val {
+                self.gen_expr(body)
+            } else {
+                self.gen_expr(orelse)
+            };
+        }
+        let test_str = self.gen_expr(test)?;
+        if test_str == "true" {
+            return self.gen_expr(body);
+        }
+        if test_str == "false" {
+            return self.gen_expr(orelse);
+        }
         Ok(format!(
             "if {} {{ {} }} else {{ {} }}",
-            self.gen_expr(test)?,
+            test_str,
             self.gen_expr(body)?,
             self.gen_expr(orelse)?
         ))

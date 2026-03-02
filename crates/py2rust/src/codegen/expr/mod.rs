@@ -156,6 +156,7 @@ impl<'cg, 'a> ExprVisitor<Result<String, CompileError>> for GenExprVisitor<'cg, 
         params: &[String],
         param_kinds: &[ParamKind],
         has_defaults: &[bool],
+        _defaults: &[Option<Expr>],
         body: &Expr,
     ) -> Result<String, CompileError> {
         self.cg

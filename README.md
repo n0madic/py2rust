@@ -21,6 +21,9 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Set methods: `add`, `remove`, `discard`, `clear`, `copy`, `extend`, `pop`
 - String operations: indexing/slicing, `upper`, `lower`, `strip`, `lstrip`, `rstrip`, `startswith`, `endswith`, `find`, `replace`, `split`, `join`, `count`, `title`, `capitalize`, `swapcase`, `center`, `ljust`, `rjust`, `zfill`, `isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`, `islower`
 - Classes with fields, methods, and class attributes
+- Unannotated `self.field = value` in `__init__` (type inferred from context)
+- `__slots__` declarations silently ignored (CPython optimization hint only)
+- Operator overloading via dunder methods (`__add__`, `__sub__`, `__mul__`, `__truediv__`, `__pow__`, `__neg__`, `__radd__`, `__rsub__`, `__rmul__`, `__rtruediv__`) — generates `std::ops` trait implementations
 - Single inheritance with method overrides and `super().__init__` calls
 - Decorators: `@property` (getter/setter), `@staticmethod`, `@classmethod`, and simple function decorators (top-level and nested)
 - Enum-like `Union` aliases via `A | B` type aliases
@@ -32,6 +35,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
 - Generator functions (`yield`) with `next(...)`, `.send(...)`, `.close()`, and generator expressions
 - Call-site unpacking via `*args` and `**kwargs` (including mixed call forms)
 - Nested functions with closure capture and `nonlocal` writes
+- Recursive nested functions (emitted as standalone `fn` with captured variables as explicit `&mut` parameters)
 - Nested local functions with variadic parameters (`*args`, `**kwargs`)
 - Local classes inside function bodies (direct function-body scope)
 - `global` declarations with CPython-compatible shadowing rules (local assignment shadows module names unless explicitly declared `global`)
@@ -44,6 +48,7 @@ A pragmatic transpiler that converts a restricted, statically-typed subset of Py
   - lightweight `json`: `dumps`, `loads`, `dump`, `load`
   - `math`: attributes `pi`, `e`, `tau`, `inf`, `nan`; functions `sqrt`, `sin`, `cos`, `tan`, `ceil`, `floor`, `factorial`, `log`, `log2`, `log10`, `exp`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `fabs`, `degrees`, `radians`, `trunc`, `isnan`, `isinf`, `isfinite`, `atan2`, `fmod`, `copysign`, `hypot`, `pow`, `gcd`, `lcm`, `comb`, `perm`
   - `time`: `time`, `time_ns`, `monotonic`, `monotonic_ns`, `perf_counter`, `perf_counter_ns`, `process_time`, `process_time_ns`, `sleep`, `localtime`, `gmtime`, `strftime`, `strptime`
+  - `random`: `seed`, `shuffle`, `gauss`, `choices` (with `weights=` keyword argument) — backed by xorshift64 PRNG with thread-local state
   - lightweight `subprocess`: `run` with `CompletedProcess` fields `args`, `returncode`, `stdout`, `stderr`
   - `urllib`:
     - `urllib.parse`: `urlparse`, `quote`, `unquote`, `urljoin`, `urlencode`, `parse_qs`
@@ -97,7 +102,7 @@ The generated Rust injects tiny helper functions only when needed:
 - `py_len`
 - `py_range`
 - `py_round`
-- `py_os_*`, `py_sys_*`, `py_re_*`, `py_json_*`, `py_math_*`, `py_time_*`, `py_subprocess_*`, `py_urllib_*`
+- `py_os_*`, `py_sys_*`, `py_re_*`, `py_json_*`, `py_math_*`, `py_time_*`, `py_random_*`, `py_subprocess_*`, `py_urllib_*`
 
 ## Notes and Limitations
 - `self` can be unannotated in methods; other parameters require annotations.
@@ -107,8 +112,8 @@ The generated Rust injects tiny helper functions only when needed:
 - `bool` follows Python numeric compatibility in arithmetic/comparison contexts (subtype of `int`) while remaining `bool` in boolean-only flows.
 - `from typing import ...` is treated as a no-op; `Union`, `Optional`, and `Iterator` are built-in in annotations.
 - `typing.List/Dict/Set/Tuple` annotations are aliases of `list/dict/set/tuple` annotations.
-- Imports are unified through one resolver: `typing` and registry-backed stdlib modules (`os`, `sys`, `re`, `json`, `math`, `time`, `subprocess`, `urllib`, `urllib.parse`, `urllib.request`) stay virtual, while local user modules/packages are loaded from files and merged before type checking/codegen.
-- For registry-backed stdlib calls, module import is required (`os.remove(...)`, `sys.exit(...)`, `re.search(...)`, `json.dumps(...)`, `math.sqrt(...)`, `time.time(...)`, `subprocess.run(...)`, `urllib.parse.quote(...)`, `urllib.request.urlopen(...)` without import is a compile error).
+- Imports are unified through one resolver: `typing` and registry-backed stdlib modules (`os`, `sys`, `re`, `json`, `math`, `time`, `random`, `subprocess`, `urllib`, `urllib.parse`, `urllib.request`) stay virtual, while local user modules/packages are loaded from files and merged before type checking/codegen.
+- For registry-backed stdlib calls, module import is required (`os.remove(...)`, `sys.exit(...)`, `re.search(...)`, `json.dumps(...)`, `math.sqrt(...)`, `time.time(...)`, `random.seed(...)`, `subprocess.run(...)`, `urllib.parse.quote(...)`, `urllib.request.urlopen(...)` without import is a compile error).
 - `from ... import *` is supported only for registry-backed stdlib modules; wildcard imports from user modules remain unsupported.
 - Supported stdlib surface is registry-driven and intentionally explicit; unsupported module members produce compile-time errors.
 - Unknown names produce compile-time `NameError` diagnostics instead of falling back to runtime placeholders.
@@ -117,6 +122,7 @@ The generated Rust injects tiny helper functions only when needed:
 - `json` support is intentionally lightweight and currently targets registry-backed calls (`dumps`, `loads`, `dump`, `load`) used by runtime coverage.
 - `math` support currently targets the registry-backed surface covered by runtime integration tests (constants + numeric/trig/hyperbolic/combinatorics helpers listed above).
 - `time` support currently targets the registry-backed surface covered by runtime integration tests (`time`, `time_ns`, `monotonic`, `monotonic_ns`, `perf_counter`, `perf_counter_ns`, `process_time`, `process_time_ns`, `sleep`, `localtime`, `gmtime`, `strftime`, `strptime`).
+- `random` support uses a lightweight xorshift64 PRNG with thread-local state. It is not cryptographically secure and sequences may differ from CPython's Mersenne Twister output. `random.choices` supports `weights=` keyword argument.
 - Lightweight `time.localtime` currently shares the same UTC epoch split behavior as `time.gmtime` (timezone and DST databases are not modeled yet).
 - `subprocess` support is intentionally lightweight and currently targets `subprocess.run(args, capture_output=False, check=False)` with `CompletedProcess` field access (`args`, `returncode`, `stdout`, `stderr`).
 - `urllib` support targets registry-backed `urllib.parse` helpers (`urlparse`, `quote`, `unquote`, `urljoin`, `urlencode`, `parse_qs`) plus `urllib.request.urlopen(...)` for `file://`, `data:text/plain,`, `http://`, and `https://` URLs (HTTP powered by `ureq`).
@@ -135,7 +141,9 @@ The generated Rust injects tiny helper functions only when needed:
 - Nested `def` supports `*args/**kwargs`; default argument omission for nested callable values remains unsupported in dynamic-call paths.
 - Local classes are limited to direct function-body scope (no `if/for/while/try/match` nesting), and methods cannot capture outer function locals.
 - `global x` requires `x` to exist at module scope, and declaration order follows CPython rules (`global` must appear before first use in the function).
-- `__init__` is treated as a constructor; it must only assign `self` fields.
+- `__init__` is treated as a constructor; it must only assign `self` fields. Fields can be annotated or unannotated (type inferred from usage context).
+- Operator overloading via dunder methods generates `std::ops` trait implementations. `__pow__` has no standard trait — it becomes a `.pow()` method. Reverse operators (`__radd__` etc.) generate `impl Add<ClassName> for f64/i64`.
+- Classes used in `set()` or `HashSet` contexts require identity-based equality; the transpiler generates custom `PartialEq`/`Eq`/`Hash` implementations using `f64::to_bits()` for float fields.
 - Class decorators are rejected (e.g. `@dataclass`), and class-method decorators remain limited to the supported built-ins (`property`/`setter`/`deleter`, `staticmethod`, `classmethod`).
 - Function decorators support simple name/call decorator expressions on top-level and nested `def`.
 - Class-pattern `match` (e.g. `case Point(x, y):`) currently requires a union-typed subject.

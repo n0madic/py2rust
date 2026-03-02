@@ -121,6 +121,35 @@ impl Type {
         }
     }
 
+    /// Replace all nested `Unknown` types with the given replacement type.
+    /// Used to convert `_` placeholders to concrete types in function signatures.
+    pub fn replace_unknown_with(&self, replacement: &Type) -> Type {
+        match self {
+            Type::Unknown => replacement.clone(),
+            Type::List(inner) => Type::List(Box::new(inner.replace_unknown_with(replacement))),
+            Type::Set(inner) => Type::Set(Box::new(inner.replace_unknown_with(replacement))),
+            Type::Option(inner) => Type::Option(Box::new(inner.replace_unknown_with(replacement))),
+            Type::Iterator(inner) => {
+                Type::Iterator(Box::new(inner.replace_unknown_with(replacement)))
+            }
+            Type::Dict(key, value) => Type::Dict(
+                Box::new(key.replace_unknown_with(replacement)),
+                Box::new(value.replace_unknown_with(replacement)),
+            ),
+            Type::Result(ok, err) => Type::Result(
+                Box::new(ok.replace_unknown_with(replacement)),
+                Box::new(err.replace_unknown_with(replacement)),
+            ),
+            Type::Tuple(items) => Type::Tuple(
+                items
+                    .iter()
+                    .map(|t| t.replace_unknown_with(replacement))
+                    .collect(),
+            ),
+            _ => self.clone(),
+        }
+    }
+
     /// Extract Ok and Err types from Result<T, E>.
     /// Used in exception handling to determine function signatures.
     pub fn unwrap_result(&self) -> Option<(&Type, &Type)> {

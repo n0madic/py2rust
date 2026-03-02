@@ -297,8 +297,9 @@ def f() -> int:
 }
 
 #[test]
-fn local_aliasing_lists_and_dicts_use_rc_refcell_storage() {
-    // Escaping locals that never touch globals should stay on Rc<RefCell<...>>.
+fn local_aliasing_lists_and_dicts_use_arc_mutex_storage() {
+    // All shared list/dict storage now uses Arc<Mutex<...>> uniformly
+    // to avoid type mismatches between local and global contexts.
     let source = r#"
 
 def f() -> int:
@@ -313,23 +314,23 @@ def f() -> int:
     let out =
         compile(source, "test.py", &CompileOptions::default()).expect("compile should succeed");
     assert!(
-        out.rust.contains("let cell_list: Rc<RefCell<Vec<i64>>>"),
-        "Expected local shared list storage to use Rc<RefCell<Vec<_>>>"
+        out.rust.contains("let cell_list: Arc<Mutex<Vec<i64>>>"),
+        "Expected local shared list storage to use Arc<Mutex<Vec<_>>>"
     );
     assert!(
         out.rust
-            .contains("let mut alias_list: Rc<RefCell<Vec<i64>>>"),
-        "Expected local list aliases to remain Rc<RefCell<Vec<_>>>"
+            .contains("let mut alias_list: Arc<Mutex<Vec<i64>>>"),
+        "Expected local list aliases to remain Arc<Mutex<Vec<_>>>"
     );
     assert!(
         out.rust
-            .contains("let cell_dict: Rc<RefCell<IndexMap<String, i64>>>"),
-        "Expected local shared dict storage to use Rc<RefCell<IndexMap<_, _>>>"
+            .contains("let cell_dict: Arc<Mutex<IndexMap<String, i64>>>"),
+        "Expected local shared dict storage to use Arc<Mutex<IndexMap<_, _>>>"
     );
     assert!(
         out.rust
-            .contains("let mut alias_dict: Rc<RefCell<IndexMap<String, i64>>>"),
-        "Expected local dict aliases to remain Rc<RefCell<IndexMap<_, _>>>"
+            .contains("let mut alias_dict: Arc<Mutex<IndexMap<String, i64>>>"),
+        "Expected local dict aliases to remain Arc<Mutex<IndexMap<_, _>>>"
     );
 }
 

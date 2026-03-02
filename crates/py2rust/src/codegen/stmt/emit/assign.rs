@@ -140,7 +140,7 @@ impl<'a> Codegen<'a> {
                         && !self.is_nonlocal_decl(name)
                     {
                         if let Some((expr, elem_ty)) = self.gen_empty_list_with_hint(name, value)? {
-                            let expr = format!("Rc::new(RefCell::new({}))", expr);
+                            let expr = format!("Arc::new(Mutex::new({}))", expr);
                             let mut_kw = mut_kw_for_name(name, mut_counts);
                             self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                             self.set_local_var_type(name, Type::List(Box::new(elem_ty)));
@@ -157,7 +157,7 @@ impl<'a> Codegen<'a> {
                                 let expr = self.gen_expr_with_expected(value, expected.as_ref())?;
                                 self.maybe_clone_list_expr(expr, value, expected.as_ref(), false)
                             };
-                        let expr = format!("Rc::new(RefCell::new({}))", expr);
+                        let expr = format!("Arc::new(Mutex::new({}))", expr);
                         let mut_kw = mut_kw_for_name(name, mut_counts);
                         self.push_line(&format!("let {}{} = {};", mut_kw, name, expr));
                         if let Some(ty) = value.ty.clone() {
@@ -166,10 +166,10 @@ impl<'a> Codegen<'a> {
                         return Ok(());
                     }
 
-                    // Assign through the RefCell, guarding against self-references.
+                    // Assign through the Mutex, guarding against self-references.
                     let current = self.new_tmp();
                     self.push_line(&format!(
-                        "let {} = {}.borrow().clone();",
+                        "let {} = {}.lock().unwrap().clone();",
                         current, cell_binding
                     ));
                     let expected_is_optional = matches!(expected.as_ref(), Some(Type::Option(_)));
@@ -199,7 +199,7 @@ impl<'a> Codegen<'a> {
                     self.cell_locals = saved_cells;
                     self.nonlocal_decls = saved_nonlocals;
                     let expr = expr_result?;
-                    self.push_line(&format!("*{}.borrow_mut() = {};", cell_binding, expr));
+                    self.push_line(&format!("*{}.lock().unwrap() = {};", cell_binding, expr));
                     return Ok(());
                 }
                 // Global assignment uses OnceLock + Mutex for initialization and mutation.

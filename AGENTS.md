@@ -40,12 +40,17 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 ## Repo Layout
 - `crates/py2rust/src/lib.rs` core compile pipeline and `main` renaming.
 - `crates/py2rust/src/lower.rs` RustPython AST -> HIR lowering.
+- `crates/py2rust/src/lower/function.rs` function/class lowering, `__init__` field extraction, `__slots__` handling.
 - `crates/py2rust/src/hir.rs` HIR definitions.
 - `crates/py2rust/src/hir_visit.rs` macro-generated visitor traits and `accept` dispatch for `ExprKind/StmtKind`.
 - `crates/py2rust/src/callspec.rs` shared call-shape validation (arity/keywords) and canonical diagnostics.
 - `crates/py2rust/src/call_bind.rs` shared argument binding planner used by typecheck and codegen.
 - `crates/py2rust/src/typecheck/` type checking and inference.
+- `crates/py2rust/src/typecheck/expr/ops.rs` binary/unary operator type checking, including dunder method resolution on custom types.
 - `crates/py2rust/src/codegen/` Rust codegen and helper injection.
+- `crates/py2rust/src/codegen/emit/items.rs` class struct/impl/trait emission, operator trait generation.
+- `crates/py2rust/src/codegen/util.rs` `collect_assign_counts` for variable mutation tracking.
+- `crates/py2rust/src/stdlib/registry.rs` stdlib module registry (os, sys, re, json, math, time, random, subprocess, urllib).
 - `crates/py2rust/src/types.rs` type system.
 - `docs/` project documentation (keep docs here).
 - `README.md` user docs.
@@ -76,8 +81,10 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - `__iter__/next` for custom iterators.
 - Generator functions via `yield`, including `.send(...)`, `.close()`, and generator expressions.
 - `lambda`, `if` expression, `round`, `len`, `range`, `enumerate`, `zip`, `map`, `filter`, `all`, `any`, `iter`, `reversed`, `sorted`, `max`, `min`, `int`, `float`, `str`, `isinstance`, `type`.
+- Operator overloading via dunder methods (`__add__`, `__sub__`, `__mul__`, `__truediv__`, `__pow__`, `__neg__`, and reverse variants).
 - String methods: `upper`, `lower`.
 - Decorators: one simple name decorator on top-level functions only (rewritten).
+- Recursive nested functions emitted as standalone `fn` with captured `&mut` parameters.
 - Exception handling: `try/except/else/finally`, `raise`, bare `raise` (re-raise), `except Exception` (catch-all), exception propagation through function calls.
 
 ## Type System Notes
@@ -92,6 +99,9 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
   - `T | None` -> `Optional[T]`
   - wider `A | B` -> gradual typing (`Unknown`) fallback
 - Unknowns are allowed locally but resolved where possible.
+- Unannotated `self.field = value` in `__init__` creates `FieldDef` with `TypeRef::Unknown`; the type checker resolves the concrete type from call-site context.
+- Multi-pass type refresh (`refresh_call_types_in_items_multi_pass`) shares a single `env: HashMap<String, Type>` across passes so that backward-propagated types from call sites reach earlier `Let` declarations.
+- Variable-arity tuple fields (e.g., `children=()` receiving `(a, b)` and `(a,)` at different call sites) are unified to `Vec<T>` and tuple literals are converted to `vec![...]` at codegen time.
 - Lambdas and callables use `Type::Lambda` and are emitted as `impl Fn(..) -> .. + 'static`.
 
 ## Codegen Notes
@@ -132,6 +142,24 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
   (e.g., `x == x`) use `ptr_eq` to short-circuit and avoid deadlocks or borrow panics.
 - Variables declared in try blocks are captured for use in both `else` and `finally` blocks via
   `Option<T>` snapshot variables.
+- Operator overloading on custom types:
+  - Dunder methods (`__add__`, `__sub__`, `__mul__`, `__truediv__`, `__neg__`) generate `std::ops` trait implementations.
+  - `__pow__` has no standard trait — emitted as a `.pow()` method, called via `left.pow(right)`.
+  - Reverse operators (`__radd__`, `__rsub__`, `__rmul__`, `__rtruediv__`) generate `impl Add<ClassName> for f64` (and `i64`).
+  - Operands of Custom types are `.clone()`'d since `Add` etc. take `self` by value.
+- Recursive nested functions:
+  - Detected at lowering/codegen time when a nested `def` calls itself.
+  - Emitted as standalone `fn` items with captured variables as explicit `&mut` parameters.
+  - `already_mut_ref_captures: HashSet<String>` prevents double `&mut` referencing in recursive calls within the inner function body.
+  - Codegen saves/restores `local_vars` and `local_list_storage` scopes around inner function body emission.
+- For-loop target mutability:
+  - `gen_for_target` checks `mut_counts` and adds `mut` prefix for variables mutated in the loop body.
+  - `collect_assign_counts` tracks field assignments (`obj.field = ...`) and known mutating method calls (including `backward`).
+- Empty list type inference in comprehensions:
+  - `infer_empty_list_type` flag is set during comprehension element generation (inside `.push()` context).
+  - When set, empty lists emit `Vec::new()` instead of `Vec::<PyRepr>::new()`, allowing Rust type inference from the push context.
+  - Outside comprehensions, `Vec::<PyRepr>::new()` is still used to avoid ambiguity.
+- `__slots__` declarations in class bodies are silently ignored (CPython memory optimization hint only).
 
 ## Test Structure
 Runtime integration tests are in `crates/py2rust/tests/`:
@@ -208,7 +236,11 @@ After completing any code changes:
   - typeck `check_call` for type rules
   - codegen `gen_expr` for emission
   - codegen `scan_expr` for helper imports
-- If you modify statement handling in codegen, update `collect_assign_counts` in `util.rs` to track variable mutations in new statement types.
+- If you add new stdlib modules, update `stdlib/registry.rs`: module id, method specs, type rules, codegen handlers, and helper implementations in `codegen/emit/helpers.rs`.
+- If you modify statement handling in codegen, update `collect_assign_counts` in `util.rs` to track variable mutations in new statement types. Mutating method names are hardcoded there — add new ones as needed (e.g., `"backward"` for custom class methods).
+- When modifying inner/nested function codegen in `stmt.rs`, always save/restore `local_vars` and `local_list_storage` scopes to avoid outer scope pollution.
+- When adding captured variables to inner functions, check `already_mut_ref_captures` to prevent double `&mut` referencing in recursive calls.
+- `gen_iter_source` may receive `Some(Unknown)` from HIR — filter it before falling back to `local_var_type` lookups.
 - Keep `#![forbid(unsafe_code)]` across crates.
 - Avoid .unwrap(), use .expect() with context or proper error handling.
 - Always update tests when changing behavior.

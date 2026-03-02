@@ -533,8 +533,14 @@ impl<'a> Lowerer<'a> {
                         ));
                     }
                     if let ast::Expr::Name(name) = &def.targets[0] {
+                        let ident = self.ident(name.id.as_str());
+                        // Skip __slots__ — it's a CPython memory optimization hint
+                        // with no semantic effect for our transpiler.
+                        if ident == "__slots__" {
+                            continue;
+                        }
                         class_attrs.push(ClassAttrDef {
-                            name: self.ident(name.id.as_str()),
+                            name: ident,
                             ann: None,
                             value: self.lower_expr(&def.value)?,
                             span: Span::from(def.range()),
@@ -641,7 +647,8 @@ impl<'a> Lowerer<'a> {
             match stmt {
                 ast::Stmt::AnnAssign(def) => {
                     if let ast::Expr::Attribute(attr) = &*def.target {
-                        if matches!(&*attr.value, ast::Expr::Name(name) if name.id.as_str() == "self") {
+                        if matches!(&*attr.value, ast::Expr::Name(name) if name.id.as_str() == "self")
+                        {
                             let ty = self.lower_type_ref(&def.annotation)?;
                             fields.push(FieldDef {
                                 name: attr.attr.to_string(),
@@ -652,22 +659,22 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 ast::Stmt::Assign(def) => {
-                    if def.targets.iter().any(|t| {
-                        matches!(
-                            t,
-                            ast::Expr::Attribute(attr)
-                                if matches!(&*attr.value, ast::Expr::Name(name) if name.id.as_str() == "self")
-                        )
-                    }) {
-                        for target in &def.targets {
-                            if let ast::Expr::Attribute(attr) = target {
-                                if matches!(&*attr.value, ast::Expr::Name(name) if name.id.as_str() == "self")
-                                    && !known_fields.contains(attr.attr.as_str()) {
-                                        return Err(self.error(
-                                            def.range(),
-                                            "Field assignments in __init__ must use type annotations",
-                                        ));
-                                    }
+                    // Infer field definitions from unannotated `self.field = value`
+                    // assignments. The type will be resolved later by the type checker
+                    // from the initialization expression context.
+                    for target in &def.targets {
+                        if let ast::Expr::Attribute(attr) = target {
+                            if matches!(&*attr.value, ast::Expr::Name(name) if name.id.as_str() == "self")
+                                && !known_fields.contains(attr.attr.as_str())
+                                && !fields
+                                    .iter()
+                                    .any(|f: &FieldDef| f.name == attr.attr.as_str())
+                            {
+                                fields.push(FieldDef {
+                                    name: attr.attr.to_string(),
+                                    ty: TypeRef::Unknown,
+                                    span: Span::from(def.range()),
+                                });
                             }
                         }
                     }

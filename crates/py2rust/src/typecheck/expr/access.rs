@@ -231,6 +231,8 @@ impl<'a> TypeChecker<'a> {
                     .cloned()
                     .ok_or_else(|| self.error(span, format!("Unknown field {class_name}.{attr}")))
             }
+            // Gradual typing: allow attribute access on Unknown types (returns Unknown).
+            Type::Unknown => Ok(Type::Unknown),
             _ => Err(self.error(span, "Attribute access only allowed on class instances")),
         }
     }

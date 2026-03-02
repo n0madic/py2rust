@@ -329,6 +329,8 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // Gradual typing: allow indexing on Unknown types (returns Unknown).
+            Type::Unknown => Ok(Type::Unknown),
             _ => Err(self.error(span, "Indexing requires list, dict, tuple, str, or bytes")),
         }
     }
@@ -465,6 +467,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 Ok(Type::Tuple(out))
             }
+            // Gradual typing: allow slicing on Unknown types (returns Unknown).
+            Type::Unknown => Ok(Type::Unknown),
             _ => Err(self.error(span, "Slicing requires list, tuple, str, or bytes")),
         }
     }
@@ -486,17 +490,31 @@ impl<'a> TypeChecker<'a> {
             let item_ty = self.iter_item_type(&iter_ty, span)?;
             self.insert_var(target, item_ty.clone(), span)?;
             for cond in ifs {
-                let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
-                self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
+                // Python comprehension filters use truthiness (any type), not strict bool.
+                let _cond_ty = self.check_expr(cond, None)?;
             }
         } else {
             for clause in generators {
                 let iter_ty = self.check_expr(&mut clause.iter, None)?;
                 let item_ty = self.iter_item_type(&iter_ty, span)?;
                 self.insert_var(&clause.target, item_ty.clone(), span)?;
+                // Register individual tuple target names when unpacking.
+                if let Some(ref targets) = clause.tuple_targets {
+                    if let Type::Tuple(items) = &item_ty {
+                        for (i, name) in targets.iter().enumerate() {
+                            let ty = items.get(i).cloned().unwrap_or(Type::Unknown);
+                            self.insert_var(name, ty, span)?;
+                        }
+                    } else {
+                        // Fallback: register all targets as Unknown.
+                        for name in targets {
+                            self.insert_var(name, Type::Unknown, span)?;
+                        }
+                    }
+                }
                 for cond in &mut clause.ifs {
-                    let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
-                    self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
+                    // Python comprehension filters use truthiness (any type), not strict bool.
+                    let _cond_ty = self.check_expr(cond, None)?;
                 }
             }
         }
@@ -522,17 +540,30 @@ impl<'a> TypeChecker<'a> {
             let item_ty = self.iter_item_type(&iter_ty, span)?;
             self.insert_var(target, item_ty.clone(), span)?;
             for cond in ifs {
-                let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
-                self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
+                // Python comprehension filters use truthiness (any type), not strict bool.
+                let _cond_ty = self.check_expr(cond, None)?;
             }
         } else {
             for clause in generators {
                 let iter_ty = self.check_expr(&mut clause.iter, None)?;
                 let item_ty = self.iter_item_type(&iter_ty, span)?;
                 self.insert_var(&clause.target, item_ty.clone(), span)?;
+                // Register individual tuple target names when unpacking.
+                if let Some(ref targets) = clause.tuple_targets {
+                    if let Type::Tuple(items) = &item_ty {
+                        for (i, name) in targets.iter().enumerate() {
+                            let ty = items.get(i).cloned().unwrap_or(Type::Unknown);
+                            self.insert_var(name, ty, span)?;
+                        }
+                    } else {
+                        for name in targets {
+                            self.insert_var(name, Type::Unknown, span)?;
+                        }
+                    }
+                }
                 for cond in &mut clause.ifs {
-                    let cond_ty = self.check_expr(cond, Some(&Type::Bool))?;
-                    self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
+                    // Python comprehension filters use truthiness (any type), not strict bool.
+                    let _cond_ty = self.check_expr(cond, None)?;
                 }
             }
         }
@@ -729,12 +760,10 @@ impl<'a> TypeChecker<'a> {
         test: &mut Expr,
         body: &mut Expr,
         orelse: &mut Expr,
-        span: Span,
+        _span: Span,
     ) -> Result<Type, CompileError> {
-        let cond_ty = self.check_expr(test, Some(&Type::Bool))?;
-        if !matches!(cond_ty, Type::Unknown) {
-            self.ensure_assignable(&cond_ty, &Type::Bool, span)?;
-        }
+        // Python conditional expressions use truthiness (any type), not strict bool.
+        let _cond_ty = self.check_expr(test, None)?;
 
         let body_ty = self.check_expr(body, None)?;
         let else_ty = self.check_expr(orelse, None)?;

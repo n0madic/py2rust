@@ -5,8 +5,21 @@ use super::super::*;
 /// Borrowed view of a comprehension clause used during code generation.
 struct CompClauseRef<'a> {
     target: &'a str,
+    /// Optional tuple target names for destructuring `for (a, b) in ...`.
+    tuple_targets: Option<&'a [String]>,
     iter: &'a Expr,
     ifs: &'a [Expr],
+}
+
+impl CompClauseRef<'_> {
+    /// Return the for-loop target pattern: either the plain name or a tuple pattern.
+    fn target_pattern(&self) -> String {
+        if let Some(names) = self.tuple_targets {
+            format!("({})", names.join(", "))
+        } else {
+            self.target.to_string()
+        }
+    }
 }
 
 impl<'a> Codegen<'a> {
@@ -36,7 +49,12 @@ impl<'a> Codegen<'a> {
                     let base = format!("Vec::<{}>::new()", self.rust_type(inner));
                     return Ok(self.wrap_list_storage_expr(&base, storage));
                 }
-                // Use PyRepr so empty lists with unknown element types are concrete.
+                // Inside comprehension push() or other inference contexts,
+                // omit the type suffix so Rust can infer from usage.
+                if self.infer_empty_list_type {
+                    let base = "Vec::new()".to_string();
+                    return Ok(self.wrap_list_storage_expr(&base, storage));
+                }
                 self.uses.py_repr = true;
                 let base = "Vec::<PyRepr>::new()".to_string();
                 return Ok(self.wrap_list_storage_expr(&base, storage));
@@ -695,6 +713,29 @@ impl<'a> Codegen<'a> {
             };
             return Ok(call);
         }
+        // Gradual typing fallback: treat Unknown as a Vec and generate list slice.
+        if matches!(value.ty.as_ref(), Some(Type::Unknown) | None) {
+            let start_arg = match start {
+                Some(s) => self.gen_expr(s)?,
+                None => "0i64".to_string(),
+            };
+            let end_arg = match end {
+                Some(e) => self.gen_expr(e)?,
+                None => format!("{}.len() as i64", base),
+            };
+            if let Some(step) = step {
+                let step_arg = self.gen_expr(step)?;
+                return Ok(self.wrap_result(format!(
+                    "py_list_slice_step(&{}, {}, {}, {})",
+                    base, start_arg, end_arg, step_arg
+                )));
+            }
+            self.uses.py_list_slice_step = true;
+            return Ok(self.wrap_result(format!(
+                "py_list_slice_step(&{}, Some({}), Some({}), 1i64)",
+                base, start_arg, end_arg
+            )));
+        }
         Err(self.error(expr.span, "Slicing requires list or str"))
     }
 
@@ -780,12 +821,18 @@ impl<'a> Codegen<'a> {
         generators: &'b [CompClause],
     ) -> Vec<CompClauseRef<'b>> {
         if generators.is_empty() {
-            return vec![CompClauseRef { target, iter, ifs }];
+            return vec![CompClauseRef {
+                target,
+                tuple_targets: None,
+                iter,
+                ifs,
+            }];
         }
         generators
             .iter()
             .map(|clause| CompClauseRef {
                 target: &clause.target,
+                tuple_targets: clause.tuple_targets.as_deref(),
                 iter: &clause.iter,
                 ifs: &clause.ifs,
             })
@@ -809,7 +856,8 @@ impl<'a> Codegen<'a> {
         for line in &iter_src.setup {
             out.push_str(&format!(" {};", line));
         }
-        out.push_str(&format!(" for {} in {} {{", clause.target, iter_src.expr));
+        let target_pat = clause.target_pattern();
+        out.push_str(&format!(" for {} in {} {{", target_pat, iter_src.expr));
 
         // Treat each generator target as a comprehension-local binding.
         let saved_locals = self.local_vars.clone();
@@ -820,15 +868,32 @@ impl<'a> Codegen<'a> {
             .as_ref()
             .and_then(|ty| self.iter_item_type_hint(ty))
             .unwrap_or(Type::Unknown);
-        scoped_locals.insert(clause.target.to_string(), item_ty);
+        // Register individual tuple target names if present, otherwise the combined name.
+        if let Some(names) = clause.tuple_targets {
+            if let Type::Tuple(items) = &item_ty {
+                for (i, name) in names.iter().enumerate() {
+                    let ty = items.get(i).cloned().unwrap_or(Type::Unknown);
+                    scoped_locals.insert(name.clone(), ty);
+                }
+            } else {
+                for name in names {
+                    scoped_locals.insert(name.clone(), Type::Unknown);
+                }
+            }
+        } else {
+            scoped_locals.insert(clause.target.to_string(), item_ty);
+        }
         self.local_vars = Some(scoped_locals);
 
         let body_result = (|| -> Result<(), CompileError> {
             let cond_expr = if clause.ifs.is_empty() {
                 None
             } else {
-                let conds: Result<Vec<String>, CompileError> =
-                    clause.ifs.iter().map(|c| self.gen_expr(c)).collect();
+                let conds: Result<Vec<String>, CompileError> = clause
+                    .ifs
+                    .iter()
+                    .map(|c| self.gen_condition_expr(c))
+                    .collect();
                 Some(conds?.join(" && "))
             };
 
@@ -839,7 +904,12 @@ impl<'a> Codegen<'a> {
             if idx + 1 < clauses.len() {
                 self.emit_list_comp_loops(out, clauses, idx + 1, elt, tmp)?;
             } else {
+                // Inside push(), Rust can infer empty list element types from the
+                // outer collection's type, so omit explicit PyRepr annotations.
+                let saved = self.infer_empty_list_type;
+                self.infer_empty_list_type = true;
                 let elt_expr = self.gen_expr(elt)?;
+                self.infer_empty_list_type = saved;
                 out.push_str(&format!(" {}.push({});", tmp, elt_expr));
             }
 
@@ -872,7 +942,8 @@ impl<'a> Codegen<'a> {
         for line in &iter_src.setup {
             out.push_str(&format!(" {};", line));
         }
-        out.push_str(&format!(" for {} in {} {{", clause.target, iter_src.expr));
+        let target_pat = clause.target_pattern();
+        out.push_str(&format!(" for {} in {} {{", target_pat, iter_src.expr));
 
         // Treat each generator target as a comprehension-local binding.
         let saved_locals = self.local_vars.clone();
@@ -883,15 +954,32 @@ impl<'a> Codegen<'a> {
             .as_ref()
             .and_then(|ty| self.iter_item_type_hint(ty))
             .unwrap_or(Type::Unknown);
-        scoped_locals.insert(clause.target.to_string(), item_ty);
+        // Register individual tuple target names if present, otherwise the combined name.
+        if let Some(names) = clause.tuple_targets {
+            if let Type::Tuple(items) = &item_ty {
+                for (i, name) in names.iter().enumerate() {
+                    let ty = items.get(i).cloned().unwrap_or(Type::Unknown);
+                    scoped_locals.insert(name.clone(), ty);
+                }
+            } else {
+                for name in names {
+                    scoped_locals.insert(name.clone(), Type::Unknown);
+                }
+            }
+        } else {
+            scoped_locals.insert(clause.target.to_string(), item_ty);
+        }
         self.local_vars = Some(scoped_locals);
 
         let body_result = (|| -> Result<(), CompileError> {
             let cond_expr = if clause.ifs.is_empty() {
                 None
             } else {
-                let conds: Result<Vec<String>, CompileError> =
-                    clause.ifs.iter().map(|c| self.gen_expr(c)).collect();
+                let conds: Result<Vec<String>, CompileError> = clause
+                    .ifs
+                    .iter()
+                    .map(|c| self.gen_condition_expr(c))
+                    .collect();
                 Some(conds?.join(" && "))
             };
 

@@ -281,18 +281,7 @@ f = lambda *args: 0
 }
 
 #[test]
-fn rejects_lambda_defaults() {
-    let source = r#"
-f = lambda x=5: x
-"#;
-    let error = expect_error(source);
-    assert!(
-        error.contains("default") || error.contains("Lambda"),
-        "Error: {}",
-        error
-    );
-}
-
+// Lambda defaults are now supported, so the old rejection test is removed.
 #[test]
 fn rejects_unsupported_binary_ops() {
     let source = r#"

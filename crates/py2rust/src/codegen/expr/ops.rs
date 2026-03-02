@@ -200,6 +200,46 @@ impl<'a> Codegen<'a> {
                 ));
             }
         }
+        // List repetition: [x] * n or n * [x]
+        if matches!(op, BinOp::Mul) {
+            let (list_expr, count_expr, list_node) =
+                if matches!(left.ty.as_ref(), Some(Type::List(_)))
+                    && matches!(right.ty.as_ref(), Some(Type::Int))
+                {
+                    (left, right, left)
+                } else if matches!(right.ty.as_ref(), Some(Type::List(_)))
+                    && matches!(left.ty.as_ref(), Some(Type::Int))
+                {
+                    (right, left, right)
+                } else {
+                    // Fall through to numeric handling below.
+                    (left, right, left) // dummy — won't be used
+                };
+            if matches!(list_node.ty.as_ref(), Some(Type::List(_)))
+                && matches!(count_expr.ty.as_ref(), Some(Type::Int))
+            {
+                // For single-element literal lists, use vec![elem; count].
+                if let ExprKind::List(items) = &list_expr.kind {
+                    if items.len() == 1 {
+                        let elem = self.gen_expr(&items[0])?;
+                        let count = self.gen_expr(count_expr)?;
+                        return Ok(format!("vec![{}; {} as usize]", elem, count));
+                    }
+                }
+                // General case: build base vec, then repeat.
+                let base = self.gen_expr(list_expr)?;
+                let count = self.gen_expr(count_expr)?;
+                let tmp = self.new_tmp();
+                let out = self.new_tmp();
+                return Ok(format!(
+                    "{{ let {tmp} = {base}; let {out}: Vec<_> = (0..({count} as usize)).flat_map(|_| {tmp}.iter().cloned()).collect(); {out} }}",
+                    tmp = tmp,
+                    base = base,
+                    out = out,
+                    count = count,
+                ));
+            }
+        }
         if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor) {
             let op_str = match op {
                 BinOp::BitOr => "|",
@@ -248,6 +288,35 @@ impl<'a> Codegen<'a> {
                     self.gen_expr(left)?,
                     self.gen_expr(right)?
                 ));
+            }
+        }
+        // Operator overloading on custom types: use the standard operator.
+        // The generated trait impls handle dispatch via Add/Sub/Mul/Div for Value.
+        if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
+            let left_is_custom = matches!(left.ty.as_ref(), Some(Type::Custom(_)));
+            let right_is_custom = matches!(right.ty.as_ref(), Some(Type::Custom(_)));
+            if left_is_custom || right_is_custom {
+                let op_str = match op {
+                    BinOp::Add => "+",
+                    BinOp::Sub => "-",
+                    BinOp::Mul => "*",
+                    BinOp::Div => "/",
+                    _ => unreachable!(),
+                };
+                let left_expr = self.gen_expr(left)?;
+                let right_expr = self.gen_expr(right)?;
+                // Clone to allow pass-by-value into the trait impl.
+                let left_val = if left_is_custom {
+                    format!("{}.clone()", left_expr)
+                } else {
+                    left_expr
+                };
+                let right_val = if right_is_custom {
+                    format!("{}.clone()", right_expr)
+                } else {
+                    right_expr
+                };
+                return Ok(format!("({} {} {})", left_val, op_str, right_val));
             }
         }
         if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul)
@@ -326,13 +395,50 @@ impl<'a> Codegen<'a> {
             ));
         }
         if matches!(op, BinOp::Pow) {
-            let is_float = matches!(expr.ty.as_ref(), Some(Type::Float));
-            let left_expr = self.gen_numeric_operand(left, is_float)?;
-            let right_expr = self.gen_numeric_operand(right, is_float)?;
-            if is_float {
-                return Ok(format!("({}.powf({}))", left_expr, right_expr));
+            // Custom type with __pow__ → call the dunder method directly.
+            if let Some(Type::Custom(class_name)) = left.ty.as_ref() {
+                if self
+                    .ctx
+                    .classes
+                    .get(class_name)
+                    .is_some_and(|ci| ci.methods.contains_key("__pow__"))
+                {
+                    let left_expr = self.gen_expr(left)?;
+                    let right_expr = self.gen_expr(right)?;
+                    // __pow__ takes f64 — cast int arguments to float.
+                    let right_cast = if matches!(right.ty.as_ref(), Some(Type::Int)) {
+                        format!("({} as f64)", right_expr)
+                    } else {
+                        right_expr
+                    };
+                    return Ok(format!("({}.clone().__pow__({}))", left_expr, right_cast));
+                }
             }
-            return Ok(format!("({}.pow({} as u32))", left_expr, right_expr));
+            // Use powf when any type is float, or when it's not definitively all-int.
+            // Default to powf for safety — only use .pow(u32) when both types are Int.
+            let lhs_is_int = matches!(left.ty.as_ref(), Some(Type::Int));
+            let rhs_is_int = matches!(right.ty.as_ref(), Some(Type::Int));
+            let result_is_int = matches!(expr.ty.as_ref(), Some(Type::Int));
+            let is_int_only = lhs_is_int && rhs_is_int && result_is_int;
+            if is_int_only {
+                let left_expr = self.gen_numeric_operand(left, false)?;
+                let right_expr = self.gen_numeric_operand(right, false)?;
+                return Ok(format!("({}.pow({} as u32))", left_expr, right_expr));
+            }
+            // Float path: ensure both operands are cast to f64.
+            let left_expr = self.gen_expr(left)?;
+            let right_expr = self.gen_expr(right)?;
+            let left_cast = if matches!(left.ty.as_ref(), Some(Type::Float)) {
+                left_expr
+            } else {
+                format!("({} as f64)", left_expr)
+            };
+            let right_cast = if matches!(right.ty.as_ref(), Some(Type::Float)) {
+                right_expr
+            } else {
+                format!("({} as f64)", right_expr)
+            };
+            return Ok(format!("({}.powf({}))", left_cast, right_cast));
         }
         // TODO: Avoid excessive cloning in tuple concatenation. When a tuple
         // variable is consumed (last use), emit move instead of clone. This
@@ -407,10 +513,36 @@ impl<'a> Codegen<'a> {
                 unreachable!("non-standard arithmetic op handled above, got {:?}", op)
             }
         };
-        let is_float = matches!(expr.ty.as_ref(), Some(Type::Float));
+        // Detect float context: if the result or either operand is float, cast int operands.
+        // This matches Python's mixed int/float arithmetic semantics.
+        // Also resolve field types at codegen time when expression type is Unknown,
+        // because method body type checking may happen before field types are finalized.
+        let is_float = matches!(expr.ty.as_ref(), Some(Type::Float))
+            || self.expr_resolves_to_float(left)
+            || self.expr_resolves_to_float(right);
         let left_expr = self.gen_numeric_operand(left, is_float)?;
         let right_expr = self.gen_numeric_operand(right, is_float)?;
         Ok(format!("({} {} {})", left_expr, op_str, right_expr))
+    }
+
+    /// Resolve an expression's type, looking up class field types when the
+    /// expression type is Unknown. This handles cases where method bodies are
+    /// type-checked before field types are finalized via iterative inference.
+    pub(in crate::codegen) fn expr_resolves_to_float(&self, expr: &Expr) -> bool {
+        let ty = expr.ty.as_ref();
+        if matches!(ty, Some(Type::Float)) {
+            return true;
+        }
+        if matches!(ty, Some(Type::Unknown) | None) {
+            if let ExprKind::Attr { value, attr } = &expr.kind {
+                if let Some(Type::Custom(class_name)) = value.ty.as_ref() {
+                    if let Some(ci) = self.ctx.classes.get(class_name.as_str()) {
+                        return matches!(ci.fields.get(attr.as_str()), Some(Type::Float));
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Lower a unary operation expression.
@@ -763,7 +895,7 @@ impl<'a> Codegen<'a> {
                         format!("std::ptr::eq(&{}, &{})", left_expr, right_expr)
                     }
                     (ListStorage::SharedCell, ListStorage::SharedCell) => {
-                        format!("Rc::ptr_eq(&{}, &{})", left_expr, right_expr)
+                        format!("Arc::ptr_eq(&{}, &{})", left_expr, right_expr)
                     }
                     (ListStorage::SharedSync, ListStorage::SharedSync) => {
                         format!("Arc::ptr_eq(&{}, &{})", left_expr, right_expr)
@@ -790,7 +922,7 @@ impl<'a> Codegen<'a> {
                         format!("std::ptr::eq(&{}, &{})", left_expr, right_expr)
                     }
                     (DictStorage::SharedCell, DictStorage::SharedCell) => {
-                        format!("Rc::ptr_eq(&{}, &{})", left_expr, right_expr)
+                        format!("Arc::ptr_eq(&{}, &{})", left_expr, right_expr)
                     }
                     (DictStorage::SharedSync, DictStorage::SharedSync) => {
                         format!("Arc::ptr_eq(&{}, &{})", left_expr, right_expr)
@@ -1086,14 +1218,19 @@ impl<'a> Codegen<'a> {
             CmpOp::IsNot => "!=",
             CmpOp::In | CmpOp::NotIn => unreachable!("membership ops handled above"),
         };
-        if matches!(left.ty.as_ref(), Some(Type::Int | Type::Float | Type::Bool))
-            && matches!(
-                right.ty.as_ref(),
-                Some(Type::Int | Type::Float | Type::Bool)
-            )
-        {
+        // Check if either operand resolves to a numeric type (including Unknown
+        // fields on Custom types that resolve to Float).
+        let left_numeric = matches!(left.ty.as_ref(), Some(Type::Int | Type::Float | Type::Bool))
+            || self.expr_resolves_to_float(left);
+        let right_numeric = matches!(
+            right.ty.as_ref(),
+            Some(Type::Int | Type::Float | Type::Bool)
+        ) || self.expr_resolves_to_float(right);
+        if left_numeric && right_numeric {
             let is_float = matches!(left.ty.as_ref(), Some(Type::Float))
-                || matches!(right.ty.as_ref(), Some(Type::Float));
+                || matches!(right.ty.as_ref(), Some(Type::Float))
+                || self.expr_resolves_to_float(left)
+                || self.expr_resolves_to_float(right);
             let left_expr = self.gen_numeric_operand(left, is_float)?;
             let right_expr = self.gen_numeric_operand(right, is_float)?;
             return Ok(format!("({} {} {})", left_expr, op_str, right_expr));
@@ -1270,7 +1407,7 @@ impl<'a> Codegen<'a> {
                 let left_guard = self.new_tmp();
                 let right_guard = self.new_tmp();
                 format!(
-                    "{{ let {left_tmp} = ({left_expr}).clone(); let {right_tmp} = ({right_expr}).clone(); if Rc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.py_list_guard(); let {right_guard} = {right_tmp}.py_list_guard(); {left_guard}.iter().eq({right_guard}.iter()) }} }}"
+                    "{{ let {left_tmp} = ({left_expr}).clone(); let {right_tmp} = ({right_expr}).clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.py_list_guard(); let {right_guard} = {right_tmp}.py_list_guard(); {left_guard}.iter().eq({right_guard}.iter()) }} }}"
                 )
             }
             (ListStorage::SharedSync, ListStorage::SharedSync) => {
@@ -1343,7 +1480,7 @@ impl<'a> Codegen<'a> {
                 let left_guard = self.new_tmp();
                 let right_guard = self.new_tmp();
                 format!(
-                    "{{ let {left_tmp} = ({left_expr}).clone(); let {right_tmp} = ({right_expr}).clone(); if Rc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.py_dict_guard(); let {right_guard} = {right_tmp}.py_dict_guard(); *{left_guard} == *{right_guard} }} }}"
+                    "{{ let {left_tmp} = ({left_expr}).clone(); let {right_tmp} = ({right_expr}).clone(); if Arc::ptr_eq(&{left_tmp}, &{right_tmp}) {{ true }} else {{ let {left_guard} = {left_tmp}.py_dict_guard(); let {right_guard} = {right_tmp}.py_dict_guard(); *{left_guard} == *{right_guard} }} }}"
                 )
             }
             (DictStorage::SharedSync, DictStorage::SharedSync) => {

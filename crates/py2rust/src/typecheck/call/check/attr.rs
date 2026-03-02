@@ -70,6 +70,26 @@ impl<'a> TypeChecker<'a> {
                     if let ExprKind::Name(name) = &value.kind {
                         self.set_var_type(name, Type::List(Box::new(arg_ty.clone())));
                     }
+                    // Also handle indexed append: name[i].append(val)
+                    // Refine name's type from List(List(Unknown)) to List(List(arg_ty)).
+                    if let ExprKind::Index { value: outer, .. } = &value.kind {
+                        if let ExprKind::Name(name) = &outer.kind {
+                            if let Some(var_ty) = self.lookup_var(name) {
+                                if let Type::List(outer_inner) = &var_ty {
+                                    if let Type::List(elem) = outer_inner.as_ref() {
+                                        if matches!(elem.as_ref(), Type::Unknown) {
+                                            self.set_var_type(
+                                                name,
+                                                Type::List(Box::new(Type::List(Box::new(
+                                                    arg_ty.clone(),
+                                                )))),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 return Ok(Type::None);
             }
@@ -793,6 +813,16 @@ impl<'a> TypeChecker<'a> {
                     ),
                 ));
             }
+        }
+        // Gradual typing: allow method calls on Unknown types (returns Unknown).
+        if matches!(obj_ty, Type::Unknown) {
+            for arg in args.iter_mut() {
+                let _ = self.check_expr(arg, None)?;
+            }
+            for kw in keywords.iter_mut() {
+                let _ = self.check_expr(&mut kw.value, None)?;
+            }
+            return Ok(Type::Unknown);
         }
         Err(self.error(span, "Unsupported method call"))
     }

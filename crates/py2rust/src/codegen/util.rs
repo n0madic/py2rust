@@ -85,7 +85,7 @@ impl<'a> Codegen<'a> {
     pub(crate) fn wrap_list_storage_expr(&self, expr: &str, storage: ListStorage) -> String {
         match storage {
             ListStorage::Local => expr.to_string(),
-            ListStorage::SharedCell => format!("Rc::new(RefCell::new({}))", expr),
+            ListStorage::SharedCell => format!("Arc::new(Mutex::new({}))", expr),
             ListStorage::SharedSync => format!("Arc::new(Mutex::new({}))", expr),
         }
     }
@@ -134,7 +134,7 @@ impl<'a> Codegen<'a> {
     pub(crate) fn wrap_dict_storage_expr(&self, expr: &str, storage: DictStorage) -> String {
         match storage {
             DictStorage::Local => expr.to_string(),
-            DictStorage::SharedCell => format!("Rc::new(RefCell::new({}))", expr),
+            DictStorage::SharedCell => format!("Arc::new(Mutex::new({}))", expr),
             DictStorage::SharedSync => format!("Arc::new(Mutex::new({}))", expr),
         }
     }
@@ -514,6 +514,8 @@ where
                             | "close"
                             | "__enter__"
                             | "__exit__"
+                            // User-defined methods that take &mut self.
+                            | "backward"
                     ) {
                         if let ExprKind::Name(name) = &value.kind {
                             *counts.entry(name.clone()).or_insert(0) += 1;

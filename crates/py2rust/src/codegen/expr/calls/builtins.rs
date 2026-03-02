@@ -99,11 +99,8 @@ impl<'a> Codegen<'a> {
                             ));
                         }
                         let shared_ty = match dict_storage {
-                            DictStorage::SharedSync => {
+                            DictStorage::SharedSync | DictStorage::SharedCell => {
                                 "Arc<Mutex<IndexMap<PyRepr, PyRepr>>>".to_string()
-                            }
-                            DictStorage::SharedCell => {
-                                "Rc<RefCell<IndexMap<PyRepr, PyRepr>>>".to_string()
                             }
                             DictStorage::Local => unreachable!("handled above"),
                         };
@@ -861,9 +858,9 @@ impl<'a> Codegen<'a> {
                     "max() with key= currently supports only iterable form",
                 ));
             }
-            let use_float = args
-                .iter()
-                .any(|a| matches!(a.ty.as_ref(), Some(Type::Float)));
+            let use_float = args.iter().any(|a| {
+                matches!(a.ty.as_ref(), Some(Type::Float)) || self.expr_resolves_to_float(a)
+            });
             let mut parts = Vec::new();
             for arg in args {
                 parts.push(self.gen_numeric_operand(arg, use_float)?);
@@ -1027,6 +1024,16 @@ impl<'a> Codegen<'a> {
                 .as_ref()
                 .and_then(|ty| self.iter_item_type_hint(ty));
             let item_is_float = matches!(item_ty.as_ref(), Some(Type::Float));
+            // Custom types with __add__: use reduce pattern instead of fold.
+            let is_custom_summable = matches!(item_ty.as_ref(), Some(Type::Custom(_)));
+            if is_custom_summable {
+                // For custom types, reduce with + operator (requires __add__).
+                let body = format!(
+                    "{}.reduce(|acc, v| acc + v).expect(\"sum() of empty sequence\")",
+                    iter_src.expr
+                );
+                return Ok(Some(iter_src.wrap(body)));
+            }
             let start_ty = if args.len() == 2 {
                 args[1].ty.as_ref()
             } else {

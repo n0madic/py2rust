@@ -173,8 +173,8 @@ define_expr_visitors!(
         mut_pat: ExprKind::UnionCtor { union, variant, inner } => visit_union_ctor_mut(union: &mut String, variant: &mut String, inner: &mut Expr) => (union, variant, inner)
     },
     {
-        imm_pat: ExprKind::Lambda { params, param_kinds, has_defaults, body } => visit_lambda(params: &[String], param_kinds: &[ParamKind], has_defaults: &[bool], body: &Expr) => (params, param_kinds, has_defaults, body),
-        mut_pat: ExprKind::Lambda { params, param_kinds, has_defaults, body } => visit_lambda_mut(params: &mut [String], param_kinds: &mut [ParamKind], has_defaults: &mut [bool], body: &mut Expr) => (params, param_kinds, has_defaults, body)
+        imm_pat: ExprKind::Lambda { params, param_kinds, has_defaults, defaults, body } => visit_lambda(params: &[String], param_kinds: &[ParamKind], has_defaults: &[bool], defaults: &[Option<Expr>], body: &Expr) => (params, param_kinds, has_defaults, defaults, body),
+        mut_pat: ExprKind::Lambda { params, param_kinds, has_defaults, defaults, body } => visit_lambda_mut(params: &mut [String], param_kinds: &mut [ParamKind], has_defaults: &mut [bool], defaults: &mut [Option<Expr>], body: &mut Expr) => (params, param_kinds, has_defaults, defaults, body)
     },
     {
         imm_pat: ExprKind::IfExpr { test, body, orelse } => visit_if_expr(test: &Expr, body: &Expr, orelse: &Expr) => (test, body, orelse),
@@ -416,6 +416,7 @@ pub trait ExprWalkerMut {
         _params: &mut [String],
         _param_kinds: &mut [ParamKind],
         _has_defaults: &mut [bool],
+        _defaults: &mut [Option<Expr>],
         body: &mut Expr,
     ) {
         walk_expr_mut(self, body);
@@ -638,9 +639,10 @@ impl<T: ExprWalkerMut + ?Sized> ExprVisitorMut<()> for T {
         params: &mut [String],
         param_kinds: &mut [ParamKind],
         has_defaults: &mut [bool],
+        defaults: &mut [Option<Expr>],
         body: &mut Expr,
     ) {
-        ExprWalkerMut::visit_lambda_mut(self, params, param_kinds, has_defaults, body);
+        ExprWalkerMut::visit_lambda_mut(self, params, param_kinds, has_defaults, defaults, body);
     }
 
     fn visit_if_expr_mut(&mut self, test: &mut Expr, body: &mut Expr, orelse: &mut Expr) {

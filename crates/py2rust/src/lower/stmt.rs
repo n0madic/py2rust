@@ -138,11 +138,15 @@ impl<'a> Lowerer<'a> {
                     span: Span::from(def.range()),
                     ty: None,
                 };
+                // Nested function defaults are managed via the Param.default mechanism
+                // in function-level lowering; lambdas carry their own defaults inline.
+                let defaults_vec = vec![None; params.len()];
                 let mut value = Expr {
                     kind: ExprKind::Lambda {
                         params,
                         param_kinds,
                         has_defaults,
+                        defaults: defaults_vec,
                         body: Box::new(block),
                     },
                     span: Span::from(def.range()),

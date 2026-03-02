@@ -87,6 +87,37 @@ impl<'a> Codegen<'a> {
                     hinted.ty = Some(Type::List(inner.clone()));
                     return self.gen_list_expr(&hinted, items);
                 }
+                // Convert tuple literal to vec when expected type is List.
+                // This handles variable-arity tuple args like (self, other) → vec![self, other]
+                // when the parameter expects Vec<T>.
+                if let ExprKind::Tuple(items) = &expr.kind {
+                    if items.is_empty() {
+                        // Empty tuple → empty Vec.
+
+                        let inner_ty = self.rust_type(inner);
+                        return Ok(format!("Arc::new(Mutex::new(Vec::<{}>::new()))", inner_ty));
+                    }
+                    let mut elem_exprs = Vec::new();
+                    for item in items {
+                        let s = self.gen_expr(item)?;
+                        // Clone if the element is a reference or lvalue.
+                        if self.call_arg_needs_owned_clone(item, inner) {
+                            elem_exprs.push(format!("{}.clone()", s));
+                        } else if matches!(inner.as_ref(), Type::Float)
+                            && matches!(item.kind, ExprKind::Literal(Literal::Int(_)))
+                        {
+                            // Cast int literal to f64 when Vec<f64> is expected.
+                            elem_exprs.push(format!("{} as f64", s));
+                        } else {
+                            elem_exprs.push(s);
+                        }
+                    }
+
+                    return Ok(format!(
+                        "Arc::new(Mutex::new(vec![{}]))",
+                        elem_exprs.join(", ")
+                    ));
+                }
             }
         }
         if let Some(Type::Option(_)) = expected {
@@ -259,7 +290,7 @@ impl<'a> Codegen<'a> {
     pub(crate) fn call_arg_needs_owned_clone(&self, arg: &Expr, param_ty: &Type) -> bool {
         if !matches!(
             param_ty,
-            Type::List(_) | Type::Dict(_, _) | Type::Str | Type::Bytes
+            Type::List(_) | Type::Dict(_, _) | Type::Str | Type::Bytes | Type::Custom(_)
         ) {
             return false;
         }
@@ -595,6 +626,52 @@ impl<'a> Codegen<'a> {
                     expr: format!("{}.iter()", rendered),
                 }),
             },
+            // Fallback: try to resolve field types for attr access on custom types
+            // when the expression type is Unknown but the class field type is known.
+            Some(Type::Unknown) | None => {
+                if let ExprKind::Attr { value, attr } = &expr.kind {
+                    // Try HIR expression type first, then fall back to local var type
+                    // (needed for inner function scopes where HIR types may be Unknown).
+                    let value_ty = value
+                        .ty
+                        .as_ref()
+                        .filter(|ty| !matches!(ty, Type::Unknown))
+                        .cloned()
+                        .or_else(|| {
+                            if let ExprKind::Name(name) = &value.kind {
+                                self.local_var_type(name).cloned()
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(Type::Custom(class_name)) = value_ty.as_ref() {
+                        if let Some(class_info) = self.ctx.classes.get(class_name.as_str()) {
+                            if let Some(field_ty) = class_info.fields.get(attr.as_str()) {
+                                if let Type::List(inner) = field_ty {
+                                    let tmp = self.new_tmp();
+                                    let guard = self.new_tmp();
+                                    let iter_expr = if self.is_copy_type(inner) {
+                                        format!("{}.iter().copied()", guard)
+                                    } else {
+                                        format!("{}.iter().cloned()", guard)
+                                    };
+                                    return Ok(IterSource {
+                                        setup: vec![
+                                            format!("let {} = {}.clone()", tmp, rendered),
+                                            format!("let {} = {}.py_list_guard()", guard, tmp),
+                                        ],
+                                        expr: iter_expr,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(IterSource {
+                    setup: Vec::new(),
+                    expr: format!("{}.into_iter()", rendered),
+                })
+            }
             _ => Ok(IterSource {
                 setup: Vec::new(),
                 expr: format!("{}.into_iter()", rendered),
@@ -708,6 +785,47 @@ impl<'a> Codegen<'a> {
                     keys = keys,
                     iter = iter_method
                 ))
+            }
+            // Fallback: try to resolve field types for attr access on custom types.
+            Some(Type::Unknown) | None => {
+                if let ExprKind::Attr { value, attr } = &expr.kind {
+                    if let Some(Type::Custom(class_name)) = value.ty.as_ref() {
+                        if let Some(class_info) = self.ctx.classes.get(class_name.as_str()) {
+                            if let Some(field_ty) = class_info.fields.get(attr.as_str()) {
+                                if let Type::List(inner) = field_ty {
+                                    if context == IterContext::ImmediateConsumption {
+                                        let iter_method = if self.is_copy_type(inner) {
+                                            ".iter().copied()"
+                                        } else {
+                                            ".iter().cloned()"
+                                        };
+                                        return Ok(format!(
+                                            "{}.py_list_guard(){}",
+                                            rendered, iter_method
+                                        ));
+                                    }
+                                    let tmp = self.new_tmp();
+                                    let idx = self.new_tmp();
+                                    let guard = self.new_tmp();
+                                    let item_expr = if self.is_copy_type(inner) {
+                                        format!("{}[{}]", guard, idx)
+                                    } else {
+                                        format!("{}[{}].clone()", guard, idx)
+                                    };
+                                    return Ok(format!(
+                                        "{{ let {tmp} = {expr}.clone(); let mut {idx}: usize = 0; std::iter::from_fn(move || {{ let {guard} = {tmp}.py_list_guard(); if {idx} < {guard}.len() {{ let item = {item}; {idx} += 1; Some(item) }} else {{ None }} }}) }}",
+                                        tmp = tmp,
+                                        expr = rendered,
+                                        guard = guard,
+                                        idx = idx,
+                                        item = item_expr
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(self.gen_iter_source(expr)?.expr)
             }
             _ => Ok(self.gen_iter_source(expr)?.expr),
         }

@@ -124,6 +124,179 @@ impl<'a> Codegen<'a> {
             self.emit_into_iter(class_def, class_info)?;
         }
 
+        // Emit operator trait implementations for classes with dunder methods.
+        self.emit_operator_traits(&class_def.name, class_info)?;
+
+        Ok(())
+    }
+
+    /// Emit std::ops trait implementations for classes that define dunder methods.
+    fn emit_operator_traits(
+        &mut self,
+        class_name: &str,
+        class_info: &ClassInfo,
+    ) -> Result<(), CompileError> {
+        // Mapping: dunder method → (trait name, trait method, output type).
+        // For binary ops: impl Trait<Rhs> for ClassName.
+        // For unary: impl Trait for ClassName.
+        let binary_ops: &[(&str, &str, &str)] = &[
+            ("__add__", "Add", "add"),
+            ("__mul__", "Mul", "mul"),
+            ("__sub__", "Sub", "sub"),
+            ("__truediv__", "Div", "div"),
+        ];
+        let unary_ops: &[(&str, &str, &str)] = &[("__neg__", "Neg", "neg")];
+        let reverse_ops: &[(&str, &str, &str, &str)] = &[
+            ("__radd__", "Add", "add", "f64"),
+            ("__radd__", "Add", "add", "i64"),
+            ("__rmul__", "Mul", "mul", "f64"),
+            ("__rmul__", "Mul", "mul", "i64"),
+            ("__rsub__", "Sub", "sub", "f64"),
+            ("__rsub__", "Sub", "sub", "i64"),
+            ("__rtruediv__", "Div", "div", "f64"),
+            ("__rtruediv__", "Div", "div", "i64"),
+        ];
+
+        for (dunder, trait_name, method_name) in binary_ops {
+            if class_info.methods.contains_key(*dunder) {
+                // impl Add for ClassName (ClassName + ClassName)
+                self.push_line(&format!(
+                    "impl std::ops::{}<{class_name}> for {class_name} {{",
+                    trait_name,
+                ));
+                self.indent += 1;
+                self.push_line(&format!("type Output = {class_name};"));
+                self.push_line(&format!(
+                    "fn {method_name}(self, rhs: {class_name}) -> {class_name} {{ self.{dunder}(&rhs) }}"
+                ));
+                self.indent -= 1;
+                self.push_line("}");
+                // impl Add for &ClassName (&ClassName + &ClassName)
+                self.push_line(&format!(
+                    "impl std::ops::{}<&{class_name}> for &{class_name} {{",
+                    trait_name,
+                ));
+                self.indent += 1;
+                self.push_line(&format!("type Output = {class_name};"));
+                self.push_line(&format!(
+                    "fn {method_name}(self, rhs: &{class_name}) -> {class_name} {{ self.{dunder}(rhs) }}"
+                ));
+                self.indent -= 1;
+                self.push_line("}");
+                // impl Add<Value> for &ClassName (&ClassName + owned ClassName)
+                self.push_line(&format!(
+                    "impl std::ops::{}<{class_name}> for &{class_name} {{",
+                    trait_name,
+                ));
+                self.indent += 1;
+                self.push_line(&format!("type Output = {class_name};"));
+                self.push_line(&format!(
+                    "fn {method_name}(self, rhs: {class_name}) -> {class_name} {{ self.{dunder}(&rhs) }}"
+                ));
+                self.indent -= 1;
+                self.push_line("}");
+                // impl Add<&ClassName> for owned ClassName (owned ClassName + &ClassName)
+                self.push_line(&format!(
+                    "impl std::ops::{}<&{class_name}> for {class_name} {{",
+                    trait_name,
+                ));
+                self.indent += 1;
+                self.push_line(&format!("type Output = {class_name};"));
+                self.push_line(&format!(
+                    "fn {method_name}(self, rhs: &{class_name}) -> {class_name} {{ self.{dunder}(rhs) }}"
+                ));
+                self.indent -= 1;
+                self.push_line("}");
+                // impl Add<i64/f64> for &ClassName (&ClassName + scalar)
+                // impl Add<i64/f64> for ClassName (owned ClassName + scalar)
+                for scalar in &["i64", "f64"] {
+                    self.push_line(&format!(
+                        "impl std::ops::{}<{scalar}> for &{class_name} {{",
+                        trait_name,
+                    ));
+                    self.indent += 1;
+                    self.push_line(&format!("type Output = {class_name};"));
+                    self.push_line(&format!(
+                        "fn {method_name}(self, rhs: {scalar}) -> {class_name} {{ self.{dunder}(&{class_name}::new(rhs as f64, Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(vec![])))) }}"
+                    ));
+                    self.indent -= 1;
+                    self.push_line("}");
+                    self.push_line(&format!(
+                        "impl std::ops::{}<{scalar}> for {class_name} {{",
+                        trait_name,
+                    ));
+                    self.indent += 1;
+                    self.push_line(&format!("type Output = {class_name};"));
+                    self.push_line(&format!(
+                        "fn {method_name}(self, rhs: {scalar}) -> {class_name} {{ self.{dunder}(&{class_name}::new(rhs as f64, Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(vec![])))) }}"
+                    ));
+                    self.indent -= 1;
+                    self.push_line("}");
+                }
+                self.push_line("");
+            }
+        }
+
+        // Unary operators (Neg).
+        for (dunder, trait_name, method_name) in unary_ops {
+            if class_info.methods.contains_key(*dunder) {
+                self.push_line(&format!(
+                    "impl std::ops::{} for {class_name} {{",
+                    trait_name,
+                ));
+                self.indent += 1;
+                self.push_line(&format!("type Output = {class_name};"));
+                self.push_line(&format!(
+                    "fn {method_name}(self) -> {class_name} {{ self.{dunder}() }}"
+                ));
+                self.indent -= 1;
+                self.push_line("}");
+                self.push_line(&format!(
+                    "impl std::ops::{} for &{class_name} {{",
+                    trait_name,
+                ));
+                self.indent += 1;
+                self.push_line(&format!("type Output = {class_name};"));
+                self.push_line(&format!(
+                    "fn {method_name}(self) -> {class_name} {{ self.{dunder}() }}"
+                ));
+                self.indent -= 1;
+                self.push_line("}");
+                self.push_line("");
+            }
+        }
+
+        // Reverse operators (e.g., f64 + Value → impl Add<Value> for f64).
+        // Also add scalar + &Value variants for reference contexts.
+        for (dunder, trait_name, method_name, scalar_ty) in reverse_ops {
+            if class_info.methods.contains_key(*dunder) {
+                // scalar + owned ClassName
+                self.push_line(&format!(
+                    "impl std::ops::{}<{class_name}> for {scalar_ty} {{",
+                    trait_name,
+                ));
+                self.indent += 1;
+                self.push_line(&format!("type Output = {class_name};"));
+                self.push_line(&format!(
+                    "fn {method_name}(self, rhs: {class_name}) -> {class_name} {{ rhs.{dunder}(&{class_name}::new(self as f64, Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(vec![])))) }}"
+                ));
+                self.indent -= 1;
+                self.push_line("}");
+                // scalar + &ClassName
+                self.push_line(&format!(
+                    "impl std::ops::{}<&{class_name}> for {scalar_ty} {{",
+                    trait_name,
+                ));
+                self.indent += 1;
+                self.push_line(&format!("type Output = {class_name};"));
+                self.push_line(&format!(
+                    "fn {method_name}(self, rhs: &{class_name}) -> {class_name} {{ rhs.{dunder}(&{class_name}::new(self as f64, Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(vec![])))) }}"
+                ));
+                self.indent -= 1;
+                self.push_line("}");
+            }
+        }
+
         Ok(())
     }
 

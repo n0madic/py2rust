@@ -397,6 +397,10 @@ pub struct KeywordArg {
 #[derive(Debug, Clone)]
 pub struct CompClause {
     pub target: String,
+    /// Optional tuple target names for unpacking `for a, b in ...`.
+    /// When set, `target` is a synthesized temp name and `tuple_targets`
+    /// holds the individual names to destructure into.
+    pub tuple_targets: Option<Vec<String>>,
     pub iter: Box<Expr>,
     pub ifs: Vec<Expr>,
 }
@@ -531,6 +535,7 @@ pub enum ExprKind {
         params: Vec<String>,
         param_kinds: Vec<ParamKind>,
         has_defaults: Vec<bool>,
+        defaults: Vec<Option<Expr>>,
         body: Box<Expr>,
     },
     /// Conditional expression (ternary).

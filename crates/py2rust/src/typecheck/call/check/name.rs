@@ -471,11 +471,24 @@ impl<'a> TypeChecker<'a> {
             }
             let iter_ty = self.check_expr(&mut args[0], None)?;
             let item_ty = self.iter_item_type(&iter_ty, span)?;
-            let mut result_ty = match item_ty {
+            let mut result_ty = match &item_ty {
                 Type::Int => Type::Int,
                 Type::Float => Type::Float,
                 Type::Bool => Type::Int,
                 Type::Unknown => Type::Unknown,
+                // Custom types with __add__ can be summed (e.g., Value autograd).
+                Type::Custom(class_name) => {
+                    if self
+                        .ctx
+                        .classes
+                        .get(class_name.as_str())
+                        .is_some_and(|ci| ci.methods.contains_key("__add__"))
+                    {
+                        item_ty.clone()
+                    } else {
+                        return Err(self.error(span, "sum() expects numeric items"));
+                    }
+                }
                 _ => {
                     return Err(self.error(span, "sum() expects numeric items"));
                 }

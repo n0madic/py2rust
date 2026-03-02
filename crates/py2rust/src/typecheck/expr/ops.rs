@@ -77,23 +77,22 @@ impl<'a> TypeChecker<'a> {
 
         // Keep unknown arithmetic permissive, preserving string concat special-case.
         if matches!(left_ty, Type::Unknown) && matches!(right_ty, Type::Unknown) {
-            // CPython-compat divergence:
-            // For Add, both operands Unknown could be string concat, so keep Unknown
-            // to let codegen handle it with fallback. Other arithmetic ops can safely
-            // default to numeric since strings don't support them.
+            // When both sides are Unknown, only infer concrete types for operations
+            // that are unambiguously integer-only. Arithmetic ops like Sub/Mul/Pow
+            // stay Unknown since operands could be custom types with operator overloading.
             let inferred = match op {
                 BinOp::Add => Type::Unknown,
                 BinOp::Div => Type::Float,
-                BinOp::Sub
-                | BinOp::Mul
-                | BinOp::Mod
-                | BinOp::Pow
-                | BinOp::FloorDiv
-                | BinOp::BitOr
+                // Bitwise/shift ops are only valid on integers.
+                BinOp::BitOr
                 | BinOp::BitAnd
                 | BinOp::BitXor
                 | BinOp::ShiftLeft
                 | BinOp::ShiftRight => Type::Int,
+                // Other arithmetic ops could involve custom types — keep Unknown.
+                BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::Pow | BinOp::FloorDiv => {
+                    Type::Unknown
+                }
             };
             if !matches!(inferred, Type::Unknown) {
                 self.maybe_update_from_expr(left, &inferred);
@@ -157,6 +156,21 @@ impl<'a> TypeChecker<'a> {
                     return Ok(Type::Set(Box::new(inner)));
                 }
                 if !left_ty.is_numeric() || !right_ty.is_numeric() {
+                    // Check for operator overloading on custom types.
+                    if let Type::Custom(ref class_name) = left_ty {
+                        if let Some(class_info) = self.ctx.classes.get(class_name) {
+                            if let Some(sig) = class_info.methods.get("__sub__") {
+                                return Ok(sig.ret.clone());
+                            }
+                        }
+                    }
+                    if let Type::Custom(ref class_name) = right_ty {
+                        if let Some(class_info) = self.ctx.classes.get(class_name) {
+                            if let Some(sig) = class_info.methods.get("__rsub__") {
+                                return Ok(sig.ret.clone());
+                            }
+                        }
+                    }
                     return Err(self.error(span, "Binary arithmetic requires numeric types"));
                 }
                 if matches!(left_ty, Type::Float) || matches!(right_ty, Type::Float) {
@@ -181,6 +195,17 @@ impl<'a> TypeChecker<'a> {
                     if (left_is_str && right_is_int) || (right_is_str && left_is_int) {
                         return Ok(Type::Str);
                     }
+                    // List repetition: [x] * n or n * [x]
+                    if let Type::List(inner) = &left_ty {
+                        if right_is_int {
+                            return Ok(Type::List(inner.clone()));
+                        }
+                    }
+                    if let Type::List(inner) = &right_ty {
+                        if left_is_int {
+                            return Ok(Type::List(inner.clone()));
+                        }
+                    }
                 }
 
                 if !left_ty.is_numeric() || !right_ty.is_numeric() {
@@ -198,6 +223,25 @@ impl<'a> TypeChecker<'a> {
                             let mut combined = left_items.clone();
                             combined.extend(right_items.clone());
                             return Ok(Type::Tuple(combined));
+                        }
+                    }
+                    // Check for operator overloading on custom types via dunder methods.
+                    let dunder = Self::binop_to_dunder(op);
+                    let rdunder = Self::binop_to_rdunder(op);
+                    // Forward dunder: left.__add__(right)
+                    if let Type::Custom(ref class_name) = left_ty {
+                        if let Some(class_info) = self.ctx.classes.get(class_name) {
+                            if let Some(sig) = class_info.methods.get(dunder) {
+                                return Ok(sig.ret.clone());
+                            }
+                        }
+                    }
+                    // Reverse dunder: right.__radd__(left)
+                    if let Type::Custom(ref class_name) = right_ty {
+                        if let Some(class_info) = self.ctx.classes.get(class_name) {
+                            if let Some(sig) = class_info.methods.get(rdunder) {
+                                return Ok(sig.ret.clone());
+                            }
                         }
                     }
                     return Err(self.error(span, "Binary arithmetic requires numeric types"));
@@ -244,6 +288,14 @@ impl<'a> TypeChecker<'a> {
         match op {
             UnaryOp::Neg => {
                 if !inner_ty.is_numeric() {
+                    // Check for __neg__ on custom types.
+                    if let Type::Custom(ref class_name) = inner_ty {
+                        if let Some(class_info) = self.ctx.classes.get(class_name) {
+                            if let Some(sig) = class_info.methods.get("__neg__") {
+                                return Ok(sig.ret.clone());
+                            }
+                        }
+                    }
                     return Err(self.error(span, "Unary - requires numeric type"));
                 }
                 Ok(inner_ty)
@@ -505,5 +557,41 @@ impl<'a> TypeChecker<'a> {
             }
         }
         false
+    }
+
+    /// Map a binary operator to its forward dunder method name.
+    fn binop_to_dunder(op: &BinOp) -> &'static str {
+        match op {
+            BinOp::Add => "__add__",
+            BinOp::Sub => "__sub__",
+            BinOp::Mul => "__mul__",
+            BinOp::Div => "__truediv__",
+            BinOp::FloorDiv => "__floordiv__",
+            BinOp::Mod => "__mod__",
+            BinOp::Pow => "__pow__",
+            BinOp::BitOr => "__or__",
+            BinOp::BitAnd => "__and__",
+            BinOp::BitXor => "__xor__",
+            BinOp::ShiftLeft => "__lshift__",
+            BinOp::ShiftRight => "__rshift__",
+        }
+    }
+
+    /// Map a binary operator to its reverse dunder method name.
+    fn binop_to_rdunder(op: &BinOp) -> &'static str {
+        match op {
+            BinOp::Add => "__radd__",
+            BinOp::Sub => "__rsub__",
+            BinOp::Mul => "__rmul__",
+            BinOp::Div => "__rtruediv__",
+            BinOp::FloorDiv => "__rfloordiv__",
+            BinOp::Mod => "__rmod__",
+            BinOp::Pow => "__rpow__",
+            BinOp::BitOr => "__ror__",
+            BinOp::BitAnd => "__rand__",
+            BinOp::BitXor => "__rxor__",
+            BinOp::ShiftLeft => "__rlshift__",
+            BinOp::ShiftRight => "__rrshift__",
+        }
     }
 }

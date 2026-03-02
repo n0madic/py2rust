@@ -39,6 +39,8 @@ pub enum StdlibModuleId {
     UrllibParse,
     /// Python `urllib.request` module.
     UrllibRequest,
+    /// Python `random` module.
+    Random,
 }
 
 /// Identifier for a supported stdlib callable.
@@ -206,6 +208,14 @@ pub enum StdlibMethodId {
     UrllibParseParseQs,
     /// `urllib.request.urlopen(url, [data], [timeout])`
     UrllibRequestUrlopen,
+    /// `random.seed(n)`
+    RandomSeed,
+    /// `random.shuffle(list)`
+    RandomShuffle,
+    /// `random.gauss(mu, sigma)`
+    RandomGauss,
+    /// `random.choices(population, weights=weights)`
+    RandomChoices,
 }
 
 /// Function pointer used to emit method-specific Rust calls in codegen.
@@ -1317,6 +1327,52 @@ const URLLIB_RESPONSE_HEADERS_ATTR_SPEC: StdlibRuntimeAttributeSpec = StdlibRunt
     type_resolver: type_urllib_response_headers_attr,
 };
 
+// --- random module specs ---
+
+const RANDOM_SEED_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::RandomSeed,
+    module_name: "random",
+    method_name: "seed",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_random_seed,
+};
+
+const RANDOM_SHUFFLE_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::RandomShuffle,
+    module_name: "random",
+    method_name: "shuffle",
+    shape: CallShape {
+        arity: AritySpec::Exact(1),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_random_shuffle,
+};
+
+const RANDOM_GAUSS_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::RandomGauss,
+    module_name: "random",
+    method_name: "gauss",
+    shape: CallShape {
+        arity: AritySpec::Exact(2),
+        keywords: KeywordPolicy::None,
+    },
+    codegen_handler: codegen_random_gauss,
+};
+
+const RANDOM_CHOICES_SPEC: StdlibMethodSpec = StdlibMethodSpec {
+    method_id: StdlibMethodId::RandomChoices,
+    module_name: "random",
+    method_name: "choices",
+    shape: CallShape {
+        arity: AritySpec::Range { min: 1, max: 2 },
+        keywords: KeywordPolicy::Named(&["weights", "k"]),
+    },
+    codegen_handler: codegen_random_choices,
+};
+
 /// Resolve a module name to a known stdlib module id.
 pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
     match name {
@@ -1331,6 +1387,7 @@ pub fn resolve_module(name: &str) -> Option<StdlibModuleId> {
         "urllib" => Some(StdlibModuleId::Urllib),
         "urllib.parse" => Some(StdlibModuleId::UrllibParse),
         "urllib.request" => Some(StdlibModuleId::UrllibRequest),
+        "random" => Some(StdlibModuleId::Random),
         _ => None,
     }
 }
@@ -1422,6 +1479,10 @@ pub fn find_stdlib_method(
         (StdlibModuleId::UrllibParse, "urlencode") => Some(&URLLIB_PARSE_URLENCODE_SPEC),
         (StdlibModuleId::UrllibParse, "parse_qs") => Some(&URLLIB_PARSE_PARSE_QS_SPEC),
         (StdlibModuleId::UrllibRequest, "urlopen") => Some(&URLLIB_REQUEST_URLOPEN_SPEC),
+        (StdlibModuleId::Random, "seed") => Some(&RANDOM_SEED_SPEC),
+        (StdlibModuleId::Random, "shuffle") => Some(&RANDOM_SHUFFLE_SPEC),
+        (StdlibModuleId::Random, "gauss") => Some(&RANDOM_GAUSS_SPEC),
+        (StdlibModuleId::Random, "choices") => Some(&RANDOM_CHOICES_SPEC),
         _ => None,
     }
 }
@@ -1566,6 +1627,7 @@ pub fn importable_members(module: StdlibModuleId) -> &'static [&'static str] {
             "parse_qs",
         ],
         StdlibModuleId::UrllibRequest => &["urlopen"],
+        StdlibModuleId::Random => &["seed", "shuffle", "gauss", "choices"],
     }
 }
 
@@ -1658,6 +1720,10 @@ pub fn method_spec(method_id: StdlibMethodId) -> &'static StdlibMethodSpec {
         StdlibMethodId::UrllibParseUrlencode => &URLLIB_PARSE_URLENCODE_SPEC,
         StdlibMethodId::UrllibParseParseQs => &URLLIB_PARSE_PARSE_QS_SPEC,
         StdlibMethodId::UrllibRequestUrlopen => &URLLIB_REQUEST_URLOPEN_SPEC,
+        StdlibMethodId::RandomSeed => &RANDOM_SEED_SPEC,
+        StdlibMethodId::RandomShuffle => &RANDOM_SHUFFLE_SPEC,
+        StdlibMethodId::RandomGauss => &RANDOM_GAUSS_SPEC,
+        StdlibMethodId::RandomChoices => &RANDOM_CHOICES_SPEC,
     }
 }
 
@@ -2892,4 +2958,97 @@ fn codegen_urllib_request_urlopen(
         "py_urllib_urlopen(&({}), {}, {})",
         url_expr, data_expr, timeout_expr
     )))
+}
+
+// --- random module codegen handlers ---
+
+/// `random.seed(n)` → `py_random_seed(n as u64)`
+fn codegen_random_seed(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_random_seed = true;
+    let seed_expr = codegen.gen_expr(&args[0])?;
+    Ok(format!("py_random_seed({} as u64)", seed_expr))
+}
+
+/// `random.shuffle(list)` → `py_random_shuffle(&mut list)`
+fn codegen_random_shuffle(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_random_shuffle = true;
+    let list_expr = codegen.gen_expr(&args[0])?;
+    // Shuffles in-place; need mutable access to the list guard.
+    Ok(format!(
+        "py_random_shuffle(&mut *{}.py_list_guard())",
+        list_expr
+    ))
+}
+
+/// `random.gauss(mu, sigma)` → `py_random_gauss(mu, sigma)`
+fn codegen_random_gauss(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    _keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_random_gauss = true;
+    let mu_expr = codegen.gen_expr(&args[0])?;
+    let sigma_expr = codegen.gen_expr(&args[1])?;
+    Ok(format!(
+        "py_random_gauss({} as f64, {} as f64)",
+        mu_expr, sigma_expr
+    ))
+}
+
+/// `random.choices(population, weights=weights)` → `py_random_choices(&pop, &weights, k)`
+fn codegen_random_choices(
+    codegen: &mut Codegen<'_>,
+    args: &[Expr],
+    keywords: &[KeywordArg],
+) -> Result<String, CompileError> {
+    codegen.uses.py_random_choices = true;
+    let pop_expr = codegen.gen_expr(&args[0])?;
+    // Population: range() returns Range<i64>, need to collect to Vec.
+    // List args are Arc<Mutex<Vec<T>>>, need to lock and deref.
+    let pop_ref = match args[0].ty.as_ref() {
+        Some(Type::List(_)) => format!("{}.py_list_guard()", pop_expr),
+        _ => {
+            // Assume iterable (e.g. range) — collect to Vec first.
+            format!("{}.collect::<Vec<_>>()", pop_expr)
+        }
+    };
+    let weights_expr = if let Some(w) = keyword_value(keywords, "weights") {
+        let w_expr = codegen.gen_expr(w)?;
+        // Weights may be Arc<Mutex<Vec<f64>>> — unwrap.
+        // Bind to a let to avoid temporary lifetime issues when the expression
+        // is an inline block producing Arc<Mutex<...>>.
+        match w.ty.as_ref() {
+            Some(Type::List(_)) => {
+                format!(
+                    "{{ let _wg_arc = {}; let _wg = _wg_arc.py_list_guard(); _wg.to_vec() }}",
+                    w_expr
+                )
+            }
+            _ => w_expr,
+        }
+    } else if args.len() >= 2 {
+        codegen.gen_expr(&args[1])?
+    } else {
+        "Vec::<f64>::new()".to_string()
+    };
+    let k_expr = if let Some(k) = keyword_value(keywords, "k") {
+        codegen.gen_expr(k)?
+    } else {
+        "1".to_string()
+    };
+    // Wrap result in Arc<Mutex<Vec<T>>> to match List(T) storage convention.
+    // py_random_choices returns Vec<T>, but the type system expects List(T)
+    // which is represented as Arc<Mutex<Vec<T>>> for shared storage.
+    Ok(format!(
+        "Arc::new(Mutex::new(py_random_choices(&{}, &{}, {})))",
+        pop_ref, weights_expr, k_expr
+    ))
 }

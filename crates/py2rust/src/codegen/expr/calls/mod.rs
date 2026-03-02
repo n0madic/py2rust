@@ -285,11 +285,31 @@ impl<'a> Codegen<'a> {
                     return Err(self.error(expr.span, "Unknown keyword argument"));
                 }
 
+                // Look up lambda defaults keyed by the callable name.
+                let lambda_name = if let ExprKind::Name(name) = &func.kind {
+                    Some(name.clone())
+                } else {
+                    None
+                };
+                let stored_defaults = lambda_name
+                    .as_deref()
+                    .and_then(|name| self.lambda_defaults.get(name))
+                    .cloned();
+
                 for (idx, slot) in rendered_args.iter_mut().enumerate() {
                     if slot.is_some() {
                         continue;
                     }
                     if normalized_defaults.get(idx).copied().unwrap_or(false) {
+                        // Try to fill in the default from stored lambda defaults.
+                        let filled = stored_defaults
+                            .as_ref()
+                            .and_then(|defs| defs.get(idx))
+                            .and_then(|d| d.as_ref());
+                        if let Some(default_expr) = filled {
+                            *slot = Some(self.gen_expr(default_expr)?);
+                            continue;
+                        }
                         return Err(self.error(
                             expr.span,
                             "Default arguments for nested callables are not supported yet",
@@ -298,10 +318,24 @@ impl<'a> Codegen<'a> {
                     return Err(self.error(expr.span, "Argument count mismatch"));
                 }
 
-                let final_args = rendered_args
+                let mut final_args: Vec<String> = rendered_args
                     .into_iter()
                     .map(|item| item.expect("filled above"))
                     .collect::<Vec<_>>();
+                // Append extra `&mut` args for recursive nested function captures.
+                if let ExprKind::Name(fn_name) = &func.kind {
+                    if let Some(captures) = self.recursive_fn_captures.get(fn_name).cloned() {
+                        for cap in &captures {
+                            // Inside the inner function, captures are already &mut params —
+                            // pass them directly to avoid double-referencing.
+                            if self.already_mut_ref_captures.contains(cap.as_str()) {
+                                final_args.push(cap.clone());
+                            } else {
+                                final_args.push(format!("&mut {}", cap));
+                            }
+                        }
+                    }
+                }
                 return Ok(format!(
                     "({})({})",
                     self.gen_expr(func)?,
@@ -336,6 +370,18 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 rendered_args.push(rendered);
+            }
+            // Append extra `&mut` args for recursive nested function captures.
+            if let ExprKind::Name(fn_name) = &func.kind {
+                if let Some(captures) = self.recursive_fn_captures.get(fn_name).cloned() {
+                    for cap in &captures {
+                        if self.already_mut_ref_captures.contains(cap.as_str()) {
+                            rendered_args.push(cap.clone());
+                        } else {
+                            rendered_args.push(format!("&mut {}", cap));
+                        }
+                    }
+                }
             }
             return Ok(format!(
                 "({})({})",
@@ -387,8 +433,8 @@ impl<'a> Codegen<'a> {
         full_args: &[Expr],
         def: &Function,
     ) -> Result<String, CompileError> {
-        let mut pre_lines = Vec::new();
-        let mut post_lines = Vec::new();
+        let mut pre_lines: Vec<String> = Vec::new();
+        let mut post_lines: Vec<String> = Vec::new();
         let mut rendered_args = Vec::new();
 
         for (idx, arg) in full_args.iter().enumerate() {
@@ -409,51 +455,15 @@ impl<'a> Codegen<'a> {
             if let Some(default_name) = default_global {
                 match param_ty {
                     Some(Type::List(_)) => {
-                        let arg_tmp = self.new_tmp();
-                        let cache_name = self.default_cache_name(&default_name);
-                        let src_tmp = self.new_tmp();
-                        let src_guard = self.new_tmp();
-                        let dst_guard = self.new_tmp();
+                        // With uniform Arc<Mutex<>> storage, just clone the global's Arc directly.
                         let global_lock = self.global_lock_expr(&default_name);
-                        pre_lines.push(format!(
-                            "let {arg_tmp} = {cache_name}.with(|slot| {{ let mut slot = slot.borrow_mut(); if slot.is_none() {{ let {src_tmp} = {global_lock}.clone(); let {src_guard} = {src_tmp}.py_list_guard(); *slot = Some(Rc::new(RefCell::new({src_guard}.clone()))); }} slot.as_ref().expect(\"default list cache initialized\").clone() }});",
-                            arg_tmp = arg_tmp,
-                            cache_name = cache_name,
-                            src_tmp = src_tmp,
-                            global_lock = global_lock,
-                            src_guard = src_guard
-                        ));
-                        post_lines.push(format!(
-                            "*{global_lock} = {{ let {dst_guard} = {arg_tmp}.py_list_guard(); Arc::new(Mutex::new({dst_guard}.clone())) }};",
-                            global_lock = global_lock,
-                            dst_guard = dst_guard,
-                            arg_tmp = arg_tmp
-                        ));
-                        rendered_args.push(format!("{arg_tmp}.clone()", arg_tmp = arg_tmp));
+                        rendered_args.push(format!("{global_lock}.clone()"));
                         continue;
                     }
                     Some(Type::Dict(_, _)) => {
-                        let arg_tmp = self.new_tmp();
-                        let cache_name = self.default_cache_name(&default_name);
-                        let src_tmp = self.new_tmp();
-                        let src_guard = self.new_tmp();
-                        let dst_guard = self.new_tmp();
+                        // With uniform Arc<Mutex<>> storage, just clone the global's Arc directly.
                         let global_lock = self.global_lock_expr(&default_name);
-                        pre_lines.push(format!(
-                            "let {arg_tmp} = {cache_name}.with(|slot| {{ let mut slot = slot.borrow_mut(); if slot.is_none() {{ let {src_tmp} = {global_lock}.clone(); let {src_guard} = {src_tmp}.py_dict_guard(); *slot = Some(Rc::new(RefCell::new({src_guard}.clone()))); }} slot.as_ref().expect(\"default dict cache initialized\").clone() }});",
-                            arg_tmp = arg_tmp,
-                            cache_name = cache_name,
-                            src_tmp = src_tmp,
-                            global_lock = global_lock,
-                            src_guard = src_guard
-                        ));
-                        post_lines.push(format!(
-                            "*{global_lock} = {{ let {dst_guard} = {arg_tmp}.py_dict_guard(); Arc::new(Mutex::new({dst_guard}.clone())) }};",
-                            global_lock = global_lock,
-                            dst_guard = dst_guard,
-                            arg_tmp = arg_tmp
-                        ));
-                        rendered_args.push(format!("{arg_tmp}.clone()", arg_tmp = arg_tmp));
+                        rendered_args.push(format!("{global_lock}.clone()"));
                         continue;
                     }
                     _ => {}

@@ -20,8 +20,8 @@ fn py_int(value: impl std::borrow::Borrow<i64>) -> i64 {
 }
 "#;
 
-/// Static helper body for unified list/dict guard access across Arc/Mutex and Rc/RefCell.
-const HELPER_PY_CONTAINER_GUARDS: &str = r#"
+/// Static helper body for unified list guard access across Arc/Mutex and Rc/RefCell.
+const HELPER_PY_LIST_GUARDS: &str = r#"
 enum PyListGuard<'a, T> {
     Sync(std::sync::MutexGuard<'a, Vec<T>>),
     Cell(std::cell::RefMut<'a, Vec<T>>),
@@ -56,39 +56,34 @@ impl<T> PyListGuardExt<T> for Rc<RefCell<Vec<T>>> {
         PyListGuard::Cell(self.borrow_mut())
     }
 }
+"#;
 
-enum PyDictGuard<'a, K, V> {
-    Sync(std::sync::MutexGuard<'a, indexmap::IndexMap<K, V>>),
-    Cell(std::cell::RefMut<'a, indexmap::IndexMap<K, V>>),
+/// Static helper body for unified dict guard access (only emitted when dicts are used).
+const HELPER_PY_DICT_GUARDS: &str = r#"
+enum PyDictGuard<'a, K: Eq + std::hash::Hash + Clone, V: Clone> {
+    Sync(std::sync::MutexGuard<'a, IndexMap<K, V>>),
 }
-impl<'a, K, V> std::ops::Deref for PyDictGuard<'a, K, V> {
-    type Target = indexmap::IndexMap<K, V>;
+impl<'a, K: Eq + std::hash::Hash + Clone, V: Clone> std::ops::Deref for PyDictGuard<'a, K, V> {
+    type Target = IndexMap<K, V>;
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Sync(guard) => guard,
-            Self::Cell(guard) => guard,
         }
     }
 }
-impl<'a, K, V> std::ops::DerefMut for PyDictGuard<'a, K, V> {
+impl<'a, K: Eq + std::hash::Hash + Clone, V: Clone> std::ops::DerefMut for PyDictGuard<'a, K, V> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             Self::Sync(guard) => guard,
-            Self::Cell(guard) => guard,
         }
     }
 }
-trait PyDictGuardExt<K, V> {
+trait PyDictGuardExt<K: Eq + std::hash::Hash + Clone, V: Clone> {
     fn py_dict_guard(&self) -> PyDictGuard<'_, K, V>;
 }
-impl<K, V> PyDictGuardExt<K, V> for Arc<Mutex<indexmap::IndexMap<K, V>>> {
+impl<K: Eq + std::hash::Hash + Clone, V: Clone> PyDictGuardExt<K, V> for Arc<Mutex<IndexMap<K, V>>> {
     fn py_dict_guard(&self) -> PyDictGuard<'_, K, V> {
         PyDictGuard::Sync(self.lock().expect("dict mutex poisoned"))
-    }
-}
-impl<K, V> PyDictGuardExt<K, V> for Rc<RefCell<indexmap::IndexMap<K, V>>> {
-    fn py_dict_guard(&self) -> PyDictGuard<'_, K, V> {
-        PyDictGuard::Cell(self.borrow_mut())
     }
 }
 "#;
@@ -162,14 +157,14 @@ fn py_os_mkdir(path: &str) -> Result<(), PyError> {
 
 /// Static helper body for `os.listdir(path)`.
 const HELPER_PY_OS_LISTDIR: &str = r#"
-fn py_os_listdir(path: &str) -> Result<Rc<RefCell<Vec<String>>>, PyError> {
+fn py_os_listdir(path: &str) -> Result<Arc<Mutex<Vec<String>>>, PyError> {
     let mut entries = Vec::new();
     let dir = std::fs::read_dir(path).map_err(|e| PyError::IOError(e.to_string().into()))?;
     for entry in dir {
         let entry = entry.map_err(|e| PyError::IOError(e.to_string().into()))?;
         entries.push(entry.file_name().to_string_lossy().to_string());
     }
-    Ok(Rc::new(RefCell::new(entries)))
+    Ok(Arc::new(Mutex::new(entries)))
 }
 "#;
 
@@ -213,9 +208,9 @@ fn py_os_getenv(key: &str, default: Option<String>) -> Option<String> {
 
 /// Static helper body for `os.environ`.
 const HELPER_PY_OS_ENVIRON: &str = r#"
-fn py_os_environ() -> Rc<RefCell<indexmap::IndexMap<String, String>>> {
-    Rc::new(RefCell::new(
-        std::env::vars().collect::<indexmap::IndexMap<_, _>>(),
+fn py_os_environ() -> Arc<Mutex<IndexMap<String, String>>> {
+    Arc::new(Mutex::new(
+        std::env::vars().collect::<IndexMap<_, _>>(),
     ))
 }
 "#;
@@ -313,8 +308,8 @@ fn py_os_path_abspath(path: &str) -> Result<String, PyError> {
 
 /// Static helper body for `sys.argv`.
 const HELPER_PY_SYS_ARGV: &str = r#"
-fn py_sys_argv() -> Rc<RefCell<Vec<String>>> {
-    Rc::new(RefCell::new(std::env::args().collect()))
+fn py_sys_argv() -> Arc<Mutex<Vec<String>>> {
+    Arc::new(Mutex::new(std::env::args().collect()))
 }
 "#;
 
@@ -330,7 +325,7 @@ const HELPER_PY_SUBPROCESS_COMPLETED_PROCESS: &str = r#"
 #[allow(non_camel_case_types)]
 #[derive(Clone)]
 struct __stdlib_subprocess_completed_process {
-    args: Rc<RefCell<Vec<String>>>,
+    args: Arc<Mutex<Vec<String>>>,
     returncode: i64,
     stdout: Option<String>,
     stderr: Option<String>,
@@ -389,7 +384,7 @@ fn py_subprocess_run(
             ));
         }
         return Ok(__stdlib_subprocess_completed_process {
-            args: Rc::new(RefCell::new(args)),
+            args: Arc::new(Mutex::new(args)),
             returncode: returncode as i64,
             stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
             stderr: Some(String::from_utf8_lossy(&output.stderr).to_string()),
@@ -406,7 +401,7 @@ fn py_subprocess_run(
         ));
     }
     Ok(__stdlib_subprocess_completed_process {
-        args: Rc::new(RefCell::new(args)),
+        args: Arc::new(Mutex::new(args)),
         returncode: returncode as i64,
         stdout: None,
         stderr: None,
@@ -434,7 +429,7 @@ const HELPER_PY_URLLIB_RESPONSE_STRUCT: &str = r#"
 struct __py_urllib_response {
     status: i64,
     url: String,
-    headers: Arc<Mutex<indexmap::IndexMap<String, String>>>,
+    headers: Arc<Mutex<IndexMap<String, String>>>,
     body: String,
 }
 "#;
@@ -521,15 +516,15 @@ where
 const HELPER_PY_URLLIB_PARSE_QS: &str = r#"
 fn py_urllib_parse_qs(
     query: &str,
-) -> Rc<RefCell<indexmap::IndexMap<String, Rc<RefCell<Vec<String>>>>>> {
-    let mut out: indexmap::IndexMap<String, Rc<RefCell<Vec<String>>>> = indexmap::IndexMap::new();
+) -> Arc<Mutex<IndexMap<String, Arc<Mutex<Vec<String>>>>>> {
+    let mut out: IndexMap<String, Arc<Mutex<Vec<String>>>> = IndexMap::new();
     let raw = if let Some(rest) = query.strip_prefix('?') {
         rest
     } else {
         query
     };
     if raw.is_empty() {
-        return Rc::new(RefCell::new(out));
+        return Arc::new(Mutex::new(out));
     }
     for pair in raw.split('&') {
         if pair.is_empty() {
@@ -539,12 +534,12 @@ fn py_urllib_parse_qs(
         let key = py_urllib_unquote(split.next().unwrap_or_default());
         let value = py_urllib_unquote(split.next().unwrap_or_default());
         if let Some(values) = out.get(&key) {
-            values.borrow_mut().push(value);
+            values.lock().unwrap().push(value);
             continue;
         }
-        out.insert(key, Rc::new(RefCell::new(vec![value])));
+        out.insert(key, Arc::new(Mutex::new(vec![value])));
     }
-    Rc::new(RefCell::new(out))
+    Arc::new(Mutex::new(out))
 }
 "#;
 
@@ -725,7 +720,7 @@ fn py_urllib_urlopen(
         let decoded_path = py_urllib_unquote(path);
         let body = std::fs::read_to_string(&decoded_path)
             .map_err(|e| PyError::IOError(e.to_string().into()))?;
-        let mut headers = indexmap::IndexMap::new();
+        let mut headers = IndexMap::new();
         headers.insert("content-type".to_string(), "text/plain".to_string());
         headers.insert("content-length".to_string(), body.len().to_string());
         return Ok(__py_urllib_response {
@@ -743,7 +738,7 @@ fn py_urllib_urlopen(
             ));
         }
         let body = py_urllib_unquote(payload);
-        let mut headers = indexmap::IndexMap::new();
+        let mut headers = IndexMap::new();
         headers.insert("content-type".to_string(), "text/plain".to_string());
         headers.insert("content-length".to_string(), body.len().to_string());
         return Ok(__py_urllib_response {
@@ -805,7 +800,7 @@ fn py_urllib_urlopen(
 
     let status = i64::from(response.status());
     let response_url = response.get_url().to_string();
-    let mut headers = indexmap::IndexMap::new();
+    let mut headers = IndexMap::new();
     for name in response.headers_names() {
         if let Some(value) = response.header(&name) {
             // Python-style header lookup is case-insensitive; store lowercase keys.
@@ -1601,21 +1596,6 @@ where
     }
 }
 
-impl<K, V> PyToJsonValue for indexmap::IndexMap<K, V>
-where
-    K: ToString + Eq + std::hash::Hash,
-    V: PyToJsonValue,
-{
-    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
-        let mut object: std::collections::HashMap<String, __py_json_value> =
-            std::collections::HashMap::new();
-        for (key, value) in self.iter() {
-            object.insert(key.to_string(), value.to_json_value()?);
-        }
-        Ok(__py_json_value::Object(object))
-    }
-}
-
 impl<K, V> PyToJsonValue for Arc<Mutex<std::collections::HashMap<K, V>>>
 where
     K: ToString + Eq + std::hash::Hash,
@@ -1627,24 +1607,29 @@ where
     }
 }
 
-impl<K, V> PyToJsonValue for Arc<Mutex<indexmap::IndexMap<K, V>>>
+impl<K, V> PyToJsonValue for IndexMap<K, V>
 where
-    K: ToString + Eq + std::hash::Hash,
-    V: PyToJsonValue,
+    K: ToString + Eq + std::hash::Hash + Clone,
+    V: PyToJsonValue + Clone,
+{
+    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
+        let mut object: std::collections::HashMap<String, __py_json_value> =
+            std::collections::HashMap::new();
+        for (key, value) in self.iter() {
+            object.insert(key.to_string(), value.to_json_value()?);
+        }
+        Ok(__py_json_value::Object(object))
+    }
+}
+
+impl<K, V> PyToJsonValue for Arc<Mutex<IndexMap<K, V>>>
+where
+    K: ToString + Eq + std::hash::Hash + Clone,
+    V: PyToJsonValue + Clone,
 {
     fn to_json_value(&self) -> Result<__py_json_value, PyError> {
         let object = self.lock().expect("dict mutex poisoned");
         object.to_json_value()
-    }
-}
-
-impl<K, V> PyToJsonValue for Rc<RefCell<indexmap::IndexMap<K, V>>>
-where
-    K: ToString + Eq + std::hash::Hash,
-    V: PyToJsonValue,
-{
-    fn to_json_value(&self) -> Result<__py_json_value, PyError> {
-        self.borrow().to_json_value()
     }
 }
 
@@ -1958,6 +1943,90 @@ fn py_json_load(file: &mut std::fs::File) -> Result<__py_json_value, PyError> {
 }
 "#;
 
+// --- random module helpers ---
+
+/// Thread-local xorshift64 PRNG state.
+const HELPER_PY_RANDOM_CORE: &str = r#"
+thread_local! {
+    static PY_RNG_STATE: std::cell::Cell<u64> = const { std::cell::Cell::new(42) };
+}
+fn py_rng_next() -> u64 {
+    PY_RNG_STATE.with(|s| {
+        let mut x = s.get();
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        s.set(x);
+        x
+    })
+}
+fn py_rng_f64() -> f64 {
+    (py_rng_next() >> 11) as f64 / ((1u64 << 53) as f64)
+}
+"#;
+
+/// `random.seed(n)` — initialize thread-local RNG.
+const HELPER_PY_RANDOM_SEED: &str = r#"
+fn py_random_seed(n: u64) {
+    let seed = if n == 0 { 1 } else { n };
+    PY_RNG_STATE.with(|s| s.set(seed));
+}
+"#;
+
+/// `random.shuffle(list)` — Fisher-Yates in-place shuffle.
+const HELPER_PY_RANDOM_SHUFFLE: &str = r#"
+fn py_random_shuffle<T>(list: &mut Vec<T>) {
+    let n = list.len();
+    for i in (1..n).rev() {
+        let j = (py_rng_next() as usize) % (i + 1);
+        list.swap(i, j);
+    }
+}
+"#;
+
+/// `random.gauss(mu, sigma)` — Box-Muller transform for normal distribution.
+const HELPER_PY_RANDOM_GAUSS: &str = r#"
+fn py_random_gauss(mu: f64, sigma: f64) -> f64 {
+    let u1 = py_rng_f64().max(1e-300);
+    let u2 = py_rng_f64();
+    let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+    mu + sigma * z
+}
+"#;
+
+/// `random.choices(population, weights, k)` — weighted random selection.
+const HELPER_PY_RANDOM_CHOICES: &str = r#"
+fn py_random_choices<T: Clone>(population: &[T], weights: &[f64], k: i64) -> Vec<T> {
+    if population.is_empty() {
+        return Vec::new();
+    }
+    let k = k as usize;
+    let use_weights = !weights.is_empty() && weights.len() == population.len();
+    if !use_weights {
+        return (0..k)
+            .map(|_| {
+                let idx = (py_rng_next() as usize) % population.len();
+                population[idx].clone()
+            })
+            .collect();
+    }
+    // Build cumulative weights
+    let mut cum: Vec<f64> = Vec::with_capacity(weights.len());
+    let mut total = 0.0f64;
+    for &w in weights {
+        total += w;
+        cum.push(total);
+    }
+    (0..k)
+        .map(|_| {
+            let r = py_rng_f64() * total;
+            let idx = cum.partition_point(|&c| c <= r).min(population.len() - 1);
+            population[idx].clone()
+        })
+        .collect()
+}
+"#;
+
 /// Static helper body for clonable iterator wrapper.
 const HELPER_PY_ITER: &str = r#"
 #[derive(Clone)]
@@ -1966,12 +2035,12 @@ struct PyIter<T> {
 }
 #[derive(Clone)]
 enum PyIterInner<T> {
-    Local(Rc<RefCell<Box<dyn Iterator<Item = T>>>>),
+    Local(Arc<Mutex<Box<dyn Iterator<Item = T>>>>),
     Sync(Arc<Mutex<Box<dyn Iterator<Item = T> + Send>>>),
 }
 impl<T> PyIter<T> {
     fn new<I: Iterator<Item = T> + 'static>(iter: I) -> Self {
-        Self { inner: PyIterInner::Local(Rc::new(RefCell::new(Box::new(iter)))) }
+        Self { inner: PyIterInner::Local(Arc::new(Mutex::new(Box::new(iter)))) }
     }
     fn new_sync<I: Iterator<Item = T> + Send + 'static>(iter: I) -> Self {
         Self { inner: PyIterInner::Sync(Arc::new(Mutex::new(Box::new(iter)))) }
@@ -1981,7 +2050,7 @@ impl<T> Iterator for PyIter<T> {
     type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
         match &self.inner {
-            PyIterInner::Local(iter) => iter.borrow_mut().next(),
+            PyIterInner::Local(iter) => iter.lock().expect("PyIter mutex poisoned").next(),
             PyIterInner::Sync(iter) => iter.lock().expect("PyIter mutex poisoned").next(),
         }
     }
@@ -2028,15 +2097,6 @@ impl PyLen for String {
 impl PyLen for &str {
     fn py_len(&self) -> i64 { self.chars().count() as i64 }
 }
-impl<K, V> PyLen for indexmap::IndexMap<K, V> {
-    fn py_len(&self) -> i64 { self.len() as i64 }
-}
-impl<K, V> PyLen for Arc<Mutex<indexmap::IndexMap<K, V>>> {
-    fn py_len(&self) -> i64 { self.lock().expect("dict mutex poisoned").len() as i64 }
-}
-impl<K, V> PyLen for Rc<RefCell<indexmap::IndexMap<K, V>>> {
-    fn py_len(&self) -> i64 { self.borrow().len() as i64 }
-}
 impl<T> PyLen for std::collections::HashSet<T> {
     fn py_len(&self) -> i64 { self.len() as i64 }
 }
@@ -2068,6 +2128,16 @@ impl<T1, T2, T3, T4, T5, T6, T7, T8> PyLen for (T1, T2, T3, T4, T5, T6, T7, T8) 
     fn py_len(&self) -> i64 { 8 }
 }
 fn py_len<T: PyLen>(v: &T) -> i64 { v.py_len() }
+"#;
+
+/// PyLen impls for dict types (only emitted when IndexMap is available).
+const HELPER_PY_LEN_DICT: &str = r#"
+impl<K: Eq + std::hash::Hash + Clone, V: Clone> PyLen for IndexMap<K, V> {
+    fn py_len(&self) -> i64 { self.len() as i64 }
+}
+impl<K: Eq + std::hash::Hash + Clone, V: Clone> PyLen for Arc<Mutex<IndexMap<K, V>>> {
+    fn py_len(&self) -> i64 { self.lock().expect("dict mutex poisoned").len() as i64 }
+}
 "#;
 
 /// Static helper body for list slicing with arbitrary step.
@@ -2705,9 +2775,14 @@ impl<'a> Codegen<'a> {
             self.emit_py_error_enum();
         }
 
-        // Unified guard adapters allow list/dict operations to target either
+        // List guard adapters allow list operations to target either
         // Arc<Mutex<...>> (sync globals) or Rc<RefCell<...>> (local shared aliases).
-        self.push_block(HELPER_PY_CONTAINER_GUARDS);
+        self.push_block(HELPER_PY_LIST_GUARDS);
+
+        // Dict guard adapters are only emitted when dicts are used (they reference IndexMap).
+        if self.uses.index_map || self.uses.py_dict_get {
+            self.push_block(HELPER_PY_DICT_GUARDS);
+        }
 
         // PyIter wrapper makes iterators clonable (Python's for loops clone iterators).
         if self.uses.py_iter {
@@ -2750,6 +2825,10 @@ impl<'a> Codegen<'a> {
         if self.uses.len {
             // Tuples have fixed arity, so provide PyLen impls for common tuple sizes.
             self.push_block(HELPER_PY_LEN);
+            // Dict PyLen impls only when IndexMap type is available.
+            if self.uses.index_map || self.uses.py_dict_get {
+                self.push_block(HELPER_PY_LEN_DICT);
+            }
         }
         if self.uses.range {
             self.push_line("fn py_range(end: i64) -> std::ops::Range<i64> { 0..end }");
@@ -2871,7 +2950,7 @@ impl<'a> Codegen<'a> {
         }
         if self.uses.py_dict_get {
             self.push_line(
-                "fn py_dict_get<K: Eq + std::hash::Hash, V: Clone>(map: &IndexMap<K, V>, key: &K) -> Result<V, PyError> {",
+                "fn py_dict_get<K: Eq + std::hash::Hash + Clone, V: Clone>(map: &IndexMap<K, V>, key: &K) -> Result<V, PyError> {",
             );
             self.indent += 1;
             self.push_line(
@@ -3207,6 +3286,26 @@ impl<'a> Codegen<'a> {
         if self.uses.py_json_load {
             self.push_block(HELPER_PY_JSON_LOAD);
         }
+        // random module helpers — emit RNG core if any random helper is used
+        let uses_random_core = self.uses.py_random_seed
+            || self.uses.py_random_shuffle
+            || self.uses.py_random_gauss
+            || self.uses.py_random_choices;
+        if uses_random_core {
+            self.push_block(HELPER_PY_RANDOM_CORE);
+        }
+        if self.uses.py_random_seed {
+            self.push_block(HELPER_PY_RANDOM_SEED);
+        }
+        if self.uses.py_random_shuffle {
+            self.push_block(HELPER_PY_RANDOM_SHUFFLE);
+        }
+        if self.uses.py_random_gauss {
+            self.push_block(HELPER_PY_RANDOM_GAUSS);
+        }
+        if self.uses.py_random_choices {
+            self.push_block(HELPER_PY_RANDOM_CHOICES);
+        }
         if self.uses.print
             || self.uses.len
             || self.uses.range
@@ -3290,6 +3389,10 @@ impl<'a> Codegen<'a> {
             || self.uses.py_json_loads
             || self.uses.py_json_dump
             || self.uses.py_json_load
+            || self.uses.py_random_seed
+            || self.uses.py_random_shuffle
+            || self.uses.py_random_gauss
+            || self.uses.py_random_choices
         {
             self.push_line("");
         }

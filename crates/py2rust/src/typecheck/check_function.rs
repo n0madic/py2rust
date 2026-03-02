@@ -49,7 +49,32 @@ impl<'a> TypeChecker<'a> {
             }
         }
         for param in func.params.iter().skip(if require_self { 1 } else { 0 }) {
-            let ty = self.resolve_param_type(param)?;
+            let mut ty = self.resolve_param_type(param)?;
+            // For dunder operator methods, force `other` to class type when Unknown.
+            // These methods are invoked through trait impls, not called directly,
+            // so call-site inference cannot determine the parameter type.
+            if matches!(ty, Type::Unknown) && param.name == "other" {
+                if let Some(cn) = class_name {
+                    const DUNDER_OPS: &[&str] = &[
+                        "__add__",
+                        "__radd__",
+                        "__sub__",
+                        "__rsub__",
+                        "__mul__",
+                        "__rmul__",
+                        "__truediv__",
+                        "__rtruediv__",
+                    ];
+                    if DUNDER_OPS.contains(&func.name.as_str()) {
+                        ty = Type::Custom(cn.to_string());
+                    }
+                    // __pow__ always takes a numeric exponent, not the class type.
+                    // Force to Float since ** can be called with both int and float.
+                    if func.name == "__pow__" {
+                        ty = Type::Float;
+                    }
+                }
+            }
             self.insert_var(&param.name, ty, param.span)?;
         }
 
@@ -64,7 +89,12 @@ impl<'a> TypeChecker<'a> {
                 let ty = self.check_expr(default, expected.as_ref())?;
                 if let Some(expected) = expected {
                     if !matches!(ty, Type::Unknown) && !matches!(expected, Type::Unknown) {
-                        self.ensure_assignable(&ty, &expected, default.span)?;
+                        // Allow empty tuple () as default for list params (Python idiom).
+                        let is_empty_tuple_to_list = matches!(&ty, Type::Tuple(items) if items.is_empty())
+                            && matches!(expected, Type::List(_));
+                        if !is_empty_tuple_to_list {
+                            self.ensure_assignable(&ty, &expected, default.span)?;
+                        }
                     }
                 }
             }
@@ -93,9 +123,16 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Infer return type if not annotated
-        // We scan all return statements and find a common type
-        if matches!(func.ret, TypeRef::Unknown) {
+        // Infer return type if not annotated or still partially Unknown.
+        // We scan all return statements and find a common type.
+        // Also re-infer when the current return annotation contains Unknown (from
+        // a previous pass that couldn't fully resolve types).
+        let ret_needs_inference = matches!(func.ret, TypeRef::Unknown)
+            || self
+                .resolve_type_ref(&func.ret, func.span)
+                .ok()
+                .is_some_and(|ty| ty.contains_unknown());
+        if ret_needs_inference {
             let mut inferred: Option<Type> = None;
             // Recursively visit statements to find return statements
             fn visit(stmt: &Stmt, inferred: &mut Option<Type>) {
@@ -156,9 +193,17 @@ impl<'a> TypeChecker<'a> {
         // Update inferred parameter types in the function signature.
         if let Some(scope) = self.scopes.last() {
             for param in &mut func.params {
-                if matches!(param.ann, TypeRef::Unknown) {
-                    if let Some(ty) = scope.get(&param.name) {
-                        if !matches!(ty, Type::Unknown) {
+                if let Some(ty) = scope.get(&param.name) {
+                    if matches!(ty, Type::Unknown) {
+                        continue;
+                    }
+                    if matches!(param.ann, TypeRef::Unknown) {
+                        // Fully unknown annotation → adopt scope type.
+                        param.ann = Self::type_to_ref(ty);
+                    } else if let Ok(current) = self.resolve_type_ref(&param.ann, param.span) {
+                        // Annotation has nested Unknown (e.g. List(List(Unknown))) →
+                        // refine from scope if the scope type is fully resolved.
+                        if current.contains_unknown() && !ty.contains_unknown() {
                             param.ann = Self::type_to_ref(ty);
                         }
                     }
@@ -655,6 +700,14 @@ impl<'a> TypeChecker<'a> {
                                 params[idx] = Type::Option(Box::new(refined_inner));
                             }
                         }
+                    } else if let Some(current) = params.get(idx) {
+                        // Refine params with nested Unknown (e.g. List(List(Unknown)))
+                        // using body-inferred types.
+                        if current.contains_unknown() && !inferred.contains_unknown() {
+                            if idx < params.len() {
+                                params[idx] = inferred;
+                            }
+                        }
                     }
                 }
             }
@@ -695,7 +748,23 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     format!("__default_{}_{}", func.name, param.name)
                 };
-                self.ctx.globals.entry(gname).or_insert_with(|| ty.clone());
+                // Always update default globals with the latest (most refined) type.
+                // Re-check passes may produce more accurate types than initial passes.
+                let entry = self.ctx.globals.entry(gname);
+                match entry {
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        let existing = e.get();
+                        // Update if current type is less specific.
+                        let is_trivial = matches!(existing, Type::Unknown | Type::None)
+                            || matches!(existing, Type::Tuple(items) if items.is_empty());
+                        if is_trivial && !matches!(ty, Type::Unknown | Type::None) {
+                            e.insert(ty.clone());
+                        }
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(ty.clone());
+                    }
+                }
             }
         }
         let sig = FunctionSig {
