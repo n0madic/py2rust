@@ -57,6 +57,10 @@ impl<'a> Codegen<'a> {
             if let Some(override_expr) = self.global_override(name) {
                 return Ok(override_expr.to_string());
             }
+            if self.readonly_globals.contains(name) {
+                // Write-once scalar globals are Copy — dereference directly.
+                return Ok(format!("*{}", self.global_lock_expr(name)));
+            }
             return Ok(format!("{}.clone()", self.global_lock_expr(name)));
         }
         Ok(name.to_string())

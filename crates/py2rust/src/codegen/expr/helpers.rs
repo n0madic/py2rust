@@ -417,6 +417,24 @@ impl<'a> Codegen<'a> {
 
     /// Build an iterator source expression that matches Python iteration semantics.
     pub(crate) fn gen_iter_source(&mut self, expr: &Expr) -> Result<IterSource, CompileError> {
+        // Optimize zip(a, b) — hold both guards for the entire iteration instead
+        // of locking per element. Both sides use gen_iter_source recursively so
+        // each list gets its own setup bindings that keep guards alive.
+        if let ExprKind::Call { func, args, .. } = &expr.kind {
+            if let ExprKind::Name(name) = &func.kind {
+                if name == "zip" && args.len() == 2 {
+                    let left_src = self.gen_iter_source(&args[0])?;
+                    let right_src = self.gen_iter_source(&args[1])?;
+                    let mut setup = left_src.setup;
+                    setup.extend(right_src.setup);
+                    return Ok(IterSource {
+                        setup,
+                        expr: format!("({}).zip({})", left_src.expr, right_src.expr),
+                    });
+                }
+            }
+        }
+
         // Optimize literal lists - generate local Vec without Arc<Mutex<>> overhead.
         if let ExprKind::List(items) = &expr.kind {
             if let Some(Type::List(inner)) = expr.ty.as_ref() {

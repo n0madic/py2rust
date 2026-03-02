@@ -294,6 +294,8 @@ pub struct Codegen<'a> {
     pub(crate) initialized_globals: HashSet<String>,
     /// Globals that must be emitted because they're shared with functions or helpers.
     pub(crate) shared_globals: HashSet<String>,
+    /// Shared globals that are write-once scalars — use `OnceLock<T>` without Mutex.
+    pub(crate) readonly_globals: HashSet<String>,
     /// Stack of temporary global name overrides for expression generation.
     pub(crate) global_overrides: Vec<(String, String)>,
     /// Track nested lambda emission to disable Result propagation inside closures.
@@ -344,6 +346,9 @@ struct ProgramFacts<'program> {
     functions: Vec<&'program Function>,
     top_level_stmts: Vec<&'program Stmt>,
     shared_globals: HashSet<String>,
+    /// Shared globals that are assigned exactly once and have a scalar (Copy) type.
+    /// These use `OnceLock<T>` without Mutex for zero-overhead reads.
+    readonly_globals: HashSet<String>,
     name_compare_only: bool,
     main_list_elems: HashMap<String, Type>,
     main_dict_kv: HashMap<String, (Type, Type)>,
@@ -373,6 +378,7 @@ impl<'a> Codegen<'a> {
             top_level_can_throw: false,
             initialized_globals: HashSet::new(),
             shared_globals: HashSet::new(),
+            readonly_globals: HashSet::new(),
             global_overrides: Vec::new(),
             lambda_depth: 0,
             lambda_return_types: Vec::new(),
@@ -516,6 +522,7 @@ impl<'a> Codegen<'a> {
         // Phase 1: Scan to determine which helpers are needed
         self.collect_uses(program)?;
         self.shared_globals = facts.shared_globals;
+        self.readonly_globals = facts.readonly_globals;
         self.name_compare_only = facts.name_compare_only;
 
         // Phase 3: Generate code for all items
@@ -584,6 +591,7 @@ impl<'a> Codegen<'a> {
         }
 
         let shared_globals = self.collect_shared_globals(program);
+        let readonly_globals = self.collect_readonly_globals(program, &shared_globals);
         let name_compare_only = self.analyze_name_compare_only(program);
         let main_list_elems = self.collect_list_elem_types_for_stmt_refs(&top_level_stmts);
         let main_dict_kv = self.collect_dict_kv_types_for_stmt_refs(&top_level_stmts);
@@ -598,6 +606,7 @@ impl<'a> Codegen<'a> {
             functions,
             top_level_stmts,
             shared_globals,
+            readonly_globals,
             name_compare_only,
             main_list_elems,
             main_dict_kv,

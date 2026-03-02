@@ -53,6 +53,9 @@ pub struct RustcOptions {
     /// Strip debug symbols from the binary to reduce size.
     /// Enabled by default in the CLI for cleaner output.
     pub strip_symbols: bool,
+    /// Optimization level (0 = none/debug, 1 = basic, 2 = standard release, 3 = aggressive).
+    /// The CLI defaults to 3 for fast binaries; tests keep 0 for fast compile times.
+    pub opt_level: u8,
 }
 
 impl Default for RustcOptions {
@@ -60,6 +63,7 @@ impl Default for RustcOptions {
         Self {
             edition: "2021",
             strip_symbols: false,
+            opt_level: 0,
         }
     }
 }
@@ -67,7 +71,7 @@ impl Default for RustcOptions {
 /// Compile a Rust source file to an executable using rustc.
 ///
 /// This is a thin wrapper around `rustc` that sets up the necessary flags.
-/// We always use the 2021 edition and optionally strip symbols.
+/// We always use the 2021 edition and optionally strip symbols / apply optimization.
 ///
 /// Returns the command output (stdout, stderr, exit status) for error handling.
 pub fn compile_rustc(
@@ -85,6 +89,9 @@ pub fn compile_rustc(
     if opts.strip_symbols {
         // -C strip=symbols removes debug info, reducing binary size significantly
         cmd.arg("-C").arg("strip=symbols");
+    }
+    if opts.opt_level > 0 {
+        cmd.arg("-C").arg(format!("opt-level={}", opts.opt_level));
     }
     cmd.output()
 }

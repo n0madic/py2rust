@@ -122,6 +122,7 @@ fn main() -> miette::Result<()> {
             &bin_path,
             &py2rust::toolchain::RustcOptions {
                 strip_symbols: true,
+                opt_level: 3,
                 ..Default::default()
             },
         )

@@ -2,6 +2,7 @@
 
 use super::super::*;
 use super::walk::{walk_assign_target_names, walk_stmt_tree};
+use std::collections::HashMap;
 
 impl<'a> Codegen<'a> {
     pub(crate) fn collect_shared_globals(&self, program: &Program) -> HashSet<String> {
@@ -940,5 +941,127 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::Literal(_) => {}
         }
+    }
+
+    /// Detect shared globals that are assigned exactly once and have a scalar
+    /// (Copy) type. These can use `OnceLock<T>` without a Mutex wrapper, avoiding
+    /// lock overhead on every read in hot loops.
+    pub(crate) fn collect_readonly_globals(
+        &self,
+        program: &Program,
+        shared_globals: &HashSet<String>,
+    ) -> HashSet<String> {
+        let mut write_counts: HashMap<String, usize> = HashMap::new();
+
+        // Count assignments at module top level.
+        for item in &program.items {
+            if let Item::Stmt(stmt) = item {
+                Self::count_global_writes(stmt, shared_globals, &mut write_counts);
+            }
+        }
+
+        // Count assignments inside functions that use `global` declarations.
+        for item in &program.items {
+            match item {
+                Item::Function(func) => {
+                    let explicit = Self::get_explicit_globals(&func.body);
+                    Self::count_global_writes_in_func(&func.body, &explicit, &mut write_counts);
+                }
+                Item::Class(class_def) => {
+                    for method in &class_def.methods {
+                        let explicit = Self::get_explicit_globals(&method.body);
+                        Self::count_global_writes_in_func(
+                            &method.body,
+                            &explicit,
+                            &mut write_counts,
+                        );
+                    }
+                }
+                Item::Stmt(_) | Item::Union(_) => {}
+            }
+        }
+
+        // A shared global is readonly if written exactly once and has a scalar type.
+        // Scalar types are Copy in Rust (i64, f64, bool), so reads are cheap.
+        shared_globals
+            .iter()
+            .filter(|name| {
+                write_counts.get(*name).copied().unwrap_or(0) == 1
+                    && matches!(
+                        self.ctx.globals.get(*name),
+                        Some(Type::Int | Type::Float | Type::Bool)
+                    )
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Count all assignments to shared global names within a statement tree.
+    fn count_global_writes(
+        stmt: &Stmt,
+        shared_globals: &HashSet<String>,
+        counts: &mut HashMap<String, usize>,
+    ) {
+        walk_stmt_tree(std::slice::from_ref(stmt), &mut |s| match &s.kind {
+            StmtKind::Let { name, .. } => {
+                if shared_globals.contains(name) {
+                    *counts.entry(name.clone()).or_insert(0) += 1;
+                }
+            }
+            StmtKind::Assign { target, .. } => {
+                walk_assign_target_names(target, &mut |name| {
+                    if shared_globals.contains(name) {
+                        *counts.entry(name.to_string()).or_insert(0) += 1;
+                    }
+                });
+            }
+            StmtKind::For { target, .. } => {
+                for name in target.names() {
+                    if shared_globals.contains(name) {
+                        *counts.entry(name.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
+
+    /// Count assignments to explicitly `global`-declared names within a function body.
+    fn count_global_writes_in_func(
+        stmts: &[Stmt],
+        explicit_globals: &HashSet<String>,
+        counts: &mut HashMap<String, usize>,
+    ) {
+        if explicit_globals.is_empty() {
+            return;
+        }
+        walk_stmt_tree(stmts, &mut |s| match &s.kind {
+            StmtKind::Assign { target, .. } => {
+                walk_assign_target_names(target, &mut |name| {
+                    if explicit_globals.contains(name) {
+                        *counts.entry(name.to_string()).or_insert(0) += 1;
+                    }
+                });
+            }
+            StmtKind::For { target, .. } => {
+                for name in target.names() {
+                    if explicit_globals.contains(name) {
+                        *counts.entry(name.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
+
+    /// Collect names from `global` declarations in a function body.
+    fn get_explicit_globals(stmts: &[Stmt]) -> HashSet<String> {
+        let mut globals = HashSet::new();
+        walk_stmt_tree(stmts, &mut |s| {
+            if let StmtKind::Global { names } = &s.kind {
+                globals.extend(names.iter().cloned());
+            }
+        });
+        globals
     }
 }

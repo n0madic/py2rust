@@ -31,8 +31,8 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 ### Running the Transpiler
 - `cargo run -p py2rust -- <input.py>` - transpile Python to Rust
 - `cargo run -p py2rust -- <input.py> --output <output.rs>` - specify output file
-- `cargo run -p py2rust -- <input.py> --compile` - transpile and compile with rustc
-- `cargo run -p py2rust -- <input.py> --run` - transpile, compile, and execute
+- `cargo run -p py2rust -- <input.py> --compile` - transpile and compile with rustc (opt-level=3)
+- `cargo run -p py2rust -- <input.py> --run` - transpile, compile, and execute (opt-level=3)
 - `cargo run -p py2rust -- <input.py> --emit-hir` - show HIR representation
 - `cargo run -p py2rust -- <input.py> --emit-types` - show type information
 - `cargo run -p py2rust -- <input.py> --pretty` - format generated Rust with rustfmt
@@ -105,6 +105,9 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - Lambdas and callables use `Type::Lambda` and are emitted as `impl Fn(..) -> .. + 'static`.
 
 ## Codegen Notes
+- Compilation: `--compile`/`--run` use `rustc -C opt-level=3` for optimized binaries. Tests keep `opt-level=0` for fast compilation.
+- Read-only scalar globals (assigned exactly once, Int/Float/Bool) use `OnceLock<T>` without Mutex.
+  Mutable globals still use `OnceLock<Mutex<T>>`. Detection in `analysis/globals.rs:collect_readonly_globals`.
 - Numeric literals are emitted with suffixes (`i64`/`f64`) to avoid ambiguity.
 - Mixed int/float arithmetic casts ints to f64 when result is float.
 - Optional truthiness follows Python semantics (`Some(0)`, `Some("")`, etc. are falsy).
@@ -120,6 +123,7 @@ Project: py2rust - a Rust transpiler for a restricted Python subset.
 - Iterator generation for `Arc<Mutex<Vec<T>>>`:
   - `IterContext::ImmediateConsumption` holds lock once for entire iteration (for loops, builtins)
   - `IterContext::DeferredCapture` locks per-iteration when iterator is returned/stored (map/filter results)
+  - `zip(a, b)` in for loops is intercepted by `gen_iter_source` to use `ImmediateConsumption` for both sides
 - Generator functions are emitted as dedicated iterator wrapper structs with replay-based state,
   supporting `next(...)`, `.send(...)`, and `.close()` on the same object.
 - List/set iteration for builtins uses `.iter().cloned()` to avoid moves.

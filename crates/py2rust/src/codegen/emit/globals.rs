@@ -33,10 +33,18 @@ impl<'a> Codegen<'a> {
             }
             let ty_str = self.rust_type_for_global(ty);
             let gname = self.global_name(name);
-            self.push_line(&format!(
-                "static {}: OnceLock<Mutex<{}>> = OnceLock::new();",
-                gname, ty_str
-            ));
+            if self.readonly_globals.contains(name) {
+                // Write-once scalar globals skip the Mutex wrapper entirely.
+                self.push_line(&format!(
+                    "static {}: OnceLock<{}> = OnceLock::new();",
+                    gname, ty_str
+                ));
+            } else {
+                self.push_line(&format!(
+                    "static {}: OnceLock<Mutex<{}>> = OnceLock::new();",
+                    gname, ty_str
+                ));
+            }
             if self.is_default_global_name(name) && matches!(ty, Type::List(_) | Type::Dict(_, _)) {
                 let cache_name = self.default_cache_name(name);
                 let local_ty = self.rust_type(ty);

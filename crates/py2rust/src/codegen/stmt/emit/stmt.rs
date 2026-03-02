@@ -643,10 +643,15 @@ impl<'a> Codegen<'a> {
                     let gname = self.global_name(name);
                     let tmp = self.new_tmp();
                     self.push_line(&format!("let {} = {};", tmp, expr));
-                    self.push_line(&format!(
-                        "let _ = {}.get_or_init(|| Mutex::new({}));",
-                        gname, tmp
-                    ));
+                    if self.readonly_globals.contains(name) {
+                        // Write-once scalar: OnceLock<T> without Mutex.
+                        self.push_line(&format!("let _ = {}.get_or_init(|| {});", gname, tmp));
+                    } else {
+                        self.push_line(&format!(
+                            "let _ = {}.get_or_init(|| Mutex::new({}));",
+                            gname, tmp
+                        ));
+                    }
                     self.initialized_globals.insert(name.clone());
                     return Ok(());
                 }
@@ -1818,10 +1823,17 @@ impl<'a> Codegen<'a> {
                         let global_name = self.global_name(bound_name);
                         let tmp = self.new_tmp();
                         self.push_line(&format!("let {} = {};", tmp, attr_expr));
-                        self.push_line(&format!(
-                            "let _ = {}.get_or_init(|| Mutex::new({}));",
-                            global_name, tmp
-                        ));
+                        if self.readonly_globals.contains(bound_name) {
+                            self.push_line(&format!(
+                                "let _ = {}.get_or_init(|| {});",
+                                global_name, tmp
+                            ));
+                        } else {
+                            self.push_line(&format!(
+                                "let _ = {}.get_or_init(|| Mutex::new({}));",
+                                global_name, tmp
+                            ));
+                        }
                         self.initialized_globals.insert(bound_name.to_string());
                     } else {
                         let mut_kw = mut_kw_for_name(bound_name, mut_counts);

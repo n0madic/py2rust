@@ -215,10 +215,14 @@ impl<'a> Codegen<'a> {
                         let tmp = self.new_tmp();
                         let gname = self.global_name(name);
                         self.push_line(&format!("let {} = {};", tmp, expr));
-                        self.push_line(&format!(
-                            "let _ = {}.get_or_init(|| Mutex::new({}));",
-                            gname, tmp
-                        ));
+                        if self.readonly_globals.contains(name) {
+                            self.push_line(&format!("let _ = {}.get_or_init(|| {});", gname, tmp));
+                        } else {
+                            self.push_line(&format!(
+                                "let _ = {}.get_or_init(|| Mutex::new({}));",
+                                gname, tmp
+                            ));
+                        }
                         self.initialized_globals.insert(name.clone());
                         return Ok(());
                     }

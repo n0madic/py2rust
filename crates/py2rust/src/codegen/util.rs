@@ -155,6 +155,13 @@ impl<'a> Codegen<'a> {
     }
 
     pub(crate) fn global_lock_expr(&self, name: &str) -> String {
+        if self.readonly_globals.contains(name) {
+            // Write-once scalar globals skip the Mutex — direct OnceLock access.
+            return format!(
+                "{}.get().expect(\"global not initialized\")",
+                self.global_name(name)
+            );
+        }
         // Use expect to surface clear panic messages if globals are misused.
         format!(
             "{}.get().expect(\"global not initialized\").lock().expect(\"global mutex poisoned\")",
