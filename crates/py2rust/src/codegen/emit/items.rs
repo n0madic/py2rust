@@ -140,7 +140,7 @@ impl<'a> Codegen<'a> {
             let ret_str = self.rust_type(&ret_ty);
             self.push_line(&format!("fn next(&mut self) -> {} {{", ret_str));
             self.indent += 1;
-            let mut_counts = collect_assign_counts(&next_method.body);
+            let mut_counts = collect_assign_counts(&next_method.body, |_, _| false);
             for stmt in &next_method.body {
                 self.emit_stmt(stmt, &mut_counts)?;
             }
@@ -378,7 +378,7 @@ impl<'a> Codegen<'a> {
             .ok_or_else(|| self.error(class_def.span, "Unknown class"))?;
         // Constructor parameters can be reassigned inside __init__ (Python semantics),
         // so we mark parameters as mutable when assignment analysis detects mutations.
-        let mut_counts = collect_assign_counts(&init.body);
+        let mut_counts = collect_assign_counts(&init.body, |_, _| false);
         let inferred_params = class_info
             .init
             .as_ref()

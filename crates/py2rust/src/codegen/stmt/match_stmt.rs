@@ -78,7 +78,7 @@ impl<'a> Codegen<'a> {
             union, case.variant, case.variant, fields
         ));
         self.indent += 1;
-        let mut_counts = collect_assign_counts(&case.body);
+        let mut_counts = collect_assign_counts(&case.body, |_, _| false);
         for stmt in &case.body {
             self.emit_stmt(stmt, &mut_counts)?;
         }

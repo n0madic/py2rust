@@ -968,7 +968,7 @@ impl<'a> Codegen<'a> {
 
     /// Emit a block expression into a temporary output buffer.
     pub(super) fn gen_block_expr(&mut self, stmts: &[Stmt]) -> Result<String, CompileError> {
-        let mut_counts = collect_assign_counts(stmts);
+        let mut_counts = collect_assign_counts(stmts, |_, _| false);
         let saved_out = mem::take(&mut self.out);
         let saved_indent = self.indent;
         let saved_tmp = self.tmp_counter;

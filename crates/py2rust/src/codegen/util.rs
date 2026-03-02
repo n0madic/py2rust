@@ -479,13 +479,17 @@ impl<'a> Codegen<'a> {
 /// - Regular assignments: `x = value`
 /// - next() calls: `next(iterator)` mutates the iterator
 /// - Index assignments: `list[i] = value` mutates the list
-/// - Method calls that mutate: Some methods (if any) mutate their receiver
-fn collect_assign_counts_impl<'stmt, I>(stmts: I) -> HashMap<String, usize>
+/// - Method calls that mutate: built-in collection/file methods plus any user-defined
+///   method that the caller determines takes `&mut self` (via `user_method_is_mutating`).
+fn collect_assign_counts_impl<'stmt, I, F>(stmts: I, user_method_is_mutating: F) -> HashMap<String, usize>
 where
     I: IntoIterator<Item = &'stmt Stmt>,
+    F: Fn(/*class_name:*/ &str, /*method_name:*/ &str) -> bool,
 {
     let mut counts = HashMap::new();
-    fn visit_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
+    // Inner helper: visit an expression and record all mutation-inducing sub-expressions.
+    // `umf` is the type-informed predicate for user-defined methods.
+    fn visit_expr(expr: &Expr, counts: &mut HashMap<String, usize>, umf: &dyn Fn(&str, &str) -> bool) {
         match &expr.kind {
             ExprKind::Call {
                 func,
@@ -493,8 +497,8 @@ where
                 keywords,
             } => {
                 if let ExprKind::Attr { value, attr } = &func.kind {
-                    // Mutating collection methods require the receiver to be `mut`.
-                    if matches!(
+                    // Mutating built-in collection/file methods require the receiver to be `mut`.
+                    let builtin_mutating = matches!(
                         attr.as_str(),
                         "append"
                             | "extend"
@@ -514,9 +518,20 @@ where
                             | "close"
                             | "__enter__"
                             | "__exit__"
-                            // User-defined methods that take &mut self.
-                            | "backward"
-                    ) {
+                    );
+                    // For user-defined methods on typed receivers, consult the HIR-derived predicate.
+                    let is_user_mutating = !builtin_mutating
+                        && matches!(value.ty.as_ref(), Some(Type::Custom(_)))
+                        && {
+                            if let (Some(Type::Custom(cn)), ExprKind::Name(_)) =
+                                (value.ty.as_ref(), &value.kind)
+                            {
+                                umf(cn.as_str(), attr.as_str())
+                            } else {
+                                false
+                            }
+                        };
+                    if builtin_mutating || is_user_mutating {
                         if let ExprKind::Name(name) = &value.kind {
                             *counts.entry(name.clone()).or_insert(0) += 1;
                         }
@@ -529,64 +544,64 @@ where
                         }
                     }
                 }
-                visit_expr(func, counts);
+                visit_expr(func, counts, umf);
                 for arg in args {
-                    visit_expr(arg, counts);
+                    visit_expr(arg, counts, umf);
                 }
                 for kw in keywords {
-                    visit_expr(&kw.value, counts);
+                    visit_expr(&kw.value, counts, umf);
                 }
             }
-            ExprKind::Starred { value } => visit_expr(value, counts),
+            ExprKind::Starred { value } => visit_expr(value, counts, umf),
             ExprKind::Yield { value } => {
                 if let Some(value) = value {
-                    visit_expr(value, counts);
+                    visit_expr(value, counts, umf);
                 }
             }
-            ExprKind::Attr { value, .. } => visit_expr(value, counts),
+            ExprKind::Attr { value, .. } => visit_expr(value, counts, umf),
             ExprKind::Binary { left, right, .. } => {
-                visit_expr(left, counts);
-                visit_expr(right, counts);
+                visit_expr(left, counts, umf);
+                visit_expr(right, counts, umf);
             }
-            ExprKind::Unary { expr, .. } => visit_expr(expr, counts),
+            ExprKind::Unary { expr, .. } => visit_expr(expr, counts, umf),
             ExprKind::Compare { left, right, .. } => {
-                visit_expr(left, counts);
-                visit_expr(right, counts);
+                visit_expr(left, counts, umf);
+                visit_expr(right, counts, umf);
             }
             ExprKind::CompareChain {
                 left, comparators, ..
             } => {
-                visit_expr(left, counts);
+                visit_expr(left, counts, umf);
                 for cmp in comparators {
-                    visit_expr(cmp, counts);
+                    visit_expr(cmp, counts, umf);
                 }
             }
             ExprKind::BoolOp { values, .. } => {
                 for v in values {
-                    visit_expr(v, counts);
+                    visit_expr(v, counts, umf);
                 }
             }
             ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
                 for item in items {
-                    visit_expr(item, counts);
+                    visit_expr(item, counts, umf);
                 }
             }
             ExprKind::Dict(items) => {
                 for entry in items {
                     match entry {
                         DictEntry::Item { key, value } => {
-                            visit_expr(key, counts);
-                            visit_expr(value, counts);
+                            visit_expr(key, counts, umf);
+                            visit_expr(value, counts, umf);
                         }
                         DictEntry::Unpack { value } => {
-                            visit_expr(value, counts);
+                            visit_expr(value, counts, umf);
                         }
                     }
                 }
             }
             ExprKind::Index { value, index } => {
-                visit_expr(value, counts);
-                visit_expr(index, counts);
+                visit_expr(value, counts, umf);
+                visit_expr(index, counts, umf);
             }
             ExprKind::Slice {
                 value,
@@ -594,42 +609,42 @@ where
                 end,
                 step,
             } => {
-                visit_expr(value, counts);
+                visit_expr(value, counts, umf);
                 if let Some(s) = start {
-                    visit_expr(s, counts);
+                    visit_expr(s, counts, umf);
                 }
                 if let Some(e) = end {
-                    visit_expr(e, counts);
+                    visit_expr(e, counts, umf);
                 }
                 if let Some(st) = step.as_deref() {
-                    visit_expr(st, counts);
+                    visit_expr(st, counts, umf);
                 }
             }
             ExprKind::ListComp { elt, iter, ifs, .. }
             | ExprKind::SetComp { elt, iter, ifs, .. } => {
-                visit_expr(elt, counts);
-                visit_expr(iter, counts);
+                visit_expr(elt, counts, umf);
+                visit_expr(iter, counts, umf);
                 for cond in ifs {
-                    visit_expr(cond, counts);
+                    visit_expr(cond, counts, umf);
                 }
             }
-            ExprKind::UnionCtor { inner, .. } => visit_expr(inner, counts),
-            ExprKind::Lambda { body, .. } => visit_expr(body, counts),
+            ExprKind::UnionCtor { inner, .. } => visit_expr(inner, counts, umf),
+            ExprKind::Lambda { body, .. } => visit_expr(body, counts, umf),
             ExprKind::IfExpr { test, body, orelse } => {
-                visit_expr(test, counts);
-                visit_expr(body, counts);
-                visit_expr(orelse, counts);
+                visit_expr(test, counts, umf);
+                visit_expr(body, counts, umf);
+                visit_expr(orelse, counts, umf);
             }
             ExprKind::Block { stmts } => {
                 for stmt in stmts {
-                    visit_stmt(stmt, counts);
+                    visit_stmt(stmt, counts, umf);
                 }
             }
             ExprKind::Name(_) | ExprKind::Literal(_) => {}
         }
     }
 
-    fn visit_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
+    fn visit_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>, umf: &dyn Fn(&str, &str) -> bool) {
         fn record_target(target: &AssignTarget, counts: &mut HashMap<String, usize>) {
             match target {
                 AssignTarget::Name(name) => {
@@ -661,29 +676,29 @@ where
         match &stmt.kind {
             StmtKind::Let { name, value, .. } => {
                 *counts.entry(name.clone()).or_insert(0) += 1;
-                visit_expr(value, counts);
+                visit_expr(value, counts, umf);
             }
             StmtKind::Assign { target, value } => {
                 record_target(target, counts);
-                visit_expr(value, counts);
+                visit_expr(value, counts, umf);
             }
             StmtKind::Delete { target } => {
                 // `del x[i]`, `del d[k]`, and `del obj.prop` mutate the receiver.
                 record_target(target, counts);
             }
             StmtKind::If { test, body, orelse } => {
-                visit_expr(test, counts);
+                visit_expr(test, counts, umf);
                 for stmt in body {
-                    visit_stmt(stmt, counts);
+                    visit_stmt(stmt, counts, umf);
                 }
                 for stmt in orelse {
-                    visit_stmt(stmt, counts);
+                    visit_stmt(stmt, counts, umf);
                 }
             }
             StmtKind::While { test, body } => {
-                visit_expr(test, counts);
+                visit_expr(test, counts, umf);
                 for stmt in body {
-                    visit_stmt(stmt, counts);
+                    visit_stmt(stmt, counts, umf);
                 }
             }
             StmtKind::For { iter, body, .. } => {
@@ -693,16 +708,16 @@ where
                         *counts.entry(name.clone()).or_insert(0) += 1;
                     }
                 }
-                visit_expr(iter, counts);
+                visit_expr(iter, counts, umf);
                 for stmt in body {
-                    visit_stmt(stmt, counts);
+                    visit_stmt(stmt, counts, umf);
                 }
             }
             StmtKind::Match { subject, cases } => {
-                visit_expr(subject, counts);
+                visit_expr(subject, counts, umf);
                 for case in cases {
                     for stmt in &case.body {
-                        visit_stmt(stmt, counts);
+                        visit_stmt(stmt, counts, umf);
                     }
                 }
             }
@@ -713,38 +728,38 @@ where
                 finalbody,
             } => {
                 for stmt in body {
-                    visit_stmt(stmt, counts);
+                    visit_stmt(stmt, counts, umf);
                 }
                 for handler in handlers {
                     for stmt in &handler.body {
-                        visit_stmt(stmt, counts);
+                        visit_stmt(stmt, counts, umf);
                     }
                 }
                 for stmt in orelse {
-                    visit_stmt(stmt, counts);
+                    visit_stmt(stmt, counts, umf);
                 }
                 for stmt in finalbody {
-                    visit_stmt(stmt, counts);
+                    visit_stmt(stmt, counts, umf);
                 }
             }
             StmtKind::Expr(expr) => {
-                visit_expr(expr, counts);
+                visit_expr(expr, counts, umf);
             }
             StmtKind::Assert { test, msg } => {
-                visit_expr(test, counts);
+                visit_expr(test, counts, umf);
                 if let Some(msg) = msg {
-                    visit_expr(msg, counts);
+                    visit_expr(msg, counts, umf);
                 }
             }
             StmtKind::Return { value: Some(expr) } => {
-                visit_expr(expr, counts);
+                visit_expr(expr, counts, umf);
             }
             StmtKind::Raise { exc, cause } => {
                 if let Some(expr) = exc {
-                    visit_expr(expr, counts);
+                    visit_expr(expr, counts, umf);
                 }
                 if let Some(expr) = cause {
-                    visit_expr(expr, counts);
+                    visit_expr(expr, counts, umf);
                 }
             }
             StmtKind::Nonlocal { .. } => {}
@@ -752,20 +767,26 @@ where
         }
     }
     for stmt in stmts {
-        visit_stmt(stmt, &mut counts);
+        visit_stmt(stmt, &mut counts, &user_method_is_mutating);
     }
     counts
 }
 
-pub(crate) fn collect_assign_counts(stmts: &[Stmt]) -> HashMap<String, usize> {
-    collect_assign_counts_impl(stmts.iter())
+pub(crate) fn collect_assign_counts(
+    stmts: &[Stmt],
+    user_method_is_mutating: impl Fn(&str, &str) -> bool,
+) -> HashMap<String, usize> {
+    collect_assign_counts_impl(stmts.iter(), user_method_is_mutating)
 }
 
 /// Count assignments for a top-level statement list held by reference.
 ///
 /// This avoids cloning top-level `Stmt` values when only immutable traversal is needed.
-pub(crate) fn collect_assign_counts_for_stmt_refs(stmts: &[&Stmt]) -> HashMap<String, usize> {
-    collect_assign_counts_impl(stmts.iter().copied())
+pub(crate) fn collect_assign_counts_for_stmt_refs(
+    stmts: &[&Stmt],
+    user_method_is_mutating: impl Fn(&str, &str) -> bool,
+) -> HashMap<String, usize> {
+    collect_assign_counts_impl(stmts.iter().copied(), user_method_is_mutating)
 }
 
 /// Check if a variable needs `mut` based on its assignment count.
