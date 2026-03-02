@@ -1510,11 +1510,11 @@ impl<'a> Codegen<'a> {
                         (Some(name), "__init__"),
                         false,
                     )?;
-                    format!(
-                        "{}::new({})",
-                        name,
-                        self.gen_call_args_for_sig(&param_types, &full_args)?
-                    )
+                    {
+                        let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
+                        let raw_call = format!("{}::new({})", name, call_args.args);
+                        call_args.wrap_call(&raw_call)
+                    }
                 } else {
                     if !args.is_empty() || !keywords.is_empty() {
                         return Err(

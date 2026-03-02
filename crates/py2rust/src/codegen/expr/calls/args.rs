@@ -102,10 +102,16 @@ impl<'a> Codegen<'a> {
             for pos_idx in plan.vararg_positional.iter().copied() {
                 vararg_values.push(args[pos_idx].clone());
             }
+            // Always type the varargs pack as List, even if the param is Slice —
+            // the call-site codegen will handle the List→Slice conversion.
+            let vararg_ty = match &param_types[vararg_idx] {
+                Type::Slice(inner) => Type::List(inner.clone()),
+                other => other.clone(),
+            };
             out[vararg_idx] = Some(Expr {
                 kind: ExprKind::List(vararg_values),
                 span: params[vararg_idx].span,
-                ty: Some(param_types[vararg_idx].clone()),
+                ty: Some(vararg_ty),
             });
         } else if !plan.vararg_positional.is_empty() {
             return Err(self.error(
@@ -354,15 +360,29 @@ impl<'a> Codegen<'a> {
                 }
                 ParamKind::VarArgs => {
                     has_vararg = true;
-                    let wrapped = self.wrap_list_storage_expr(
-                        &format!("{pos_vec}[{pos_idx}..].to_vec()"),
-                        ListStorage::SharedCell,
-                    );
-                    lines.push(format!(
-                        "let {arg_var} = {wrapped};",
-                        arg_var = arg_var,
-                        wrapped = wrapped
-                    ));
+                    // Check if this varargs param is read-only → pass as slice reference.
+                    let is_readonly = self
+                        .readonly_list_params
+                        .get(func_name)
+                        .is_some_and(|ro| ro.contains(param.name.as_str()));
+                    if is_readonly {
+                        lines.push(format!(
+                            "let {arg_var} = &{pos_vec}[{pos_idx}..];",
+                            arg_var = arg_var,
+                            pos_vec = pos_vec,
+                            pos_idx = pos_idx
+                        ));
+                    } else {
+                        let wrapped = self.wrap_list_storage_expr(
+                            &format!("{pos_vec}[{pos_idx}..].to_vec()"),
+                            ListStorage::SharedCell,
+                        );
+                        lines.push(format!(
+                            "let {arg_var} = {wrapped};",
+                            arg_var = arg_var,
+                            wrapped = wrapped
+                        ));
+                    }
                     lines.push(format!(
                         "{pos_idx} = {pos_vec}.len();",
                         pos_idx = pos_idx,

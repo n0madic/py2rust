@@ -4,6 +4,32 @@ use super::super::util::collect_assign_counts;
 use super::super::*;
 use std::mem;
 
+/// Result of generating call arguments, including optional setup bindings
+/// needed for mutex guard management when passing shared lists to slice params.
+pub(in crate::codegen) struct CallArgs {
+    /// Setup bindings to emit before the call (e.g., `let _g0 = x.py_list_guard()`).
+    pub(in crate::codegen) setup: Vec<String>,
+    /// The rendered arguments string (comma-separated).
+    pub(in crate::codegen) args: String,
+}
+
+impl CallArgs {
+    /// Wrap a call expression with setup bindings if needed.
+    /// If there are setup bindings, wraps in a block: `{ setup; call_expr }`.
+    pub(in crate::codegen) fn wrap_call(&self, call_expr: &str) -> String {
+        if self.setup.is_empty() {
+            call_expr.to_string()
+        } else {
+            let setup_str = self
+                .setup
+                .iter()
+                .map(|s| format!("{}; ", s))
+                .collect::<String>();
+            format!("{{ {}{} }}", setup_str, call_expr)
+        }
+    }
+}
+
 impl<'a> Codegen<'a> {
     /// Render a list of expression arguments as a comma-separated string.
     pub(super) fn gen_args(&mut self, args: &[Expr]) -> Result<String, CompileError> {
@@ -220,12 +246,16 @@ impl<'a> Codegen<'a> {
     }
 
     /// Generate arguments for a call using an explicit parameter type list.
+    ///
+    /// Returns `CallArgs` containing optional setup bindings (for mutex guards
+    /// when passing shared lists to slice params) and the rendered args string.
     pub(super) fn gen_call_args_for_sig(
         &mut self,
         param_types: &[Type],
         args: &[Expr],
-    ) -> Result<String, CompileError> {
+    ) -> Result<CallArgs, CompileError> {
         let mut parts = Vec::new();
+        let mut setup: Vec<String> = Vec::new();
         for (idx, arg) in args.iter().enumerate() {
             // Cache the parameter type lookup to avoid duplicate .get() calls.
             let param_ty = param_types.get(idx);
@@ -235,6 +265,32 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(arg)?
             };
             if let Some(param_ty) = param_ty {
+                // Slice param receiving a shared list: generate guard setup.
+                if matches!(param_ty, Type::Slice(_))
+                    && matches!(arg.ty.as_ref(), Some(Type::List(_)))
+                    && self.arg_is_shared_list(arg)
+                {
+                    let guard_tmp = self.new_tmp();
+                    if let ExprKind::Name(name) = &arg.kind {
+                        // Named variable: guard the name directly.
+                        if self.is_global(name) {
+                            setup.push(format!(
+                                "let {} = {}.py_list_guard()",
+                                guard_tmp,
+                                self.global_lock_expr(name)
+                            ));
+                        } else {
+                            setup.push(format!("let {} = {}.py_list_guard()", guard_tmp, rendered));
+                        }
+                    } else {
+                        // Complex expression: clone the Arc first.
+                        let arc_tmp = self.new_tmp();
+                        setup.push(format!("let {} = ({}).clone()", arc_tmp, rendered));
+                        setup.push(format!("let {} = {}.py_list_guard()", guard_tmp, arc_tmp));
+                    }
+                    parts.push(format!("&*{}", guard_tmp));
+                    continue;
+                }
                 // Clone only lvalue-style arguments so temporary rvalues can move.
                 if self.call_arg_needs_owned_clone(arg, param_ty) {
                     parts.push(format!("{}.clone()", rendered));
@@ -249,7 +305,10 @@ impl<'a> Codegen<'a> {
                 parts.push(rendered);
             }
         }
-        Ok(parts.join(", "))
+        Ok(CallArgs {
+            setup,
+            args: parts.join(", "),
+        })
     }
 
     /// Check if we need to add & when passing an argument.

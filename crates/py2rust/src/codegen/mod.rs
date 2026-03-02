@@ -345,6 +345,10 @@ pub struct Codegen<'a> {
     /// (i.e., plain `Vec<T>`) regardless of the normal storage strategy.
     /// Set temporarily during Return codegen for fresh-return functions.
     pub(crate) force_local_list_storage: bool,
+    /// Functions with read-only list parameters that can be emitted as `&[T]`
+    /// instead of `Arc<Mutex<Vec<T>>>`. Maps function name → set of read-only
+    /// list param names.
+    pub(crate) readonly_list_params: HashMap<String, HashSet<String>>,
 }
 
 /// Cached program-level analysis and item partitions used during emission.
@@ -360,6 +364,8 @@ struct ProgramFacts<'program> {
     /// Functions that always return freshly-constructed lists and can use `Vec<T>`
     /// return type instead of `Arc<Mutex<Vec<T>>>`.
     fresh_return_functions: HashSet<String>,
+    /// Functions with read-only list parameters that can be emitted as `&[T]`.
+    readonly_list_params: HashMap<String, HashSet<String>>,
     name_compare_only: bool,
     main_list_elems: HashMap<String, Type>,
     main_dict_kv: HashMap<String, (Type, Type)>,
@@ -410,6 +416,7 @@ impl<'a> Codegen<'a> {
             infer_empty_list_type: false,
             fresh_return_functions: HashSet::new(),
             force_local_list_storage: false,
+            readonly_list_params: HashMap::new(),
         }
     }
 
@@ -537,6 +544,7 @@ impl<'a> Codegen<'a> {
         self.shared_globals = facts.shared_globals;
         self.readonly_globals = facts.readonly_globals;
         self.fresh_return_functions = facts.fresh_return_functions;
+        self.readonly_list_params = facts.readonly_list_params;
         self.name_compare_only = facts.name_compare_only;
 
         // Phase 3: Generate code for all items
@@ -607,6 +615,7 @@ impl<'a> Codegen<'a> {
         let shared_globals = self.collect_shared_globals(program);
         let readonly_globals = self.collect_readonly_globals(program, &shared_globals);
         let fresh_return_functions = self.detect_fresh_return_functions(program);
+        let readonly_list_params = self.detect_readonly_list_params(program);
         let name_compare_only = self.analyze_name_compare_only(program);
         let main_list_elems = self.collect_list_elem_types_for_stmt_refs(&top_level_stmts);
         let main_dict_kv = self.collect_dict_kv_types_for_stmt_refs(&top_level_stmts);
@@ -623,6 +632,7 @@ impl<'a> Codegen<'a> {
             shared_globals,
             readonly_globals,
             fresh_return_functions,
+            readonly_list_params,
             name_compare_only,
             main_list_elems,
             main_dict_kv,

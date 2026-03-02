@@ -53,6 +53,19 @@ impl<'a> Codegen<'a> {
             return ListStorage::SharedSync;
         }
         if self.current_function.is_some() {
+            // Borrowed slice parameters (&[T]) behave as local data —
+            // no mutex needed for reads.
+            if self.borrowed_params.contains(name) {
+                if let Some(func_name) = self.current_function.as_ref() {
+                    if self
+                        .readonly_list_params
+                        .get(func_name.as_str())
+                        .is_some_and(|ro| ro.contains(name))
+                    {
+                        return ListStorage::Local;
+                    }
+                }
+            }
             if let Some(map) = self.local_list_storage.as_ref() {
                 if let Some(storage) = map.get(name) {
                     return *storage;
@@ -84,6 +97,23 @@ impl<'a> Codegen<'a> {
             return ListStorage::Local;
         }
         ListStorage::SharedCell
+    }
+
+    /// Check if an expression produces a shared list at runtime.
+    ///
+    /// Unlike `list_storage_for_expr`, this ignores `force_local_list_storage`
+    /// for non-constructor expressions (e.g., dict subscripts, attr accesses)
+    /// which always return shared `Arc<Mutex<Vec<T>>>` values.
+    pub(crate) fn arg_is_shared_list(&self, arg: &Expr) -> bool {
+        match &arg.kind {
+            ExprKind::Name(name) => !matches!(self.list_storage_for_name(name), ListStorage::Local),
+            // List/tuple literals and comprehensions are local only when
+            // force_local_list_storage is active; otherwise they produce Arc<Mutex<Vec>>.
+            ExprKind::List(_) | ExprKind::ListComp { .. } => !self.force_local_list_storage,
+            // Everything else (dict subscript, method call, function call, etc.)
+            // produces shared storage at runtime.
+            _ => true,
+        }
     }
 
     /// Wrap a list expression with the configured storage strategy.

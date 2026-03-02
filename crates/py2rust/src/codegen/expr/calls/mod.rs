@@ -59,10 +59,26 @@ impl<'a> Codegen<'a> {
                         "Call-site unpacking requires a known function definition",
                     ));
                 }
+                let readonly = self.readonly_list_params.get(name.as_str());
                 let param_types: Vec<Type> = sig
                     .params
                     .iter()
-                    .map(|t| self.to_borrowed_param_type(t))
+                    .enumerate()
+                    .map(|(i, t)| {
+                        // Convert read-only list params to slice types at call site.
+                        if let Type::List(inner) = t {
+                            if let Some(ro) = readonly {
+                                if sig
+                                    .param_names
+                                    .get(i)
+                                    .is_some_and(|n| ro.contains(n.as_str()))
+                                {
+                                    return Type::Slice(inner.clone());
+                                }
+                            }
+                        }
+                        self.to_borrowed_param_type(t)
+                    })
                     .collect();
                 let def = self.function_defs.get(name).cloned();
                 let full_args = if let Some(def) = def.as_ref() {
@@ -91,11 +107,9 @@ impl<'a> Codegen<'a> {
                         def,
                     )?
                 } else {
-                    format!(
-                        "{}({})",
-                        name,
-                        self.gen_call_args_for_sig(&param_types, &full_args)?
-                    )
+                    let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
+                    let raw_call = format!("{}({})", name, call_args.args);
+                    call_args.wrap_call(&raw_call)
                 };
                 // Add ? operator if function can throw.
                 let call = if sig.can_throw {
@@ -207,6 +221,7 @@ impl<'a> Codegen<'a> {
                 .map_err(|err| self.error(expr.span, err.message()))?;
 
                 let mut rendered_args: Vec<Option<String>> = vec![None; params.len()];
+                let mut pre_call_setup: Vec<String> = Vec::new();
                 for (idx, maybe_source) in plan.bound.iter().copied().enumerate() {
                     let Some(source) = maybe_source else {
                         continue;
@@ -221,7 +236,34 @@ impl<'a> Codegen<'a> {
                         }
                     };
                     let mut rendered = self.gen_expr_with_expected(arg_expr, Some(param_ty))?;
-                    if self.call_arg_needs_owned_clone(arg_expr, param_ty) {
+                    // Slice param receiving a shared list: generate guard setup.
+                    if matches!(param_ty, Type::Slice(_))
+                        && matches!(arg_ty_ref, Some(Type::List(_)))
+                        && !matches!(self.list_storage_for_expr(arg_expr), ListStorage::Local)
+                    {
+                        let guard_tmp = self.new_tmp();
+                        if let ExprKind::Name(name) = &arg_expr.kind {
+                            if self.is_global(name) {
+                                pre_call_setup.push(format!(
+                                    "let {} = {}.py_list_guard()",
+                                    guard_tmp,
+                                    self.global_lock_expr(name)
+                                ));
+                            } else {
+                                pre_call_setup.push(format!(
+                                    "let {} = {}.py_list_guard()",
+                                    guard_tmp, rendered
+                                ));
+                            }
+                        } else {
+                            let arc_tmp = self.new_tmp();
+                            pre_call_setup
+                                .push(format!("let {} = ({}).clone()", arc_tmp, rendered));
+                            pre_call_setup
+                                .push(format!("let {} = {}.py_list_guard()", guard_tmp, arc_tmp));
+                        }
+                        rendered = format!("&*{}", guard_tmp);
+                    } else if self.call_arg_needs_owned_clone(arg_expr, param_ty) {
                         rendered = format!("{}.clone()", rendered);
                     } else if self.needs_borrow(arg_ty_ref, param_ty) {
                         rendered = format!("&{}", rendered);
@@ -233,7 +275,9 @@ impl<'a> Codegen<'a> {
 
                 if let Some(vararg_idx) = plan.vararg_idx {
                     let inner_ty = match params.get(vararg_idx) {
-                        Some(Type::List(inner)) => inner.as_ref().clone(),
+                        Some(Type::List(inner)) | Some(Type::Slice(inner)) => {
+                            inner.as_ref().clone()
+                        }
                         _ => Type::Unknown,
                     };
                     let mut elems = Vec::new();
@@ -260,8 +304,16 @@ impl<'a> Codegen<'a> {
                     if matches!(inner_ty, Type::Unknown) {
                         self.uses.py_repr = true;
                     }
-                    rendered_args[vararg_idx] =
-                        Some(self.wrap_list_storage_expr(&vec_expr, ListStorage::SharedCell));
+                    // If the vararg param type is now &[T] (Slice), pass as local vec reference.
+                    let vararg_param_ty = params.get(vararg_idx);
+                    if matches!(vararg_param_ty, Some(Type::Slice(_))) {
+                        let tmp = self.new_tmp();
+                        pre_call_setup.push(format!("let {} = {}", tmp, vec_expr));
+                        rendered_args[vararg_idx] = Some(format!("&{}", tmp));
+                    } else {
+                        rendered_args[vararg_idx] =
+                            Some(self.wrap_list_storage_expr(&vec_expr, ListStorage::SharedCell));
+                    }
                 } else if !plan.vararg_positional.is_empty() {
                     return Err(self.error(expr.span, "Argument count mismatch"));
                 }
@@ -350,11 +402,15 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                return Ok(format!(
-                    "({})({})",
-                    self.gen_expr(func)?,
-                    final_args.join(", ")
-                ));
+                let raw_call = format!("({})({})", self.gen_expr(func)?, final_args.join(", "));
+                if pre_call_setup.is_empty() {
+                    return Ok(raw_call);
+                }
+                let setup_str = pre_call_setup
+                    .iter()
+                    .map(|s| format!("{}; ", s))
+                    .collect::<String>();
+                return Ok(format!("{{ {}{} }}", setup_str, raw_call));
             }
             if !keywords.is_empty() {
                 return Err(self.error(
@@ -450,6 +506,7 @@ impl<'a> Codegen<'a> {
         let pre_lines: Vec<String> = Vec::new();
         let post_lines: Vec<String> = Vec::new();
         let mut rendered_args = Vec::new();
+        let mut guard_setup: Vec<String> = Vec::new();
 
         for (idx, arg) in full_args.iter().enumerate() {
             let param_ty = param_types.get(idx);
@@ -490,6 +547,32 @@ impl<'a> Codegen<'a> {
                 self.gen_expr(arg)?
             };
             if let Some(param_ty) = param_ty {
+                // Slice param receiving shared list: generate guard setup.
+                if matches!(param_ty, Type::Slice(_))
+                    && matches!(arg.ty.as_ref(), Some(Type::List(_)))
+                    && self.arg_is_shared_list(arg)
+                {
+                    let guard_tmp = self.new_tmp();
+                    if let ExprKind::Name(name) = &arg.kind {
+                        if self.is_global(name) {
+                            guard_setup.push(format!(
+                                "let {} = {}.py_list_guard()",
+                                guard_tmp,
+                                self.global_lock_expr(name)
+                            ));
+                        } else {
+                            guard_setup
+                                .push(format!("let {} = {}.py_list_guard()", guard_tmp, rendered));
+                        }
+                    } else {
+                        let arc_tmp = self.new_tmp();
+                        guard_setup.push(format!("let {} = ({}).clone()", arc_tmp, rendered));
+                        guard_setup
+                            .push(format!("let {} = {}.py_list_guard()", guard_tmp, arc_tmp));
+                    }
+                    rendered_args.push(format!("&*{}", guard_tmp));
+                    continue;
+                }
                 if self.call_arg_needs_owned_clone(arg, param_ty) {
                     rendered = format!("{}.clone()", rendered);
                 } else if self.needs_borrow(arg.ty.as_ref(), param_ty) {
@@ -500,6 +583,16 @@ impl<'a> Codegen<'a> {
         }
 
         let base_call = format!("{func_name}({})", rendered_args.join(", "));
+        // Wrap with guard setup if needed.
+        let base_call = if guard_setup.is_empty() {
+            base_call
+        } else {
+            let setup_str = guard_setup
+                .iter()
+                .map(|s| format!("{}; ", s))
+                .collect::<String>();
+            format!("{{ {}{} }}", setup_str, base_call)
+        };
         if pre_lines.is_empty() {
             return Ok(base_call);
         }

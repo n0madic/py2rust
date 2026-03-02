@@ -289,7 +289,7 @@ impl<'a> Codegen<'a> {
                     ty
                 };
                 // Convert to borrowed type for function parameters.
-                let borrowed = self.to_borrowed_param_type(&ty);
+                let borrowed = self.to_borrowed_param_type_named(&ty, &param.name);
                 // Track if this parameter is borrowed.
                 if self.is_borrowed_type(&borrowed) {
                     self.borrowed_params.insert(param.name.clone());
@@ -356,6 +356,25 @@ impl<'a> Codegen<'a> {
     /// Check if a type is a borrowed/reference type.
     fn is_borrowed_type(&self, ty: &Type) -> bool {
         matches!(ty, Type::Ref(_) | Type::MutRef(_) | Type::Slice(_))
+    }
+
+    /// Convert a type to its borrowed equivalent for function parameters,
+    /// with knowledge of the parameter name to detect read-only list params.
+    pub(crate) fn to_borrowed_param_type_named(&self, ty: &Type, param_name: &str) -> Type {
+        match ty {
+            // Lists: check if the param is read-only and can be a slice.
+            Type::List(inner) => {
+                if let Some(func_name) = self.current_function.as_ref() {
+                    if let Some(readonly) = self.readonly_list_params.get(func_name.as_str()) {
+                        if readonly.contains(param_name) {
+                            return Type::Slice(inner.clone());
+                        }
+                    }
+                }
+                ty.clone()
+            }
+            _ => self.to_borrowed_param_type(ty),
+        }
     }
 
     /// Convert a type to its borrowed equivalent for function parameters.
@@ -457,7 +476,7 @@ impl<'a> Codegen<'a> {
                 "()".to_string()
             } else {
                 // Convert to borrowed type for method parameters.
-                let borrowed = self.to_borrowed_param_type(&ty);
+                let borrowed = self.to_borrowed_param_type_named(&ty, &param.name);
                 // Track if this parameter is borrowed.
                 if self.is_borrowed_type(&borrowed) {
                     self.borrowed_params.insert(param.name.clone());

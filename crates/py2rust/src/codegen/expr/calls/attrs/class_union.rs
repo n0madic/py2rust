@@ -57,17 +57,20 @@ impl<'a> Codegen<'a> {
                                 if let ExprKind::Name(name) = &value.kind {
                                     if self.is_global(name) {
                                         let guard = self.new_tmp();
-                                        return Ok(Some(format!(
+                                        let raw_call = format!(
                                             "{{ let mut {guard} = {lock}; {guard}.{attr}({args}) }}",
                                             guard = guard,
                                             lock = self.global_lock_expr(name),
                                             attr = attr,
-                                            args = call_args
-                                        )));
+                                            args = call_args.args
+                                        );
+                                        return Ok(Some(call_args.wrap_call(&raw_call)));
                                     }
                                 }
                             }
-                            format!("{}.{}({})", self.gen_expr(value)?, attr, call_args)
+                            let raw_call =
+                                format!("{}.{}({})", self.gen_expr(value)?, attr, call_args.args);
+                            call_args.wrap_call(&raw_call)
                         }
                         MethodKind::Static => {
                             let param_types: Vec<Type> = sig
@@ -84,7 +87,8 @@ impl<'a> Codegen<'a> {
                                 false,
                             )?;
                             let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
-                            format!("{}::{}({})", class_name, attr, call_args)
+                            let raw_call = format!("{}::{}({})", class_name, attr, call_args.args);
+                            call_args.wrap_call(&raw_call)
                         }
                         MethodKind::Class => {
                             let def_params = if method_def.params.is_empty() {
@@ -107,7 +111,8 @@ impl<'a> Codegen<'a> {
                                 false,
                             )?;
                             let call_args = self.gen_call_args_for_sig(&param_types, &full_args)?;
-                            format!("{}::{}({})", class_name, attr, call_args)
+                            let raw_call = format!("{}::{}({})", class_name, attr, call_args.args);
+                            call_args.wrap_call(&raw_call)
                         }
                     };
                     if sig.can_throw {

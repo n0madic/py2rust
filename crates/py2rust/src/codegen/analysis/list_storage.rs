@@ -1,5 +1,6 @@
 // List storage-strategy analysis for code generation.
 
+use super::super::util::collect_assign_counts;
 use super::super::*;
 use super::walk::{
     walk_storage_expr_tree, walk_storage_stmt_events, StorageExprCallbacks, StorageStmtEvent,
@@ -306,7 +307,7 @@ impl<'a> Codegen<'a> {
     /// Decide whether a call is safe to treat list arguments as non-escaping.
     fn call_is_list_safe(&self, func: &Expr) -> bool {
         if let ExprKind::Name(name) = &func.kind {
-            return matches!(
+            if matches!(
                 name.as_str(),
                 "len"
                     | "print"
@@ -323,9 +324,360 @@ impl<'a> Codegen<'a> {
                     | "list"
                     | "tuple"
                     | "set"
-            );
+            ) {
+                return true;
+            }
+            // User-defined functions where all list params are read-only
+            // are safe to pass lists to without escaping.
+            if let Some(readonly) = self.readonly_list_params.get(name.as_str()) {
+                if let Some(sig) = self.ctx.functions.get(name.as_str()) {
+                    let all_list_params_readonly = sig.params.iter().enumerate().all(|(i, ty)| {
+                        !matches!(ty, Type::List(_))
+                            || sig
+                                .param_names
+                                .get(i)
+                                .is_some_and(|n| readonly.contains(n.as_str()))
+                    });
+                    if all_list_params_readonly {
+                        return true;
+                    }
+                }
+            }
         }
         false
+    }
+
+    /// Detect functions where list parameters are only read, never mutated.
+    ///
+    /// Returns a map from function name to the set of read-only list param names.
+    /// Read-only list parameters can be emitted as `&[T]` instead of
+    /// `Arc<Mutex<Vec<T>>>`, eliminating mutex overhead inside the function body.
+    ///
+    /// Uses a fixpoint loop so that transitive safe-call chains are detected:
+    /// if `softmax(logits)` only reads `logits`, then `attention(x)` calling
+    /// `softmax(x)` also has `x` as read-only.
+    pub(in crate::codegen) fn detect_readonly_list_params(
+        &self,
+        program: &Program,
+    ) -> HashMap<String, HashSet<String>> {
+        let mut result: HashMap<String, HashSet<String>> = HashMap::new();
+
+        // Collect candidate functions: those with at least one List parameter.
+        struct Candidate<'a> {
+            func: &'a Function,
+            list_params: Vec<(usize, String)>, // (param index, param name)
+        }
+        let mut candidates: Vec<Candidate> = Vec::new();
+        for item in &program.items {
+            if let Item::Function(func) = item {
+                if let Some(sig) = self.ctx.functions.get(&func.name) {
+                    let list_params: Vec<(usize, String)> = sig
+                        .params
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, ty)| matches!(ty, Type::List(_)))
+                        .filter_map(|(i, _)| sig.param_names.get(i).map(|n| (i, n.clone())))
+                        .collect();
+                    if !list_params.is_empty() {
+                        candidates.push(Candidate { func, list_params });
+                    }
+                }
+            }
+        }
+
+        // Fixpoint loop: keep expanding until no new params are added.
+        for _ in 0..3 {
+            let prev_total: usize = result.values().map(|s| s.len()).sum();
+            for cand in &candidates {
+                let mut_counts = collect_assign_counts(&cand.func.body, |cn, m| {
+                    self.user_method_is_mutating(cn, m)
+                });
+                let mut readonly_set: HashSet<String> = HashSet::new();
+                for (_idx, param_name) in &cand.list_params {
+                    // Skip if param is directly mutated (assigned, index-assigned,
+                    // or mutating method called on it).
+                    if mut_counts.get(param_name).copied().unwrap_or(0) > 0 {
+                        continue;
+                    }
+                    // Check that the param is not passed as a mutable argument
+                    // to any non-safe function call.
+                    if !self.param_escapes_in_unsafe_call(param_name, &cand.func.body, &result) {
+                        readonly_set.insert(param_name.clone());
+                    }
+                }
+                if !readonly_set.is_empty() {
+                    result.insert(cand.func.name.clone(), readonly_set);
+                }
+            }
+            let new_total: usize = result.values().map(|s| s.len()).sum();
+            if new_total == prev_total {
+                break;
+            }
+        }
+        result
+    }
+
+    /// Check if a list parameter is passed to any non-safe function call in the body.
+    ///
+    /// Returns `true` if the param escapes (is passed to a function where the
+    /// corresponding parameter is NOT known to be read-only).
+    fn param_escapes_in_unsafe_call(
+        &self,
+        param_name: &str,
+        stmts: &[Stmt],
+        known_readonly: &HashMap<String, HashSet<String>>,
+    ) -> bool {
+        for stmt in stmts {
+            if self.param_escapes_in_stmt(param_name, &stmt.kind, known_readonly) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check a single statement for unsafe escapes of a list parameter.
+    fn param_escapes_in_stmt(
+        &self,
+        param_name: &str,
+        kind: &StmtKind,
+        known_readonly: &HashMap<String, HashSet<String>>,
+    ) -> bool {
+        match kind {
+            StmtKind::Expr(expr) => self.param_escapes_in_expr(param_name, expr, known_readonly),
+            StmtKind::Let { value, .. } => {
+                self.param_escapes_in_expr(param_name, value, known_readonly)
+            }
+            StmtKind::Assign { value, .. } => {
+                self.param_escapes_in_expr(param_name, value, known_readonly)
+            }
+            StmtKind::Return { value: Some(expr) } => {
+                self.param_escapes_in_expr(param_name, expr, known_readonly)
+            }
+            StmtKind::If { test, body, orelse } => {
+                self.param_escapes_in_expr(param_name, test, known_readonly)
+                    || self.param_escapes_in_unsafe_call(param_name, body, known_readonly)
+                    || self.param_escapes_in_unsafe_call(param_name, orelse, known_readonly)
+            }
+            StmtKind::While { test, body } => {
+                self.param_escapes_in_expr(param_name, test, known_readonly)
+                    || self.param_escapes_in_unsafe_call(param_name, body, known_readonly)
+            }
+            StmtKind::For { iter, body, .. } => {
+                self.param_escapes_in_expr(param_name, iter, known_readonly)
+                    || self.param_escapes_in_unsafe_call(param_name, body, known_readonly)
+            }
+            StmtKind::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+            } => {
+                self.param_escapes_in_unsafe_call(param_name, body, known_readonly)
+                    || handlers.iter().any(|h| {
+                        self.param_escapes_in_unsafe_call(param_name, &h.body, known_readonly)
+                    })
+                    || self.param_escapes_in_unsafe_call(param_name, orelse, known_readonly)
+                    || self.param_escapes_in_unsafe_call(param_name, finalbody, known_readonly)
+            }
+            StmtKind::Match { subject, cases } => {
+                self.param_escapes_in_expr(param_name, subject, known_readonly)
+                    || cases.iter().any(|c| {
+                        self.param_escapes_in_unsafe_call(param_name, &c.body, known_readonly)
+                    })
+            }
+            StmtKind::Assert { test, msg } => {
+                self.param_escapes_in_expr(param_name, test, known_readonly)
+                    || msg
+                        .as_ref()
+                        .is_some_and(|m| self.param_escapes_in_expr(param_name, m, known_readonly))
+            }
+            StmtKind::Raise { exc, cause } => {
+                exc.as_ref()
+                    .is_some_and(|e| self.param_escapes_in_expr(param_name, e, known_readonly))
+                    || cause
+                        .as_ref()
+                        .is_some_and(|c| self.param_escapes_in_expr(param_name, c, known_readonly))
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if a list parameter escapes in an expression via non-safe function calls.
+    ///
+    /// We only care about calls where the param is passed as an argument.
+    /// Builtins like `len`, `enumerate`, `zip` are safe.
+    /// User functions are safe if the corresponding param position is known read-only.
+    fn param_escapes_in_expr(
+        &self,
+        param_name: &str,
+        expr: &Expr,
+        known_readonly: &HashMap<String, HashSet<String>>,
+    ) -> bool {
+        match &expr.kind {
+            ExprKind::Call {
+                func,
+                args,
+                keywords,
+            } => {
+                // Check if any argument is our param being passed to a non-safe call.
+                let has_param_arg = args
+                    .iter()
+                    .any(|arg| matches!(&arg.kind, ExprKind::Name(n) if n == param_name));
+                if has_param_arg {
+                    // Check if the function is safe for list args.
+                    if let ExprKind::Name(fname) = &func.kind {
+                        let is_builtin_safe = matches!(
+                            fname.as_str(),
+                            "len"
+                                | "print"
+                                | "enumerate"
+                                | "zip"
+                                | "map"
+                                | "filter"
+                                | "reversed"
+                                | "all"
+                                | "any"
+                                | "min"
+                                | "max"
+                                | "sum"
+                                | "list"
+                                | "tuple"
+                                | "set"
+                                | "sorted"
+                                | "range"
+                        );
+                        if !is_builtin_safe {
+                            // Check if it's a user function with the param position
+                            // known to be read-only.
+                            if let Some(readonly) = known_readonly.get(fname.as_str()) {
+                                if let Some(sig) = self.ctx.functions.get(fname.as_str()) {
+                                    // Check each arg position where our param appears.
+                                    let safe = args.iter().enumerate().all(|(i, arg)| {
+                                        if matches!(&arg.kind, ExprKind::Name(n) if n == param_name)
+                                        {
+                                            sig.param_names
+                                                .get(i)
+                                                .is_some_and(|n| readonly.contains(n.as_str()))
+                                        } else {
+                                            true
+                                        }
+                                    });
+                                    if !safe {
+                                        return true;
+                                    }
+                                } else {
+                                    return true;
+                                }
+                            } else {
+                                return true;
+                            }
+                        }
+                    } else {
+                        // Non-Name callable (attr call, etc.) — conservative: escape.
+                        return true;
+                    }
+                }
+                // Also check keyword values and nested expressions.
+                self.param_escapes_in_expr(param_name, func, known_readonly)
+                    || args.iter().any(|a| {
+                        // Only recurse into non-Name args (Name args handled above).
+                        if matches!(&a.kind, ExprKind::Name(_)) {
+                            false
+                        } else {
+                            self.param_escapes_in_expr(param_name, a, known_readonly)
+                        }
+                    })
+                    || keywords
+                        .iter()
+                        .any(|kw| self.param_escapes_in_expr(param_name, &kw.value, known_readonly))
+            }
+            // Recurse into sub-expressions.
+            ExprKind::Binary { left, right, .. } => {
+                self.param_escapes_in_expr(param_name, left, known_readonly)
+                    || self.param_escapes_in_expr(param_name, right, known_readonly)
+            }
+            ExprKind::Unary { expr: inner, .. } => {
+                self.param_escapes_in_expr(param_name, inner, known_readonly)
+            }
+            ExprKind::Compare { left, right, .. } => {
+                self.param_escapes_in_expr(param_name, left, known_readonly)
+                    || self.param_escapes_in_expr(param_name, right, known_readonly)
+            }
+            ExprKind::CompareChain {
+                left, comparators, ..
+            } => {
+                self.param_escapes_in_expr(param_name, left, known_readonly)
+                    || comparators
+                        .iter()
+                        .any(|c| self.param_escapes_in_expr(param_name, c, known_readonly))
+            }
+            ExprKind::BoolOp { values, .. } => values
+                .iter()
+                .any(|v| self.param_escapes_in_expr(param_name, v, known_readonly)),
+            ExprKind::Index { value, index } => {
+                self.param_escapes_in_expr(param_name, value, known_readonly)
+                    || self.param_escapes_in_expr(param_name, index, known_readonly)
+            }
+            ExprKind::Slice {
+                value,
+                start,
+                end,
+                step,
+            } => {
+                self.param_escapes_in_expr(param_name, value, known_readonly)
+                    || start
+                        .as_ref()
+                        .is_some_and(|s| self.param_escapes_in_expr(param_name, s, known_readonly))
+                    || end
+                        .as_ref()
+                        .is_some_and(|e| self.param_escapes_in_expr(param_name, e, known_readonly))
+                    || step.as_deref().is_some_and(|st| {
+                        self.param_escapes_in_expr(param_name, st, known_readonly)
+                    })
+            }
+            ExprKind::IfExpr { test, body, orelse } => {
+                self.param_escapes_in_expr(param_name, test, known_readonly)
+                    || self.param_escapes_in_expr(param_name, body, known_readonly)
+                    || self.param_escapes_in_expr(param_name, orelse, known_readonly)
+            }
+            ExprKind::ListComp { elt, iter, ifs, .. }
+            | ExprKind::SetComp { elt, iter, ifs, .. } => {
+                self.param_escapes_in_expr(param_name, elt, known_readonly)
+                    || self.param_escapes_in_expr(param_name, iter, known_readonly)
+                    || ifs
+                        .iter()
+                        .any(|c| self.param_escapes_in_expr(param_name, c, known_readonly))
+            }
+            ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => items
+                .iter()
+                .any(|item| self.param_escapes_in_expr(param_name, item, known_readonly)),
+            ExprKind::Dict(entries) => entries.iter().any(|e| match e {
+                DictEntry::Item { key, value } => {
+                    self.param_escapes_in_expr(param_name, key, known_readonly)
+                        || self.param_escapes_in_expr(param_name, value, known_readonly)
+                }
+                DictEntry::Unpack { value } => {
+                    self.param_escapes_in_expr(param_name, value, known_readonly)
+                }
+            }),
+            ExprKind::Attr { value, .. } => {
+                self.param_escapes_in_expr(param_name, value, known_readonly)
+            }
+            ExprKind::Block { stmts } => {
+                self.param_escapes_in_unsafe_call(param_name, stmts, known_readonly)
+            }
+            ExprKind::Lambda { body, .. } => {
+                self.param_escapes_in_expr(param_name, body, known_readonly)
+            }
+            ExprKind::Starred { value } => {
+                self.param_escapes_in_expr(param_name, value, known_readonly)
+            }
+            ExprKind::UnionCtor { inner, .. } => {
+                self.param_escapes_in_expr(param_name, inner, known_readonly)
+            }
+            // Name, Literal, Yield — no escape.
+            _ => false,
+        }
     }
 }
 

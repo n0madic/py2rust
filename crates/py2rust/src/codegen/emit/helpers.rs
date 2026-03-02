@@ -2082,6 +2082,9 @@ const HELPER_PY_LEN: &str = r#"
 trait PyLen {
     fn py_len(&self) -> i64;
 }
+impl<T> PyLen for [T] {
+    fn py_len(&self) -> i64 { self.len() as i64 }
+}
 impl<T> PyLen for Vec<T> {
     fn py_len(&self) -> i64 { self.len() as i64 }
 }
@@ -2127,7 +2130,7 @@ impl<T1, T2, T3, T4, T5, T6, T7> PyLen for (T1, T2, T3, T4, T5, T6, T7) {
 impl<T1, T2, T3, T4, T5, T6, T7, T8> PyLen for (T1, T2, T3, T4, T5, T6, T7, T8) {
     fn py_len(&self) -> i64 { 8 }
 }
-fn py_len<T: PyLen>(v: &T) -> i64 { v.py_len() }
+fn py_len<T: PyLen + ?Sized>(v: &T) -> i64 { v.py_len() }
 "#;
 
 /// PyLen impls for dict types (only emitted when IndexMap is available).
