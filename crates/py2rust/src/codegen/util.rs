@@ -265,6 +265,22 @@ impl<'a> Codegen<'a> {
         result
     }
 
+    /// Temporarily replace multiple local names with provided expressions while generating code.
+    pub(crate) fn with_multi_name_override<T>(
+        &mut self,
+        overrides: &[(String, String)],
+        f: impl FnOnce(&mut Self) -> Result<T, CompileError>,
+    ) -> Result<T, CompileError> {
+        for (name, replacement) in overrides {
+            self.name_overrides.push((name.clone(), replacement.clone()));
+        }
+        let result = f(self);
+        for _ in overrides {
+            self.name_overrides.pop();
+        }
+        result
+    }
+
     /// Check if a name is declared nonlocal in the current scope.
     pub(crate) fn is_nonlocal_decl(&self, name: &str) -> bool {
         self.nonlocal_decls
@@ -414,7 +430,13 @@ impl<'a> Codegen<'a> {
         if needs_binding_clone
             && matches!(
                 ty,
-                Some(Type::List(_)) | Some(Type::Dict(_, _)) | Some(Type::Str) | Some(Type::Bytes)
+                Some(Type::List(_))
+                    | Some(Type::Dict(_, _))
+                    | Some(Type::Str)
+                    | Some(Type::Bytes)
+                    | Some(Type::InlineUnion(_))
+                    | Some(Type::Custom(_))
+                    | Some(Type::Union(_))
             )
         {
             // Detect already-cloned expressions to avoid `.clone().clone()`.

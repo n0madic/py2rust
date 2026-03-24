@@ -94,8 +94,8 @@ impl<'a> TypeChecker<'a> {
     ///
     /// Inline union handling strategy:
     /// - `T | None` maps to `Option<T>` (native Optional lowering)
-    /// - Wider unions (for example `int | str`) resolve to `Unknown`
-    ///   so later inference can still use concrete RHS values.
+    /// - Wider unions (for example `int | str`) construct `Type::InlineUnion`
+    ///   which is emitted as a tagged enum in the generated Rust code.
     pub(super) fn resolve_type_ref(&self, ty: &TypeRef, span: Span) -> Result<Type, CompileError> {
         match ty {
             TypeRef::Name(name) => Ok(match name.as_str() {
@@ -167,8 +167,17 @@ impl<'a> TypeChecker<'a> {
                     Ok(Type::Option(Box::new(other.remove(0))))
                 } else if !has_none && other.len() == 1 {
                     Ok(other.remove(0))
+                } else if other.len() > 1 {
+                    // Construct an inline tagged union for wider `A | B` forms.
+                    other.sort_by_key(|a| a.to_string());
+                    other.dedup();
+                    let union = Type::InlineUnion(other);
+                    if has_none {
+                        Ok(Type::Option(Box::new(union)))
+                    } else {
+                        Ok(union)
+                    }
                 } else {
-                    // `A | B` (and wider) currently relies on value-driven inference.
                     Ok(Type::Unknown)
                 }
             }

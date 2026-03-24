@@ -33,8 +33,15 @@ impl<'a> TypeChecker<'a> {
                 } else if items.iter().all(|t| t == &items[0]) {
                     Ok(items[0].clone())
                 } else {
-                    // Heterogeneous tuple iteration falls back to gradual typing.
-                    Ok(Type::Unknown)
+                    // Heterogeneous tuple: construct InlineUnion of distinct element types.
+                    let mut unique = items.clone();
+                    unique.sort_by_key(|a| a.to_string());
+                    unique.dedup();
+                    if unique.len() == 1 {
+                        Ok(unique.remove(0))
+                    } else {
+                        Ok(Type::InlineUnion(unique))
+                    }
                 }
             }
             Type::Set(inner) => Ok(*inner.clone()),
@@ -180,6 +187,18 @@ impl<'a> TypeChecker<'a> {
                     Type::Tuple(left_items)
                 }
             }
+            // InlineUnion merging: same union stays the same.
+            (Type::InlineUnion(left_members), Type::InlineUnion(right_members)) => {
+                if left_members == right_members {
+                    Type::InlineUnion(left_members)
+                } else {
+                    let mut all = left_members;
+                    all.extend(right_members);
+                    all.sort_by_key(|a| a.to_string());
+                    all.dedup();
+                    Type::InlineUnion(all)
+                }
+            }
             (left, right) => {
                 // Keep bool stable for bool-only flows (e.g. boolean vars/returns).
                 if matches!(left, Type::Bool) && matches!(right, Type::Bool) {
@@ -229,6 +248,9 @@ impl<'a> TypeChecker<'a> {
             Type::Module(_) | Type::StdlibFunction { .. } => TypeRef::Unknown,
             Type::Custom(name) => TypeRef::Name(name.clone()),
             Type::Union(name) => TypeRef::Name(name.clone()),
+            Type::InlineUnion(members) => {
+                TypeRef::Union(members.iter().map(Self::type_to_ref).collect())
+            }
             Type::Iterator(inner) => TypeRef::Iterator(Box::new(Self::type_to_ref(inner))),
             Type::Lambda { params, ret, .. } => TypeRef::Lambda {
                 params: params.iter().map(Self::type_to_ref).collect(),
@@ -366,6 +388,21 @@ impl<'a> TypeChecker<'a> {
                     && e_ret.as_ref() != a_ret.as_ref()
                 {
                     return Err(self.error(span, "Callable return type mismatch"));
+                }
+                Ok(())
+            }
+            // Inline union: any member type is assignable to the union.
+            (Type::InlineUnion(members), actual) => {
+                if members.iter().any(|m| m == actual || self.ensure_assignable(actual, m, span).is_ok()) {
+                    Ok(())
+                } else {
+                    Err(self.error(span, format!("Type mismatch: expected {expected}, got {actual}")))
+                }
+            }
+            // Inline union to inline union: all actual members must be in expected.
+            (expected, Type::InlineUnion(actual_members)) => {
+                for member in actual_members {
+                    self.ensure_assignable(member, expected, span)?;
                 }
                 Ok(())
             }

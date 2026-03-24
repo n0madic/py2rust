@@ -49,7 +49,7 @@ impl<'a> Codegen<'a> {
             Type::List(inner) | Type::Option(inner) | Type::Iterator(inner) => {
                 self.scan_type_uses(inner);
             }
-            Type::Tuple(items) => {
+            Type::Tuple(items) | Type::InlineUnion(items) => {
                 for item in items {
                     self.scan_type_uses(item);
                 }

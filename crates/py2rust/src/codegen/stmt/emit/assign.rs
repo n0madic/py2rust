@@ -706,6 +706,7 @@ impl<'a> Codegen<'a> {
                 Type::Option(_) => "option",
                 Type::Custom(_) => "custom",
                 Type::Union(_) => "union",
+                Type::InlineUnion(_) => "inline_union",
                 Type::Iterator(_) => "iter",
                 Type::Lambda { .. } => "lambda",
                 Type::Ref(_) => "ref",

@@ -242,6 +242,36 @@ impl<'a> Codegen<'a> {
             let wrapped = iter_src.wrap(format!("py_iter({})", iter_expr));
             return Ok(wrapped);
         }
+        // InlineUnion auto-wrapping: wrap member type values in the union variant constructor.
+        // Handles both direct InlineUnion and &InlineUnion (Ref-wrapped) param types.
+        let union_members = match expected {
+            Some(Type::InlineUnion(members)) => Some((members, false)),
+            Some(Type::Ref(inner)) => {
+                if let Type::InlineUnion(members) = inner.as_ref() { Some((members, true)) } else { None }
+            }
+            _ => None,
+        };
+        if let Some((members, is_ref)) = union_members {
+            if let Some(from_ty) = expr.ty.as_ref() {
+                if !matches!(from_ty, Type::InlineUnion(_)) {
+                    let matched = members.iter().find(|m| {
+                        m == &from_ty || std::mem::discriminant(*m) == std::mem::discriminant(from_ty)
+                    });
+                    if let Some(matched_ty) = matched {
+                        let union_name = Type::inline_union_name(members);
+                        let variant = Type::inline_union_variant_name(matched_ty);
+                        let inner = self.gen_expr(expr)?;
+                        let constructed = format!("{}::{}({})", union_name, variant, inner);
+                        // When the parameter expects a reference, use a block to extend
+                        // the lifetime of the temporary union value.
+                        if is_ref {
+                            return Ok(format!("&{{ {} }}", constructed));
+                        }
+                        return Ok(constructed);
+                    }
+                }
+            }
+        }
         self.gen_expr(expr)
     }
 
@@ -337,6 +367,10 @@ impl<'a> Codegen<'a> {
             // Parameter expects &Union, argument is Union.
             Type::Ref(inner) if matches!(inner.as_ref(), Type::Union(_)) => {
                 matches!(arg_ty, Some(Type::Union(_)))
+            }
+            // Parameter expects &InlineUnion, argument is InlineUnion.
+            Type::Ref(inner) if matches!(inner.as_ref(), Type::InlineUnion(_)) => {
+                matches!(arg_ty, Some(Type::InlineUnion(_)))
             }
             _ => false,
         }
@@ -640,6 +674,13 @@ impl<'a> Codegen<'a> {
                     });
                 }
                 let is_uniform = items.iter().all(|t| t == &items[0]);
+                // For heterogeneous tuples, compute the InlineUnion type for wrapping.
+                let inline_union_members = if !is_uniform {
+                    let mut unique = items.clone();
+                    unique.sort_by_key(|a| a.to_string());
+                    unique.dedup();
+                    if unique.len() > 1 { Some(unique) } else { None }
+                } else { None };
                 let tmp = self.new_tmp();
                 let mut elems = Vec::new();
                 for (idx, ty) in items.iter().enumerate() {
@@ -650,10 +691,12 @@ impl<'a> Codegen<'a> {
                     };
                     if is_uniform {
                         elems.push(value_expr);
+                    } else if let Some(ref members) = inline_union_members {
+                        let union_name = Type::inline_union_name(members);
+                        let variant = Type::inline_union_variant_name(ty);
+                        elems.push(format!("{}::{}({})", union_name, variant, value_expr));
                     } else {
-                        // Heterogeneous tuples iterate as gradual values.
-                        self.uses.py_repr = true;
-                        elems.push(format!("PyRepr(format!(\"{{:?}}\", {}))", value_expr));
+                        elems.push(value_expr);
                     };
                 }
                 if use_owned {

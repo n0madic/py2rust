@@ -371,6 +371,8 @@ struct ProgramFacts<'program> {
     main_dict_kv: HashMap<String, (Type, Type)>,
     main_list_storage: HashMap<String, ListStorage>,
     main_dict_storage: HashMap<String, DictStorage>,
+    /// Auto-generated inline union enums collected from the type context.
+    inline_unions: Vec<Vec<Type>>,
 }
 
 impl<'a> Codegen<'a> {
@@ -553,6 +555,11 @@ impl<'a> Codegen<'a> {
             self.emit_union(def)?;
         }
 
+        // Generate auto-generated inline union enums
+        for members in &facts.inline_unions {
+            self.emit_inline_union(members)?;
+        }
+
         // Generate classes (struct definitions + impl blocks)
         for class_def in &facts.classes {
             self.emit_class(class_def)?;
@@ -623,6 +630,7 @@ impl<'a> Codegen<'a> {
             self.collect_list_storage_for_stmt_refs(&top_level_stmts, &shared_globals);
         let main_dict_storage =
             self.collect_dict_storage_for_stmt_refs(&top_level_stmts, &shared_globals);
+        let inline_unions = Self::collect_inline_unions(self.ctx);
 
         ProgramFacts {
             unions,
@@ -638,6 +646,61 @@ impl<'a> Codegen<'a> {
             main_dict_kv,
             main_list_storage,
             main_dict_storage,
+            inline_unions,
+        }
+    }
+
+    fn collect_inline_unions(ctx: &TypeContext) -> Vec<Vec<Type>> {
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+        for sig in ctx.functions.values() {
+            for param in &sig.params {
+                Self::walk_type_for_inline_unions(param, &mut seen, &mut result);
+            }
+            Self::walk_type_for_inline_unions(&sig.ret, &mut seen, &mut result);
+        }
+        for ty in ctx.globals.values() {
+            Self::walk_type_for_inline_unions(ty, &mut seen, &mut result);
+        }
+        for class_info in ctx.classes.values() {
+            for ty in class_info.fields.values() {
+                Self::walk_type_for_inline_unions(ty, &mut seen, &mut result);
+            }
+        }
+        result
+    }
+
+    fn walk_type_for_inline_unions(ty: &Type, seen: &mut HashSet<String>, result: &mut Vec<Vec<Type>>) {
+        match ty {
+            Type::InlineUnion(members) => {
+                let name = Type::inline_union_name(members);
+                if seen.insert(name) {
+                    result.push(members.clone());
+                    for member in members {
+                        Self::walk_type_for_inline_unions(member, seen, result);
+                    }
+                }
+            }
+            Type::List(inner) | Type::Set(inner) | Type::Option(inner) | Type::Iterator(inner)
+            | Type::Ref(inner) | Type::MutRef(inner) | Type::Slice(inner) => {
+                Self::walk_type_for_inline_unions(inner, seen, result);
+            }
+            Type::Dict(k, v) | Type::Result(k, v) => {
+                Self::walk_type_for_inline_unions(k, seen, result);
+                Self::walk_type_for_inline_unions(v, seen, result);
+            }
+            Type::Tuple(items) => {
+                for item in items {
+                    Self::walk_type_for_inline_unions(item, seen, result);
+                }
+            }
+            Type::Lambda { params, ret, .. } => {
+                for p in params {
+                    Self::walk_type_for_inline_unions(p, seen, result);
+                }
+                Self::walk_type_for_inline_unions(ret, seen, result);
+            }
+            _ => {}
         }
     }
 }

@@ -29,7 +29,12 @@
 - `typing.List/Dict/Set/Tuple` as aliases for builtins.
 - `bool` accepted in numeric contexts (Python-compatible `int` subtype).
 - `Union` aliases for enum-like class unions.
-- `T | None` → `Optional[T>`, wider `A | B` → gradual typing fallback.
+- `T | None` → `Optional<T>`.
+- `A | B` (inline unions) → auto-generated tagged union enums (e.g., `int | str` → `PyUnionIntStr`).
+  - `isinstance(x, T)` on inline unions emits runtime `matches!()` variant checks.
+  - `if isinstance(x, T)` / `if not isinstance(x, T)` narrows the variable type in each branch.
+  - Values are auto-wrapped at assignment, return, and call sites.
+  - `A | B | None` → `Option<PyUnionAB>`.
 - Unannotated `self.field = value` creates `FieldDef` with `TypeRef::Unknown`, resolved from call-site.
 - Multi-pass type refresh shares env across passes for backward propagation.
 - Variable-arity tuple fields unified to `Vec<T>`.

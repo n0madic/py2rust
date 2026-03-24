@@ -268,6 +268,14 @@ impl<'a> TypeChecker<'a> {
                             // Body-based refinement (e.g. .append()) can resolve the
                             // remaining Unknowns during re-check.
                             if !matches!(ty, Type::Unknown) {
+                                // Don't let body-inferred types override explicit InlineUnion
+                                // annotations — the annotation is the intended constraint.
+                                let original_is_inline_union = self
+                                    .resolve_type_ref(&param.ann, sig.span)
+                                    .is_ok_and(|t| matches!(t, Type::InlineUnion(_)));
+                                if original_is_inline_union && !matches!(ty, Type::InlineUnion(_)) {
+                                    continue;
+                                }
                                 // Unwrap varargs/kwargs container so resolve_param_type
                                 // can re-wrap correctly on re-check.
                                 let ann_ty = match param.kind {

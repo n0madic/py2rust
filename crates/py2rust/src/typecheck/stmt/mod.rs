@@ -858,6 +858,68 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+                // isinstance narrowing for InlineUnion types.
+                // `isinstance(x, T)` where x: InlineUnion → narrow true-branch to T.
+                let isinstance_inline_narrowing = |tc: &TypeChecker<'_>, test_expr: &Expr| -> Option<(String, Type, Type)> {
+                    let call_expr = match &test_expr.kind {
+                        ExprKind::Call { func, args, .. } => {
+                            if let ExprKind::Name(n) = &func.kind {
+                                if n == "isinstance" && args.len() == 2 { Some(args.as_slice()) } else { None }
+                            } else { None }
+                        }
+                        _ => None,
+                    }?;
+                    let ExprKind::Name(var_name) = &call_expr[0].kind else { return None; };
+                    let var_ty = tc.lookup_var(var_name)?.clone();
+                    let members = match &var_ty {
+                        Type::InlineUnion(m) => m.clone(),
+                        Type::Option(inner) => {
+                            if let Type::InlineUnion(m) = inner.as_ref() { m.clone() } else { return None; }
+                        }
+                        _ => return None,
+                    };
+                    let ExprKind::Name(type_name) = &call_expr[1].kind else { return None; };
+                    let target = Type::from_isinstance_name(type_name)?;
+                    let matched_ty = members.iter().find(|m| std::mem::discriminant(*m) == std::mem::discriminant(&target))?.clone();
+                    // False branch: the remaining members (remove matched type from union).
+                    let remaining: Vec<Type> = members.iter().filter(|m| std::mem::discriminant(*m) != std::mem::discriminant(&matched_ty)).cloned().collect();
+                    let false_ty = match remaining.len() {
+                        0 => var_ty.clone(),
+                        1 => remaining.into_iter().next().unwrap(),
+                        _ => Type::InlineUnion(remaining),
+                    };
+                    Some((var_name.clone(), matched_ty.clone(), false_ty))
+                };
+                if narrowed.is_none() {
+                    // Direct isinstance(x, T)
+                    if let Some((var_name, true_ty, false_ty)) = isinstance_inline_narrowing(self, test) {
+                        narrowed = Some((var_name, true_ty, false_ty));
+                    }
+                }
+                if narrowed.is_none() {
+                    // `not isinstance(x, T)` — swap branches.
+                    if let ExprKind::Unary { op: UnaryOp::Not, expr: inner } = &test.kind {
+                        if let Some((var_name, true_ty, false_ty)) = isinstance_inline_narrowing(self, inner) {
+                            narrowed = Some((var_name, false_ty, true_ty));
+                        }
+                    }
+                }
+                // Collect multi-variable narrowings for `not (A and B)` pattern.
+                // When the test is `not (isinstance(x,T) and isinstance(y,U))`,
+                // the else branch (when `not (...)` is false) has x:T and y:U.
+                let mut extra_else_narrowings: Vec<(String, Type)> = Vec::new();
+                if narrowed.is_none() {
+                    if let ExprKind::Unary { op: UnaryOp::Not, expr: inner } = &test.kind {
+                        if let ExprKind::BoolOp { op: BoolOp::And, values } = &inner.kind {
+                            // Collect narrowings from each component.
+                            for value in values {
+                                if let Some((var_name, true_ty, _)) = isinstance_inline_narrowing(self, value) {
+                                    extra_else_narrowings.push((var_name, true_ty));
+                                }
+                            }
+                        }
+                    }
+                }
                 self.with_control_flow_depth(|tc| {
                     if let Some((name, true_ty, false_ty)) = narrowed {
                         let mut true_end_ty = true_ty.clone();
@@ -914,6 +976,22 @@ impl<'a> TypeChecker<'a> {
                         if !updated {
                             tc.set_var_type(&name, merged_after_if);
                         }
+                    } else if !extra_else_narrowings.is_empty() {
+                        // Multi-variable narrowing from `not (A and B)` etc.
+                        for stmt in body {
+                            tc.check_stmt(stmt, expected_ret)?;
+                        }
+                        // Apply all collected narrowings in the else scope.
+                        tc.scopes.push(HashMap::new());
+                        for (var_name, ty) in &extra_else_narrowings {
+                            if let Some(scope) = tc.scopes.last_mut() {
+                                scope.insert(var_name.clone(), ty.clone());
+                            }
+                        }
+                        for stmt in orelse {
+                            tc.check_stmt(stmt, expected_ret)?;
+                        }
+                        tc.scopes.pop();
                     } else {
                         for stmt in body {
                             tc.check_stmt(stmt, expected_ret)?;

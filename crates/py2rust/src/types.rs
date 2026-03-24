@@ -38,9 +38,12 @@ pub enum Type {
         method: String,
     },
     Custom(String),
-    /// Union types are only allowed for enum-like classes (tagged unions).
-    /// Inline union types like `int | str` are not supported except via Optional[T].
+    /// Named union types for enum-like classes (tagged unions).
     Union(String),
+    /// Inline union of primitive/custom types (e.g., `int | str`).
+    /// Members are sorted by Display name for canonical ordering.
+    /// Emitted as auto-generated Rust enums (e.g., `PyUnionIntStr`).
+    InlineUnion(Vec<Type>),
     Iterator(Box<Type>),
     Lambda {
         param_names: Vec<String>,
@@ -103,7 +106,9 @@ impl Type {
             Type::Dict(key, value) | Type::Result(key, value) => {
                 key.contains_unknown() || value.contains_unknown()
             }
-            Type::Tuple(items) => items.iter().any(Type::contains_unknown),
+            Type::Tuple(items) | Type::InlineUnion(items) => {
+                items.iter().any(Type::contains_unknown)
+            }
             Type::Lambda { params, ret, .. } => {
                 params.iter().any(Type::contains_unknown) || ret.contains_unknown()
             }
@@ -146,6 +151,12 @@ impl Type {
                     .map(|t| t.replace_unknown_with(replacement))
                     .collect(),
             ),
+            Type::InlineUnion(members) => Type::InlineUnion(
+                members
+                    .iter()
+                    .map(|t| t.replace_unknown_with(replacement))
+                    .collect(),
+            ),
             _ => self.clone(),
         }
     }
@@ -164,6 +175,49 @@ impl Type {
     /// becomes the Ok variant, and error_type (typically PyError) is the Err variant.
     pub fn wrap_result(self, error_type: Type) -> Type {
         Type::Result(Box::new(self), Box::new(error_type))
+    }
+
+    /// Canonical Rust enum name for an inline union (e.g., `PyUnionIntStr`).
+    pub fn inline_union_name(members: &[Type]) -> String {
+        let mut name = "PyUnion".to_string();
+        for member in members {
+            name.push_str(&Self::inline_union_variant_name(member));
+        }
+        name
+    }
+
+    /// Variant name for a type inside an inline union enum.
+    pub fn inline_union_variant_name(ty: &Type) -> String {
+        match ty {
+            Type::Int => "Int".to_string(),
+            Type::Float => "Float".to_string(),
+            Type::Bool => "Bool".to_string(),
+            Type::Str => "Str".to_string(),
+            Type::Bytes => "Bytes".to_string(),
+            Type::None => "None".to_string(),
+            Type::Custom(name) | Type::Union(name) => name.clone(),
+            Type::List(_) => "List".to_string(),
+            Type::Dict(_, _) => "Dict".to_string(),
+            Type::Tuple(_) => "Tuple".to_string(),
+            Type::Set(_) => "Set".to_string(),
+            _ => "Unknown".to_string(),
+        }
+    }
+
+    /// Map a Python type name (as used in isinstance) to a Type.
+    pub fn from_isinstance_name(name: &str) -> Option<Type> {
+        match name {
+            "int" => Some(Type::Int),
+            "float" => Some(Type::Float),
+            "bool" => Some(Type::Bool),
+            "str" => Some(Type::Str),
+            "bytes" => Some(Type::Bytes),
+            "list" => Some(Type::List(Box::new(Type::Unknown))),
+            "dict" => Some(Type::Dict(Box::new(Type::Unknown), Box::new(Type::Unknown))),
+            "tuple" => Some(Type::Tuple(vec![])),
+            "set" => Some(Type::Set(Box::new(Type::Unknown))),
+            _ => None,
+        }
     }
 }
 
@@ -190,6 +244,10 @@ impl fmt::Display for Type {
             }
             Type::Custom(name) => write!(f, "{name}"),
             Type::Union(name) => write!(f, "{name}"),
+            Type::InlineUnion(members) => {
+                let parts: Vec<String> = members.iter().map(|t| t.to_string()).collect();
+                write!(f, "{}", parts.join(" | "))
+            }
             Type::Iterator(inner) => write!(f, "Iterator[{inner}]"),
             Type::Lambda { .. } => write!(f, "lambda"),
             Type::Ref(inner) => write!(f, "&{inner}"),

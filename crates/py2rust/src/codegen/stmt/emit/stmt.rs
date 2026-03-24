@@ -444,6 +444,80 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Detect `isinstance(x, T)` where x has InlineUnion type.
+    /// Returns `(var_name, union_members, target_type)`.
+    fn isinstance_inline_union_from_test(&self, test: &Expr) -> Option<(String, Vec<Type>, Type)> {
+        if let ExprKind::Call { func, args: call_args, .. } = &test.kind {
+            if let ExprKind::Name(fname) = &func.kind {
+                if fname == "isinstance" && call_args.len() == 2 {
+                    if let ExprKind::Name(var_name) = &call_args[0].kind {
+                        // Prefer scope-tracked type over HIR expr.ty to avoid narrowed sub-union
+                        // types that don't correspond to emitted enum definitions.
+                        let scope_ty = self.local_var_type(var_name).or_else(|| {
+                            if self.is_global(var_name) { self.ctx.globals.get(var_name) } else { None }
+                        });
+                        let hir_ty = call_args[0].ty.as_ref();
+                        let var_ty = scope_ty.or(hir_ty);
+                        // Detect whether any existing name override is an optional-unwrap
+                        // expression (from `is not None` narrowing) vs an isinstance-binding.
+                        // Optional-unwrap overrides contain `.as_ref().expect(` and are
+                        // transparent to further isinstance narrowing.
+                        let override_expr = self.name_override(var_name);
+                        let override_is_optional_unwrap = override_expr
+                            .map(|e| e.contains(".as_ref().expect("))
+                            .unwrap_or(false);
+                        let has_override = override_expr.is_some();
+                        let members_opt = match var_ty {
+                            Some(Type::InlineUnion(m)) => {
+                                // If already overridden with an isinstance-binding (a simple name
+                                // like "x_inner"), don't double-narrow.
+                                if has_override { None } else { Some(m.clone()) }
+                            }
+                            Some(Type::Option(inner)) => {
+                                if let Type::InlineUnion(m) = inner.as_ref() {
+                                    // Allow narrowing when override is an optional-unwrap
+                                    // (from `is not None`) — the effective type is InlineUnion.
+                                    // Don't allow when override is an isinstance-binding.
+                                    if has_override && !override_is_optional_unwrap {
+                                        None
+                                    } else {
+                                        Some(m.clone())
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some(members) = members_opt {
+                            if let ExprKind::Name(type_name) = &call_args[1].kind {
+                                let target = Type::from_isinstance_name(type_name);
+                                let matched = target.as_ref().and_then(|t| {
+                                    members.iter().find(|m| std::mem::discriminant(*m) == std::mem::discriminant(t))
+                                });
+                                if let Some(matched_ty) = matched {
+                                    return Some((var_name.clone(), members.clone(), matched_ty.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Generate expression for reading a variable by name (respecting overrides/globals).
+    fn gen_expr_for_name(&self, name: &str) -> Result<String, CompileError> {
+        if let Some(override_expr) = self.name_override(name) {
+            Ok(override_expr.to_string())
+        } else if self.is_global(name) {
+            Ok(self.global_lock_expr(name))
+        } else {
+            Ok(name.to_string())
+        }
+    }
+
     /// Detect Optional narrowing implied by a condition expression.
     ///
     /// Returns `(name, then_ty, else_ty)` when a simple Optional narrowing applies.
@@ -1695,6 +1769,133 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
+                // isinstance on InlineUnion: emit `if let Enum::Variant(var_inner) = &var { ... }`
+                let mut isinstance_test = test;
+                let mut isinstance_negated = false;
+                // Detect `not isinstance(x, T)` pattern.
+                if let ExprKind::Unary { op: UnaryOp::Not, expr: inner } = &test.kind {
+                    if let ExprKind::Call { func, args: call_args, .. } = &inner.kind {
+                        if let ExprKind::Name(fname) = &func.kind {
+                            if fname == "isinstance" && call_args.len() == 2 {
+                                isinstance_test = inner.as_ref();
+                                isinstance_negated = true;
+                            }
+                        }
+                    }
+                }
+                if let Some((var_name, members, matched_ty)) =
+                    self.isinstance_inline_union_from_test(isinstance_test)
+                {
+                    let union_name = Type::inline_union_name(&members);
+                    let variant = Type::inline_union_variant_name(&matched_ty);
+                    // Determine if the variable is Optional<InlineUnion> or plain InlineUnion.
+                    let var_ty = self.local_var_type(&var_name).cloned().or_else(|| {
+                        if self.is_global(&var_name) { self.ctx.globals.get(&var_name).cloned() } else { None }
+                    });
+                    // When a name override from an `is not None` branch exists, it is an
+                    // optional-unwrap expression that already resolved the Optional — treat as
+                    // non-optional so the if-let pattern doesn't include Some(...).
+                    let var_override = self.name_override(&var_name);
+                    let override_is_optional_unwrap = var_override
+                        .map(|e| e.contains(".as_ref().expect("))
+                        .unwrap_or(false);
+                    let is_optional_union = !override_is_optional_unwrap && matches!(var_ty, Some(Type::Option(_)));
+                    let is_ref_union = matches!(var_ty, Some(Type::Ref(inner)) if matches!(inner.as_ref(), Type::InlineUnion(_)));
+                    let raw_var_expr = self.gen_expr_for_name(&var_name)?;
+                    // When the variable is a borrowed &InlineUnion, dereference it for matching.
+                    let var_expr = if is_ref_union {
+                        format!("*{}", raw_var_expr)
+                    } else {
+                        raw_var_expr
+                    };
+                    let inner_binding = format!("{}_inner", var_name);
+                    // Use `ref` only for non-Copy inner types to avoid creating `&T` for
+                    // Copy types like i64/f64/bool which need owned values for arithmetic.
+                    let matched_is_copy = self.is_copy_type(&matched_ty);
+                    let inner_ref_kw = if matched_is_copy { "" } else { "ref " };
+                    let (true_body, false_body) = if isinstance_negated {
+                        (orelse, body)
+                    } else {
+                        (body, orelse)
+                    };
+                    {
+                        let pattern = if is_optional_union {
+                            format!("Some({}::{}({}{}))", union_name, variant, inner_ref_kw, inner_binding)
+                        } else {
+                            format!("{}::{}({}{})", union_name, variant, inner_ref_kw, inner_binding)
+                        };
+                        self.push_line(&format!("if let {} = {} {{", pattern, var_expr));
+                    }
+                    self.indent += 1;
+                    let override_expr = inner_binding.clone();
+                    self.with_name_override(&var_name, override_expr, |this| {
+                        for stmt in true_body {
+                            this.emit_stmt(stmt, mut_counts)?;
+                        }
+                        Ok(())
+                    })?;
+                    self.indent -= 1;
+                    if !false_body.is_empty() {
+                        self.push_line("} else {");
+                        self.indent += 1;
+                        // If only one member remains in the union, add a narrowing
+                        // destructure so the variable name refers to the inner value.
+                        let remaining: Vec<&Type> = members.iter()
+                            .filter(|m| std::mem::discriminant(*m) != std::mem::discriminant(&matched_ty))
+                            .collect();
+                        if remaining.len() == 1 {
+                            let rem_ty = remaining[0];
+                            let rem_is_copy = self.is_copy_type(rem_ty);
+                            let rem_ref_kw = if rem_is_copy { "" } else { "ref " };
+                            let rem_variant = Type::inline_union_variant_name(rem_ty);
+                            let else_binding = format!("{}_else_inner", var_name);
+                            {
+                                let pattern = if is_optional_union {
+                                    format!("Some({}::{}({}{}))", union_name, rem_variant, rem_ref_kw, else_binding)
+                                } else {
+                                    format!("{}::{}({}{})", union_name, rem_variant, rem_ref_kw, else_binding)
+                                };
+                                self.push_line(&format!("if let {} = {} {{", pattern, var_expr));
+                            }
+                            self.indent += 1;
+                            self.with_name_override(&var_name, else_binding.clone(), |this| {
+                                for stmt in false_body {
+                                    this.emit_stmt(stmt, mut_counts)?;
+                                }
+                                Ok(())
+                            })?;
+                            self.indent -= 1;
+                            // For optional unions, None is a valid else case — don't unreachable.
+                            if !is_optional_union {
+                                self.push_line("} else { unreachable!(\"isinstance narrowing: unexpected variant\") }");
+                            } else {
+                                self.push_line("}");
+                            }
+                        } else {
+                            for stmt in false_body {
+                                self.emit_stmt(stmt, mut_counts)?;
+                            }
+                        }
+                        self.indent -= 1;
+                    }
+                    self.push_line("}");
+                    return Ok(());
+                }
+                // Detect `not (isinstance(x,T) and isinstance(y,U))` — multi-var else narrowing.
+                let mut multi_else_narrowings: Vec<(String, Type)> = Vec::new();
+                if let ExprKind::Unary { op: UnaryOp::Not, expr: inner } = &test.kind {
+                    if let ExprKind::BoolOp { op: BoolOp::And, values } = &inner.kind {
+                        for value in values {
+                            if let Some((var_name, members, matched_ty)) =
+                                self.isinstance_inline_union_from_test(value)
+                            {
+                                multi_else_narrowings.push((var_name, matched_ty));
+                                let _ = members; // suppress unused warning
+                            }
+                        }
+                    }
+                }
+
                 let narrowed = self.optional_narrowing_from_test(test);
                 let test_expr = self.gen_condition_expr(test)?;
                 self.push_line(&format!("if {} {{", test_expr));
@@ -1712,7 +1913,41 @@ impl<'a> Codegen<'a> {
                     let false_narrow = narrowed
                         .as_ref()
                         .map(|(name, _, false_ty)| (name.as_str(), false_ty));
-                    self.emit_stmts_with_optional_override(false_narrow, orelse, mut_counts)?;
+                    if !multi_else_narrowings.is_empty() && false_narrow.is_none() {
+                        // Emit destructuring let bindings for each narrowed variable.
+                        let mut overrides: Vec<(String, String)> = Vec::new();
+                        for (var_name, matched_ty) in &multi_else_narrowings {
+                            let var_ty = self.local_var_type(var_name).cloned().or_else(|| {
+                                if self.is_global(var_name) { self.ctx.globals.get(var_name).cloned() } else { None }
+                            });
+                            if let Some(Type::InlineUnion(members)) = var_ty {
+                                let union_name = Type::inline_union_name(&members);
+                                let variant = Type::inline_union_variant_name(matched_ty);
+                                let is_copy = self.is_copy_type(matched_ty);
+                                let ref_kw = if is_copy { "" } else { "ref " };
+                                let binding = format!("{}_narrowed", var_name);
+                                let is_ref_var = matches!(
+                                    self.local_var_type(var_name),
+                                    Some(Type::Ref(inner)) if matches!(inner.as_ref(), Type::InlineUnion(_))
+                                );
+                                let deref = if is_ref_var { "*" } else { "" };
+                                self.push_line(&format!(
+                                    "let {}::{}({}{}) = &{}{} else {{ unreachable!() }};",
+                                    union_name, variant, ref_kw, binding, deref, var_name
+                                ));
+                                overrides.push((var_name.clone(), binding));
+                            }
+                        }
+                        let overrides_clone = overrides.clone();
+                        self.with_multi_name_override(&overrides_clone, |this| {
+                            for stmt in orelse {
+                                this.emit_stmt(stmt, mut_counts)?;
+                            }
+                            Ok(())
+                        })?;
+                    } else {
+                        self.emit_stmts_with_optional_override(false_narrow, orelse, mut_counts)?;
+                    }
                     self.indent -= 1;
                     self.push_line("}");
                 }

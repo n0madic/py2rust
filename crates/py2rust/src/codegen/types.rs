@@ -113,6 +113,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             Type::Union(name) => name.clone(),
+            Type::InlineUnion(members) => Type::inline_union_name(members),
             Type::Iterator(inner) => {
                 if lambda_depth == 0 {
                     format!(
@@ -390,6 +391,16 @@ impl<'a> Codegen<'a> {
                     Ok(Type::Option(Box::new(other.remove(0))))
                 } else if !has_none && other.len() == 1 {
                     Ok(other.remove(0))
+                } else if other.len() > 1 {
+                    // Construct an inline tagged union for wider `A | B` forms.
+                    other.sort_by_key(|a| a.to_string());
+                    other.dedup();
+                    let union = Type::InlineUnion(other);
+                    if has_none {
+                        Ok(Type::Option(Box::new(union)))
+                    } else {
+                        Ok(union)
+                    }
                 } else {
                     Ok(Type::Unknown)
                 }

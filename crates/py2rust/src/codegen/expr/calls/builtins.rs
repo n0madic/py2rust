@@ -1410,6 +1410,33 @@ impl<'a> Codegen<'a> {
             if args.len() != 2 {
                 return Err(self.error(expr.span, "isinstance() expects two arguments"));
             }
+            // InlineUnion isinstance: emit runtime matches!() check.
+            let (inline_members, is_optional) = match args[0].ty.as_ref() {
+                Some(Type::InlineUnion(m)) => (Some(m), false),
+                Some(Type::Option(inner)) => {
+                    if let Type::InlineUnion(m) = inner.as_ref() { (Some(m), true) } else { (None, false) }
+                }
+                _ => (None, false),
+            };
+            if let Some(members) = inline_members {
+                if let ExprKind::Name(type_name) = &args[1].kind {
+                    let target = Type::from_isinstance_name(type_name);
+                    let matched = target.as_ref().and_then(|t| {
+                        members.iter().find(|m| std::mem::discriminant(*m) == std::mem::discriminant(t))
+                    });
+                    if let Some(matched_ty) = matched {
+                        let union_name = Type::inline_union_name(members);
+                        let variant = Type::inline_union_variant_name(matched_ty);
+                        let arg_expr = self.gen_expr(&args[0])?;
+                        let pattern = if is_optional {
+                            format!("Some({}::{}(_))", union_name, variant)
+                        } else {
+                            format!("{}::{}(_)", union_name, variant)
+                        };
+                        return Ok(Some(format!("matches!(&{}, {})", arg_expr, pattern)));
+                    }
+                }
+            }
             if let ExprKind::Name(type_name) = &args[1].kind {
                 let matches = match type_name.as_str() {
                     "int" => matches!(args[0].ty.as_ref(), Some(Type::Int) | Some(Type::Bool)),

@@ -5,3 +5,4 @@ CLAUDE.md
 *.tmp
 .claude/
 perf
+crates/**/tests/**/*.rs

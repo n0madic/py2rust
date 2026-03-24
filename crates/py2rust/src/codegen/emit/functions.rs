@@ -404,6 +404,9 @@ impl<'a> Codegen<'a> {
             // Custom/Union types get borrowed.
             Type::Custom(name) => Type::Ref(Box::new(Type::Custom(name.clone()))),
             Type::Union(name) => Type::Ref(Box::new(Type::Union(name.clone()))),
+            Type::InlineUnion(members) => {
+                Type::Ref(Box::new(Type::InlineUnion(members.clone())))
+            }
             // Iterator stays as-is.
             Type::Iterator(_) => ty.clone(),
             // Lambda stays as-is.

@@ -27,6 +27,84 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
+    /// Emit an auto-generated inline union enum (e.g., `int | str` → `PyUnionIntStr`).
+    pub(crate) fn emit_inline_union(&mut self, members: &[Type]) -> Result<(), CompileError> {
+        let name = Type::inline_union_name(members);
+        self.push_line("#[derive(Debug, Clone, PartialEq)]");
+        self.push_line(&format!("pub enum {} {{", name));
+        self.indent += 1;
+        for member in members {
+            let variant = Type::inline_union_variant_name(member);
+            let rust_ty = self.rust_type(member);
+            self.push_line(&format!("{}({}),", variant, rust_ty));
+        }
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+        // Emit Display impl for print() support.
+        self.push_line(&format!("impl std::fmt::Display for {} {{", name));
+        self.indent += 1;
+        self.push_line("fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {");
+        self.indent += 1;
+        self.push_line("match self {");
+        self.indent += 1;
+        for member in members {
+            let variant = Type::inline_union_variant_name(member);
+            self.push_line(&format!("{}::{}(v) => write!(f, \"{{}}\", v),", name, variant));
+        }
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+        // Emit PartialOrd impl: compare inner values when same variant.
+        // For numeric unions (int | float), promote int to f64 for cross-variant comparison.
+        // Other cross-variant comparisons return None (Python TypeError semantics).
+        let has_int = members.iter().any(|m| matches!(m, Type::Int | Type::Bool));
+        let has_float = members.iter().any(|m| matches!(m, Type::Float));
+        let int_variant = members.iter().find(|m| matches!(m, Type::Int | Type::Bool))
+            .map(Type::inline_union_variant_name);
+        let float_variant = members.iter().find(|m| matches!(m, Type::Float))
+            .map(Type::inline_union_variant_name);
+        self.push_line(&format!("impl PartialOrd for {} {{", name));
+        self.indent += 1;
+        self.push_line("fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {");
+        self.indent += 1;
+        self.push_line("match (self, other) {");
+        self.indent += 1;
+        for member in members {
+            let variant = Type::inline_union_variant_name(member);
+            self.push_line(&format!(
+                "({}::{}(a), {}::{}(b)) => a.partial_cmp(b),",
+                name, variant, name, variant
+            ));
+        }
+        // Cross-variant int/float comparison: promote int to f64.
+        if has_int && has_float {
+            let iv = int_variant.as_deref().unwrap();
+            let fv = float_variant.as_deref().unwrap();
+            self.push_line(&format!(
+                "({}::{}(a), {}::{}(b)) => (*a as f64).partial_cmp(b),",
+                name, iv, name, fv
+            ));
+            self.push_line(&format!(
+                "({}::{}(a), {}::{}(b)) => a.partial_cmp(&(*b as f64)),",
+                name, fv, name, iv
+            ));
+        }
+        self.push_line("_ => None,");
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.indent -= 1;
+        self.push_line("}");
+        self.push_line("");
+        Ok(())
+    }
+
     /// Emit a class definition, its methods, and iterator impls when needed.
     pub(crate) fn emit_class(&mut self, class_def: &ClassDef) -> Result<(), CompileError> {
         let class_info = self.ctx.classes.get(&class_def.name).ok_or_else(|| {

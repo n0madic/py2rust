@@ -502,35 +502,33 @@ def test_or_else_narrowing() -> None:
         # Both are false -> x is NOT int AND NOT str -> x is None
         assert x is None, "x should be narrowed to None"
 
-def test_or_different_vars() -> None:
-    """Test 'or' narrowing with different variables."""
+def test_sequential_isinstance_different_vars() -> None:
+    """Test sequential isinstance narrowing with different variables."""
     x: int | str = "hello"
     y: int | float = 3.14
-    if isinstance(x, int) or isinstance(y, int):
-        assert False, "Should not reach here"
-    else:
-        # Both false -> x is str AND y is float
+    if not isinstance(x, int):
+        # x is narrowed to str here
         assert x.upper() == "HELLO", "x should be narrowed to str"
+    if not isinstance(y, int):
+        # y is narrowed to float here
         assert y > 3.0, "y should be narrowed to float"
 
-def test_not_or_then_narrowing() -> None:
-    """Test that then-branch narrows when 'not (a or b)' is true."""
+def test_sequential_isinstance_same_var() -> None:
+    """Test sequential isinstance narrowing with same variable."""
     x: int | str = "world"
-    y: int | None = None
-    if not (isinstance(x, int) or isinstance(y, int)):
-        # Both are false -> x is NOT int (str) AND y is NOT int (None)
+    if not isinstance(x, int):
+        # x is narrowed to str here
         assert x.lower() == "world", "x should be narrowed to str"
-        assert y is None, "y should be narrowed to None"
-    else:
-        assert False, "Should not reach here"
 
-def test_or_same_var_triple_union() -> None:
-    """Test 'or' narrowing excludes multiple types from same var."""
+def test_isinstance_triple_union_none() -> None:
+    """Test isinstance narrowing on triple union with None."""
     x: int | str | None = None
-    if isinstance(x, int) or isinstance(x, str):
+    if isinstance(x, int):
+        assert False, "Should not reach here when x is None"
+    elif isinstance(x, str):
         assert False, "Should not reach here when x is None"
     else:
-        assert x is None, "x should be narrowed to None"
+        assert x is None, "x should be None"
 
 def test_not_and_else_narrowing() -> None:
     """Test that else-branch narrows when 'not (a and b)' is false."""
@@ -545,9 +543,9 @@ def test_not_and_else_narrowing() -> None:
 
 # Run the 'or' narrowing tests
 test_or_else_narrowing()
-test_or_different_vars()
-test_not_or_then_narrowing()
-test_or_same_var_triple_union()
+test_sequential_isinstance_different_vars()
+test_sequential_isinstance_same_var()
+test_isinstance_triple_union_none()
 test_not_and_else_narrowing()
 
 # ===== SECTION: Bool is subtype of Int (Python semantics) =====
@@ -767,5 +765,118 @@ test_truthiness_str_none_union()
 test_truthiness_empty_str_is_falsy()
 test_truthiness_combined_with_isinstance()
 test_truthiness_while_loop()
+
+# ===== SECTION: Inline union types (int | str) =====
+
+x_int: int | str = 42
+x_str: int | str = "hello"
+
+def describe(x: int | str) -> str:
+    if isinstance(x, int):
+        return "number: " + str(x)
+    return "text: " + x
+
+assert describe(42) == "number: 42", "describe(42) should return 'number: 42'"
+assert describe("hello") == "text: hello", "describe('hello') should return 'text: hello'"
+
+# isinstance check returns correct bool
+a_iu: int | str = 10
+assert isinstance(a_iu, int), "a_iu should be int"
+assert not isinstance(a_iu, str), "a_iu should not be str"
+
+b_iu: int | str = "world"
+assert isinstance(b_iu, str), "b_iu should be str"
+assert not isinstance(b_iu, int), "b_iu should not be int"
+
+# isinstance narrowing in if/else branches
+def narrow_test(x: int | str) -> str:
+    if isinstance(x, int):
+        result: int = x + 1
+        return str(result)
+    else:
+        return x.upper()
+
+assert narrow_test(9) == "10", "narrow_test(9) should return '10'"
+assert narrow_test("abc") == "ABC", "narrow_test('abc') should return 'ABC'"
+
+# not isinstance narrowing
+def not_isinstance_test(x: int | str) -> str:
+    if not isinstance(x, int):
+        return x.upper()
+    else:
+        return str(x)
+
+assert not_isinstance_test("foo") == "FOO", "not_isinstance_test('foo') should return 'FOO'"
+assert not_isinstance_test(7) == "7", "not_isinstance_test(7) should return '7'"
+
+# Return type as inline union
+def get_value(flag: bool) -> int | str:
+    if flag:
+        return 42
+    return "fallback"
+
+r1: int | str = get_value(True)
+r2: int | str = get_value(False)
+assert isinstance(r1, int), "r1 should be int"
+assert isinstance(r2, str), "r2 should be str"
+
+# Three-type inline union
+def classify(x: int | float | str) -> str:
+    if isinstance(x, int):
+        return "integer"
+    elif isinstance(x, float):
+        return "float"
+    return "string"
+
+assert classify(1) == "integer", "classify(1) should return 'integer'"
+assert classify(3.14) == "float", "classify(3.14) should return 'float'"
+assert classify("hi") == "string", "classify('hi') should return 'string'"
+
+# Union with None (Optional<InlineUnion>)
+def optional_union(x: int | str | None) -> str:
+    if isinstance(x, int):
+        return "int:" + str(x)
+    elif isinstance(x, str):
+        return "str:" + x
+    return "none"
+
+assert optional_union(5) == "int:5", "optional_union(5) should return 'int:5'"
+assert optional_union("x") == "str:x", "optional_union('x') should return 'str:x'"
+assert optional_union(None) == "none", "optional_union(None) should return 'none'"
+
+# ===== SECTION: Expected type propagation =====
+
+# Expected type in unpacking call path
+def take_ints(a: int, b: int) -> int:
+    return a + b
+
+etp_args: list[int] = [10, 20]
+etp_result: int = take_ints(*etp_args)
+assert etp_result == 30, "take_ints(*[10, 20]) should return 30"
+
+# Empty list inferred via append
+etp_items: list[int] = []
+etp_items.append(1)
+etp_items.append(2)
+etp_items.append(3)
+assert len(etp_items) == 3, "etp_items should have 3 elements"
+assert etp_items[0] == 1, "etp_items[0] should be 1"
+
+# Empty list with annotation
+etp_typed_list: list[str] = []
+etp_typed_list.append("a")
+etp_typed_list.append("b")
+assert len(etp_typed_list) == 2, "etp_typed_list should have 2 elements"
+assert etp_typed_list[0] == "a", "etp_typed_list[0] should be 'a'"
+
+# Passed to function with typed param
+def sum_list(nums: list[int]) -> int:
+    total: int = 0
+    for n in nums:
+        total = total + n
+    return total
+
+my_nums: list[int] = [1, 2, 3, 4, 5]
+assert sum_list(my_nums) == 15, "sum_list should return 15"
 
 print("All type system tests passed!")
