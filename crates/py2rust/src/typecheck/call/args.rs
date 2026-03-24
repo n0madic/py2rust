@@ -135,6 +135,8 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Track positional parameter index for non-starred args
+        let mut pos_param_idx: usize = if allow_self { 1 } else { 0 };
         for arg in args.iter_mut() {
             if let ExprKind::Starred { value } = &mut arg.kind {
                 let expected_iter = if matches!(unpack_scalar_hint, Type::Unknown) {
@@ -157,7 +159,18 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             } else {
-                self.check_expr(arg, None)?;
+                let expected = if pos_param_idx < sig.params.len()
+                    && !matches!(
+                        sig.param_kinds.get(pos_param_idx),
+                        Some(ParamKind::VarArgs | ParamKind::VarKeywords)
+                    )
+                {
+                    sig.params.get(pos_param_idx)
+                } else {
+                    None
+                };
+                self.check_expr(arg, expected)?;
+                pos_param_idx += 1;
             }
         }
 
