@@ -21,10 +21,9 @@ impl<'a> TypeChecker<'a> {
         let builtin_spec = find_builtin(name.as_str()).copied();
         if let Some(spec) = builtin_spec {
             let callable = format!("{name}()");
-            let keyword_names: Vec<Option<&str>> =
-                keywords.iter().map(|kw| kw.name.as_deref()).collect();
+            let kw_names = crate::callspec::keyword_names(keywords);
             if let Err(shape_err) =
-                validate_call_shape(&callable, spec.shape, args.len(), &keyword_names)
+                validate_call_shape(&callable, spec.shape, args.len(), &kw_names)
             {
                 return Err(self.error(span, shape_err.message()));
             }
@@ -605,9 +604,7 @@ impl<'a> TypeChecker<'a> {
             }
             let left_ty = self.check_expr(&mut args[0], None)?;
             let right_ty = self.check_expr(&mut args[1], None)?;
-            let numeric =
-                |ty: &Type| matches!(ty, Type::Int | Type::Float | Type::Bool | Type::Unknown);
-            if !numeric(&left_ty) || !numeric(&right_ty) {
+            if !left_ty.is_numeric_or_unknown() || !right_ty.is_numeric_or_unknown() {
                 return Err(self.error(span, "divmod() expects numeric arguments"));
             }
             let use_float = matches!(left_ty, Type::Float) || matches!(right_ty, Type::Float);
@@ -848,14 +845,13 @@ impl<'a> TypeChecker<'a> {
                         .any(|arg| matches!(arg.kind, ExprKind::Starred { .. }))
                         || keywords.iter().any(|kw| kw.name.is_none());
                     if !has_unpacking {
-                        let keyword_names: Vec<Option<&str>> =
-                            keywords.iter().map(|kw| kw.name.as_deref()).collect();
+                        let kw_names = crate::callspec::keyword_names(keywords);
                         let plan = plan_non_unpacking_bind(
                             &param_names,
                             &param_kinds,
                             &has_defaults,
                             args.len(),
-                            &keyword_names,
+                            &kw_names,
                             false,
                         )
                         .map_err(|err| self.error(span, err.message()))?;

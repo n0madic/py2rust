@@ -987,10 +987,11 @@ impl<'a> Codegen<'a> {
             .iter()
             .filter(|name| {
                 write_counts.get(*name).copied().unwrap_or(0) == 1
-                    && matches!(
-                        self.ctx.globals.get(*name),
-                        Some(Type::Int | Type::Float | Type::Bool)
-                    )
+                    && self
+                        .ctx
+                        .globals
+                        .get(*name)
+                        .is_some_and(Type::is_numeric)
             })
             .cloned()
             .collect()

@@ -1,7 +1,10 @@
 // List storage-strategy analysis for code generation.
 
 use super::super::util::collect_assign_counts;
-use super::super::*;
+use super::super::{
+    mark_local_if_absent, mark_shared_by_scope, mark_shared_cell, mark_shared_sync, promote_alias,
+    *,
+};
 use super::walk::{
     walk_storage_expr_tree, walk_storage_stmt_events, StorageExprCallbacks, StorageStmtEvent,
 };
@@ -56,7 +59,7 @@ impl<'a> Codegen<'a> {
                     // Alias assignment: let x = y
                     if let ExprKind::Name(src) = &value.kind {
                         if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                            self.promote_list_alias(name, src, shared_globals, storage);
+                            promote_alias(name, src, shared_globals, storage);
                         }
                     }
                 }
@@ -65,7 +68,7 @@ impl<'a> Codegen<'a> {
                         self.note_list_storage_assignment(name, value, shared_globals, storage);
                         if let ExprKind::Name(src) = &value.kind {
                             if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-                                self.promote_list_alias(name, src, shared_globals, storage);
+                                promote_alias(name, src, shared_globals, storage);
                             }
                         }
                     }
@@ -86,16 +89,16 @@ impl<'a> Codegen<'a> {
         storage: &mut HashMap<String, ListStorage>,
     ) {
         if shared_globals.contains(name) {
-            self.mark_list_shared_sync(name, storage);
+            mark_shared_sync(name, storage);
             return;
         }
         if !matches!(value.ty.as_ref(), Some(Type::List(_))) {
             return;
         }
         if self.is_fresh_list_expr(value) {
-            self.mark_list_local_if_absent(name, storage);
+            mark_local_if_absent(name, storage);
         } else {
-            self.mark_list_shared_cell(name, storage);
+            mark_shared_cell(name, storage);
         }
     }
 
@@ -180,61 +183,9 @@ impl<'a> Codegen<'a> {
     ) {
         if matches!(expr.ty.as_ref(), Some(Type::List(_))) {
             if let ExprKind::Name(name) = &expr.kind {
-                self.mark_list_shared_by_scope(name, shared_globals, storage);
+                mark_shared_by_scope(name, shared_globals, storage);
             }
         }
-    }
-
-    /// Mark a list variable as shared with single-threaded cell storage.
-    fn mark_list_shared_cell(&self, name: &str, storage: &mut HashMap<String, ListStorage>) {
-        storage.insert(name.to_string(), ListStorage::SharedCell);
-    }
-
-    /// Mark a list variable as shared with sync storage.
-    fn mark_list_shared_sync(&self, name: &str, storage: &mut HashMap<String, ListStorage>) {
-        storage.insert(name.to_string(), ListStorage::SharedSync);
-    }
-
-    /// Mark a list variable as shared based on whether it is global/sync-bound.
-    fn mark_list_shared_by_scope(
-        &self,
-        name: &str,
-        shared_globals: &HashSet<String>,
-        storage: &mut HashMap<String, ListStorage>,
-    ) {
-        if shared_globals.contains(name) {
-            self.mark_list_shared_sync(name, storage);
-        } else {
-            self.mark_list_shared_cell(name, storage);
-        }
-    }
-
-    /// Promote alias-connected list variables; sync storage wins over cell storage.
-    fn promote_list_alias(
-        &self,
-        lhs: &str,
-        rhs: &str,
-        shared_globals: &HashSet<String>,
-        storage: &mut HashMap<String, ListStorage>,
-    ) {
-        let lhs_sync = shared_globals.contains(lhs)
-            || matches!(storage.get(lhs), Some(ListStorage::SharedSync));
-        let rhs_sync = shared_globals.contains(rhs)
-            || matches!(storage.get(rhs), Some(ListStorage::SharedSync));
-        if lhs_sync || rhs_sync {
-            self.mark_list_shared_sync(lhs, storage);
-            self.mark_list_shared_sync(rhs, storage);
-        } else {
-            self.mark_list_shared_cell(lhs, storage);
-            self.mark_list_shared_cell(rhs, storage);
-        }
-    }
-
-    /// Mark a list variable as local if it hasn't already been forced shared.
-    fn mark_list_local_if_absent(&self, name: &str, storage: &mut HashMap<String, ListStorage>) {
-        storage
-            .entry(name.to_string())
-            .or_insert(ListStorage::Local);
     }
 
     /// Detect functions whose return type is `List` and all return statements
@@ -707,8 +658,7 @@ impl<'codegen, 'ctx, 'src> StorageExprCallbacks<ListUseContext>
         if matches!(ctx, ListUseContext::Escape) && matches!(expr.ty.as_ref(), Some(Type::List(_)))
         {
             if let ExprKind::Name(name) = &expr.kind {
-                self.codegen
-                    .mark_list_shared_by_scope(name, self.shared_globals, self.storage);
+                mark_shared_by_scope(name, self.shared_globals, self.storage);
             }
         }
         match &expr.kind {

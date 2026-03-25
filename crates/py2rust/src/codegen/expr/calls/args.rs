@@ -33,14 +33,13 @@ impl<'a> Codegen<'a> {
         let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
         let param_kinds: Vec<ParamKind> = params.iter().map(|p| p.kind).collect();
         let has_defaults: Vec<bool> = params.iter().map(|p| p.default.is_some()).collect();
-        let keyword_names: Vec<Option<&str>> =
-            keywords.iter().map(|kw| kw.name.as_deref()).collect();
+        let kw_names = crate::callspec::keyword_names(keywords);
         let plan = plan_non_unpacking_bind(
             &param_names,
             &param_kinds,
             &has_defaults,
             args.len(),
-            &keyword_names,
+            &kw_names,
             implicit_first,
         )
         .map_err(|err| {

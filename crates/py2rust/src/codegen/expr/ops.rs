@@ -1089,13 +1089,7 @@ impl<'a> Codegen<'a> {
                         Type::Int | Type::Float | Type::Bool | Type::Str | Type::None
                     )
                 };
-                let numeric_pair = matches!(
-                    (left_ty, right_ty),
-                    (
-                        Type::Int | Type::Float | Type::Bool,
-                        Type::Int | Type::Float | Type::Bool
-                    )
-                );
+                let numeric_pair = left_ty.is_numeric() && right_ty.is_numeric();
                 if primitive(left_ty) && primitive(right_ty) && left_ty != right_ty && !numeric_pair
                 {
                     return Ok(if matches!(op, CmpOp::Eq) {
@@ -1227,12 +1221,10 @@ impl<'a> Codegen<'a> {
         };
         // Check if either operand resolves to a numeric type (including Unknown
         // fields on Custom types that resolve to Float).
-        let left_numeric = matches!(left.ty.as_ref(), Some(Type::Int | Type::Float | Type::Bool))
-            || self.expr_resolves_to_float(left);
-        let right_numeric = matches!(
-            right.ty.as_ref(),
-            Some(Type::Int | Type::Float | Type::Bool)
-        ) || self.expr_resolves_to_float(right);
+        let left_numeric =
+            left.ty.as_ref().is_some_and(Type::is_numeric) || self.expr_resolves_to_float(left);
+        let right_numeric =
+            right.ty.as_ref().is_some_and(Type::is_numeric) || self.expr_resolves_to_float(right);
         if left_numeric && right_numeric {
             let is_float = matches!(left.ty.as_ref(), Some(Type::Float))
                 || matches!(right.ty.as_ref(), Some(Type::Float))

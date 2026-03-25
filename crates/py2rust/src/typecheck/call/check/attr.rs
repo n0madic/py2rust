@@ -52,9 +52,8 @@ impl<'a> TypeChecker<'a> {
         }
         if let Type::List(inner) = &obj_ty {
             if let Some(spec) = find_container_method(ContainerId::List, attr.as_str()) {
-                let keyword_names: Vec<Option<&str>> =
-                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
-                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
+                let kw_names = crate::callspec::keyword_names(keywords);
+                if let Err(shape_err) = spec.validate(args.len(), &kw_names) {
                     return Err(self.error(span, shape_err.message()));
                 }
             }
@@ -62,16 +61,11 @@ impl<'a> TypeChecker<'a> {
                 if args.len() != 1 {
                     return Err(self.error(span, "list.append() expects one argument"));
                 }
-                let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
-                if !matches!(arg_ty, Type::Unknown) && !matches!(inner.as_ref(), Type::Unknown) {
-                    self.ensure_assignable(&arg_ty, inner, span)?;
-                }
+                let arg_ty = self.check_element_arg(&mut args[0], inner, span)?;
+                self.maybe_refine_container_type(value, inner, &arg_ty, Type::List);
+                // Also handle indexed append: name[i].append(val)
+                // Refine name's type from List(List(Unknown)) to List(List(arg_ty)).
                 if matches!(inner.as_ref(), Type::Unknown) && !matches!(arg_ty, Type::Unknown) {
-                    if let ExprKind::Name(name) = &value.kind {
-                        self.set_var_type(name, Type::List(Box::new(arg_ty.clone())));
-                    }
-                    // Also handle indexed append: name[i].append(val)
-                    // Refine name's type from List(List(Unknown)) to List(List(arg_ty)).
                     if let ExprKind::Index { value: outer, .. } = &value.kind {
                         if let ExprKind::Name(name) = &outer.kind {
                             if let Some(Type::List(outer_inner)) = self.lookup_var(name).as_ref() {
@@ -259,9 +253,8 @@ impl<'a> TypeChecker<'a> {
         }
         if let Type::Dict(key_ty, val_ty) = &obj_ty {
             if let Some(spec) = find_container_method(ContainerId::Dict, attr.as_str()) {
-                let keyword_names: Vec<Option<&str>> =
-                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
-                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
+                let kw_names = crate::callspec::keyword_names(keywords);
+                if let Err(shape_err) = spec.validate(args.len(), &kw_names) {
                     return Err(self.error(span, shape_err.message()));
                 }
             }
@@ -397,36 +390,18 @@ impl<'a> TypeChecker<'a> {
         }
         if let Type::Set(inner) = &obj_ty {
             if let Some(spec) = find_container_method(ContainerId::Set, attr.as_str()) {
-                let keyword_names: Vec<Option<&str>> =
-                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
-                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
+                let kw_names = crate::callspec::keyword_names(keywords);
+                if let Err(shape_err) = spec.validate(args.len(), &kw_names) {
                     return Err(self.error(span, shape_err.message()));
                 }
             }
             if attr == "add" {
-                let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
-                if !matches!(arg_ty, Type::Unknown) && !matches!(inner.as_ref(), Type::Unknown) {
-                    self.ensure_assignable(&arg_ty, inner, span)?;
-                }
-                if matches!(inner.as_ref(), Type::Unknown) && !matches!(arg_ty, Type::Unknown) {
-                    if let ExprKind::Name(name) = &value.kind {
-                        self.set_var_type(name, Type::Set(Box::new(arg_ty.clone())));
-                    }
-                }
+                let arg_ty = self.check_element_arg(&mut args[0], inner, span)?;
+                self.maybe_refine_container_type(value, inner, &arg_ty, Type::Set);
                 return Ok(Type::None);
             }
-            if attr == "remove" {
-                let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
-                if !matches!(arg_ty, Type::Unknown) && !matches!(inner.as_ref(), Type::Unknown) {
-                    self.ensure_assignable(&arg_ty, inner, span)?;
-                }
-                return Ok(Type::None);
-            }
-            if attr == "discard" {
-                let arg_ty = self.check_expr(&mut args[0], Some(inner))?;
-                if !matches!(arg_ty, Type::Unknown) && !matches!(inner.as_ref(), Type::Unknown) {
-                    self.ensure_assignable(&arg_ty, inner, span)?;
-                }
+            if attr == "remove" || attr == "discard" {
+                self.check_element_arg(&mut args[0], inner, span)?;
                 return Ok(Type::None);
             }
             if attr == "clear" {
@@ -441,11 +416,7 @@ impl<'a> TypeChecker<'a> {
                 if !matches!(item_ty, Type::Unknown) && !matches!(inner.as_ref(), Type::Unknown) {
                     self.ensure_assignable(&item_ty, inner, span)?;
                 }
-                if matches!(inner.as_ref(), Type::Unknown) && !matches!(item_ty, Type::Unknown) {
-                    if let ExprKind::Name(name) = &value.kind {
-                        self.set_var_type(name, Type::Set(Box::new(item_ty.clone())));
-                    }
-                }
+                self.maybe_refine_container_type(value, inner, &item_ty, Type::Set);
                 return Ok(Type::None);
             }
             if attr == "pop" {
@@ -823,5 +794,38 @@ impl<'a> TypeChecker<'a> {
             return Ok(Type::Unknown);
         }
         Err(self.error(span, "Unsupported method call"))
+    }
+
+    /// Check a single-element container method argument against the inner type.
+    ///
+    /// Returns the checked argument type. Ensures assignability when both sides
+    /// are known (non-Unknown).
+    fn check_element_arg(
+        &mut self,
+        arg: &mut Expr,
+        inner: &Type,
+        span: Span,
+    ) -> Result<Type, CompileError> {
+        let arg_ty = self.check_expr(arg, Some(inner))?;
+        if !matches!(arg_ty, Type::Unknown) && !matches!(inner, Type::Unknown) {
+            self.ensure_assignable(&arg_ty, inner, span)?;
+        }
+        Ok(arg_ty)
+    }
+
+    /// Refine a container variable's type when the inner type is Unknown and
+    /// the argument provides a concrete type.
+    fn maybe_refine_container_type(
+        &mut self,
+        value: &Expr,
+        inner: &Type,
+        arg_ty: &Type,
+        container_ctor: impl FnOnce(Box<Type>) -> Type,
+    ) {
+        if matches!(inner, Type::Unknown) && !matches!(arg_ty, Type::Unknown) {
+            if let ExprKind::Name(name) = &value.kind {
+                self.set_var_type(name, container_ctor(Box::new(arg_ty.clone())));
+            }
+        }
     }
 }

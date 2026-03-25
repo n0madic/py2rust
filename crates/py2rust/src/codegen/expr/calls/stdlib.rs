@@ -13,13 +13,12 @@ impl<'a> Codegen<'a> {
         args: &[Expr],
         keywords: &[KeywordArg],
     ) -> Result<String, CompileError> {
-        let keyword_names: Vec<Option<&str>> =
-            keywords.iter().map(|kw| kw.name.as_deref()).collect();
+        let kw_names = crate::callspec::keyword_names(keywords);
         if let Err(shape_err) = validate_call_shape(
             &spec.callable_name(),
             spec.shape,
             args.len(),
-            &keyword_names,
+            &kw_names,
         ) {
             return Err(self.error(span, shape_err.message()));
         }

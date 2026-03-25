@@ -49,10 +49,7 @@ impl<'a> TypeChecker<'a> {
                         if left == right {
                             return Ok(left.clone());
                         }
-                        let numeric = |ty: &Type| {
-                            matches!(ty, Type::Int | Type::Float | Type::Bool | Type::Unknown)
-                        };
-                        if numeric(left) && numeric(right) {
+                        if left.is_numeric_or_unknown() && right.is_numeric_or_unknown() {
                             if matches!(left, Type::Unknown) || matches!(right, Type::Unknown) {
                                 return Ok(Type::Unknown);
                             }

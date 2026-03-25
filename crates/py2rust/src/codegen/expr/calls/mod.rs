@@ -208,14 +208,13 @@ impl<'a> Codegen<'a> {
                         "Keyword arguments are not supported for this call target",
                     ));
                 }
-                let keyword_names: Vec<Option<&str>> =
-                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
+                let kw_names = crate::callspec::keyword_names(keywords);
                 let plan = plan_non_unpacking_bind(
                     &normalized_names,
                     &normalized_kinds,
                     &normalized_defaults,
                     args.len(),
-                    &keyword_names,
+                    &kw_names,
                     false,
                 )
                 .map_err(|err| self.error(expr.span, err.message()))?;

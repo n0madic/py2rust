@@ -72,6 +72,12 @@ impl Type {
         matches!(self, Type::Int | Type::Float | Type::Bool)
     }
 
+    /// Check if this type is numeric or not yet resolved.
+    /// Used during type inference where Unknown may later resolve to a numeric type.
+    pub fn is_numeric_or_unknown(&self) -> bool {
+        matches!(self, Type::Int | Type::Float | Type::Bool | Type::Unknown)
+    }
+
     pub fn is_optional(&self) -> bool {
         matches!(self, Type::Option(_))
     }

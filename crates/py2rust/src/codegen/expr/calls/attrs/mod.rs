@@ -95,36 +95,26 @@ impl<'a> Codegen<'a> {
             return self.gen_urllib_response_attr_call(value, attr, args, keywords);
         }
 
-        if matches!(value.ty.as_ref(), Some(Type::List(_))) {
-            if let Some(spec) = find_container_method(ContainerId::List, attr) {
-                let keyword_names: Vec<Option<&str>> =
-                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
-                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
+        if let Some((container_id, _)) = match value.ty.as_ref() {
+            Some(Type::List(_)) => Some((ContainerId::List, ())),
+            Some(Type::Dict(_, _)) => Some((ContainerId::Dict, ())),
+            Some(Type::Set(_)) => Some((ContainerId::Set, ())),
+            _ => None,
+        } {
+            if let Some(spec) = find_container_method(container_id, attr) {
+                let kw_names = crate::callspec::keyword_names(keywords);
+                if let Err(shape_err) = spec.validate(args.len(), &kw_names) {
                     return Err(self.error(value.span, shape_err.message()));
                 }
-                return self.gen_list_attr_call(call_expr, value, attr, args, keywords);
-            }
-        }
-
-        if matches!(value.ty.as_ref(), Some(Type::Dict(_, _))) {
-            if let Some(spec) = find_container_method(ContainerId::Dict, attr) {
-                let keyword_names: Vec<Option<&str>> =
-                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
-                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
-                    return Err(self.error(value.span, shape_err.message()));
-                }
-                return self.gen_dict_attr_call(call_expr, value, attr, args, keywords);
-            }
-        }
-
-        if matches!(value.ty.as_ref(), Some(Type::Set(_))) {
-            if let Some(spec) = find_container_method(ContainerId::Set, attr) {
-                let keyword_names: Vec<Option<&str>> =
-                    keywords.iter().map(|kw| kw.name.as_deref()).collect();
-                if let Err(shape_err) = spec.validate(args.len(), &keyword_names) {
-                    return Err(self.error(value.span, shape_err.message()));
-                }
-                return self.gen_set_attr_call(value, attr, args, keywords);
+                return match container_id {
+                    ContainerId::List => {
+                        self.gen_list_attr_call(call_expr, value, attr, args, keywords)
+                    }
+                    ContainerId::Dict => {
+                        self.gen_dict_attr_call(call_expr, value, attr, args, keywords)
+                    }
+                    ContainerId::Set => self.gen_set_attr_call(value, attr, args, keywords),
+                };
             }
         }
 

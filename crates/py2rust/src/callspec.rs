@@ -5,6 +5,13 @@
 
 use std::collections::HashSet;
 
+use crate::hir::KeywordArg;
+
+/// Extract keyword names from a slice of keyword arguments for call-shape validation.
+pub fn keyword_names(keywords: &[KeywordArg]) -> Vec<Option<&str>> {
+    keywords.iter().map(|kw| kw.name.as_deref()).collect()
+}
+
 /// Arity policy for a callable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AritySpec {

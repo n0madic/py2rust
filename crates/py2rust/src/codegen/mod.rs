@@ -185,6 +185,104 @@ pub(crate) enum DictStorage {
     SharedSync,
 }
 
+/// Shared interface for container storage strategies (list and dict).
+///
+/// Both `ListStorage` and `DictStorage` have identical Local/SharedCell/SharedSync
+/// variants. This trait allows generic marker functions that operate on either type.
+pub(crate) trait ContainerStorage: Copy + PartialEq + Eq {
+    fn local() -> Self;
+    fn shared_cell() -> Self;
+    fn shared_sync() -> Self;
+    fn is_shared_sync(self) -> bool;
+}
+
+impl ContainerStorage for ListStorage {
+    fn local() -> Self {
+        Self::Local
+    }
+    fn shared_cell() -> Self {
+        Self::SharedCell
+    }
+    fn shared_sync() -> Self {
+        Self::SharedSync
+    }
+    fn is_shared_sync(self) -> bool {
+        self == Self::SharedSync
+    }
+}
+
+impl ContainerStorage for DictStorage {
+    fn local() -> Self {
+        Self::Local
+    }
+    fn shared_cell() -> Self {
+        Self::SharedCell
+    }
+    fn shared_sync() -> Self {
+        Self::SharedSync
+    }
+    fn is_shared_sync(self) -> bool {
+        self == Self::SharedSync
+    }
+}
+
+/// Mark a variable as shared with single-threaded cell storage.
+pub(crate) fn mark_shared_cell<S: ContainerStorage>(
+    name: &str,
+    storage: &mut HashMap<String, S>,
+) {
+    storage.insert(name.to_string(), S::shared_cell());
+}
+
+/// Mark a variable as shared with sync storage.
+pub(crate) fn mark_shared_sync<S: ContainerStorage>(
+    name: &str,
+    storage: &mut HashMap<String, S>,
+) {
+    storage.insert(name.to_string(), S::shared_sync());
+}
+
+/// Mark a variable as shared based on whether it is global/sync-bound.
+pub(crate) fn mark_shared_by_scope<S: ContainerStorage>(
+    name: &str,
+    shared_globals: &HashSet<String>,
+    storage: &mut HashMap<String, S>,
+) {
+    if shared_globals.contains(name) {
+        mark_shared_sync(name, storage);
+    } else {
+        mark_shared_cell(name, storage);
+    }
+}
+
+/// Promote alias-connected variables; sync storage wins over cell storage.
+pub(crate) fn promote_alias<S: ContainerStorage>(
+    lhs: &str,
+    rhs: &str,
+    shared_globals: &HashSet<String>,
+    storage: &mut HashMap<String, S>,
+) {
+    let lhs_sync =
+        shared_globals.contains(lhs) || storage.get(lhs).copied().is_some_and(S::is_shared_sync);
+    let rhs_sync =
+        shared_globals.contains(rhs) || storage.get(rhs).copied().is_some_and(S::is_shared_sync);
+    if lhs_sync || rhs_sync {
+        mark_shared_sync(lhs, storage);
+        mark_shared_sync(rhs, storage);
+    } else {
+        mark_shared_cell(lhs, storage);
+        mark_shared_cell(rhs, storage);
+    }
+}
+
+/// Mark a variable as local if it hasn't already been forced shared.
+pub(crate) fn mark_local_if_absent<S: ContainerStorage>(
+    name: &str,
+    storage: &mut HashMap<String, S>,
+) {
+    storage.entry(name.to_string()).or_insert(S::local());
+}
+
 /// Iterator consumption context for optimization decisions.
 ///
 /// Determines whether an iterator from Arc<Mutex<Vec<T>>> should acquire

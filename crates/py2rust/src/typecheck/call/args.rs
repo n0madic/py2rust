@@ -21,14 +21,13 @@ impl<'a> TypeChecker<'a> {
             return self.check_call_args_with_unpacking(sig, args, keywords, span, allow_self);
         }
 
-        let keyword_names: Vec<Option<&str>> =
-            keywords.iter().map(|kw| kw.name.as_deref()).collect();
+        let kw_names = crate::callspec::keyword_names(keywords);
         let plan = plan_non_unpacking_bind(
             &sig.param_names,
             &sig.param_kinds,
             &sig.has_defaults,
             args.len(),
-            &keyword_names,
+            &kw_names,
             allow_self,
         )
         .map_err(|err| self.error(span, err.message()))?;

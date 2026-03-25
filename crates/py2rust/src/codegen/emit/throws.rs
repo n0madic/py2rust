@@ -159,10 +159,7 @@ impl<'a> Codegen<'a> {
                 if args.is_empty() {
                     return false;
                 }
-                !matches!(
-                    args[0].ty.as_ref(),
-                    Some(Type::Int | Type::Float | Type::Bool)
-                )
+                !args[0].ty.as_ref().is_some_and(Type::is_numeric)
             }
             "range" => {
                 if args.len() == 3 {

@@ -16,10 +16,9 @@ impl<'a> Codegen<'a> {
         let builtin_spec = find_builtin(name);
         if let Some(spec) = builtin_spec {
             let callable = format!("{name}()");
-            let keyword_names: Vec<Option<&str>> =
-                keywords.iter().map(|kw| kw.name.as_deref()).collect();
+            let kw_names = crate::callspec::keyword_names(keywords);
             if let Err(shape_err) =
-                validate_call_shape(&callable, spec.shape, args.len(), &keyword_names)
+                validate_call_shape(&callable, spec.shape, args.len(), &kw_names)
             {
                 return Err(self.error(expr.span, shape_err.message()));
             }

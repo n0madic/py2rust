@@ -1313,7 +1313,7 @@ impl<'a> Codegen<'a> {
         }
         if items
             .iter()
-            .all(|t| matches!(t, Type::Int | Type::Float | Type::Bool))
+            .all(|t| t.is_numeric())
         {
             if items.iter().any(|t| matches!(t, Type::Float)) {
                 return Type::Float;

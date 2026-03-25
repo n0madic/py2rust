@@ -964,7 +964,7 @@ impl<'a> Codegen<'a> {
 
     /// Check if a type implements Copy (primitives).
     pub(crate) fn is_copy_type(&self, ty: &Type) -> bool {
-        matches!(ty, Type::Int | Type::Float | Type::Bool)
+        ty.is_numeric()
     }
 
     /// Provide a best-effort element type hint for iterable types.
