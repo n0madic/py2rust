@@ -2,6 +2,8 @@
 
 A pragmatic transpiler that converts a restricted, statically-typed subset of Python into idiomatic Rust with a minimal runtime.
 
+> Important: Rust is used here only as an intermediate language on the path to native machine code. The generated Rust is not intended to be consumed, maintained, or reused as a downstream source artifact.
+
 ## Features (MVP)
 - Functions with required type annotations
 - Function signatures with positional-only params (`/`), defaults, keyword arguments, `*args`, keyword-only params, and `**kwargs`
